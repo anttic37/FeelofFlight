@@ -8,8 +8,12 @@ export class Input {
     this.pitchSm = 0; this.rollSm = 0; this.yawSm = 0;     // smoothed (drives surfaces + physics)
     this.throttle = 0.65;
     this.invertY = false;
+    this.brake = false;
     this.onReset = null;
     this.onMute = null;
+    this.onGear = null;
+    this.onRunwaySpawn = null;
+    this._gpGearHeld = false;
 
     window.addEventListener('keydown', e => {
       if (['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(e.code)) e.preventDefault();
@@ -18,6 +22,8 @@ export class Input {
       if (e.code === 'KeyR' && this.onReset) this.onReset();
       if (e.code === 'KeyI') this.invertY = !this.invertY;
       if (e.code === 'KeyM' && this.onMute) this.onMute();
+      if (e.code === 'KeyG' && this.onGear) this.onGear();
+      if (e.code === 'KeyT' && this.onRunwaySpawn) this.onRunwaySpawn();
     });
     window.addEventListener('keyup', e => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
@@ -32,7 +38,8 @@ export class Input {
     let yaw = this._key('KeyE') - this._key('KeyQ');
     let thrRate = (this._key('KeyX', 'ShiftLeft', 'ShiftRight') - this._key('KeyZ')) * 0.55;
 
-    // gamepad: left stick, triggers throttle, bumpers rudder
+    // gamepad: left stick, triggers throttle, bumpers rudder, A brake, Y gear
+    this.brake = this._key('Space') === 1;
     const gp = navigator.getGamepads && navigator.getGamepads()[0];
     if (gp) {
       const dz = v => Math.abs(v) < 0.12 ? 0 : (v - Math.sign(v) * 0.12) / 0.88;
@@ -40,6 +47,10 @@ export class Input {
       pitch += dz(gp.axes[1] || 0); // stick back = pull up
       yaw += (gp.buttons[5]?.value || 0) - (gp.buttons[4]?.value || 0);
       thrRate += ((gp.buttons[7]?.value || 0) - (gp.buttons[6]?.value || 0)) * 0.9;
+      this.brake = this.brake || !!gp.buttons[0]?.pressed;
+      const gearBtn = !!gp.buttons[3]?.pressed;
+      if (gearBtn && !this._gpGearHeld && this.onGear) this.onGear();
+      this._gpGearHeld = gearBtn;
     }
 
     if (this.invertY) pitch = -pitch;

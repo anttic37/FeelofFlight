@@ -1,10 +1,12 @@
 // Web Audio synth: engine (detuned saws through a lowpass) + wind (filtered noise).
 // Pitch and volume track throttle and airspeed; wind pulses during stall buffet.
+// The looped noise buffer also feeds ground-roll rumble and brake-squeal paths.
 
 export class SoundFX {
   constructor() {
     this.ctx = null;
     this.muted = false;
+    this.braking = false;
     this.time = 0;
   }
 
@@ -41,6 +43,7 @@ export class SoundFX {
     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
     const data = buf.getChannelData(0);
     for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    this.noiseBuf = buf;
     const src = ctx.createBufferSource();
     src.buffer = buf;
     src.loop = true;
@@ -53,11 +56,40 @@ export class SoundFX {
     src.connect(this.windFilter);
     this.windFilter.connect(this.windGain);
     this.windGain.connect(this.master);
+
+    // ground-roll rumble: second path off the same noise source
+    this.rumbleFilter = ctx.createBiquadFilter();
+    this.rumbleFilter.type = 'lowpass';
+    this.rumbleFilter.frequency.value = 140;
+    this.rumbleGain = ctx.createGain();
+    this.rumbleGain.gain.value = 0;
+    src.connect(this.rumbleFilter);
+    this.rumbleFilter.connect(this.rumbleGain);
+    this.rumbleGain.connect(this.master);
+
+    // brake squeal: narrow bandpass path, driven only via setBrake()
+    this.squealFilter = ctx.createBiquadFilter();
+    this.squealFilter.type = 'bandpass';
+    this.squealFilter.frequency.value = 2300;
+    this.squealFilter.Q.value = 14;
+    this.squealGain = ctx.createGain();
+    this.squealGain.gain.value = 0;
+    src.connect(this.squealFilter);
+    this.squealFilter.connect(this.squealGain);
+    this.squealGain.connect(this.master);
+
     src.start();
+  }
+
+  setBrake(on) {
+    this.braking = !!on;
   }
 
   update(dt, phys) {
     if (!this.ctx) return;
+    if (this.ctx.state === 'suspended') {
+      try { this.ctx.resume().catch(() => {}); } catch (e) {}
+    }
     this.time += dt;
     const t = this.ctx.currentTime;
     const thr = phys.throttle, spd = phys.speed;
@@ -71,6 +103,84 @@ export class SoundFX {
     if (phys.stalled) wind *= 1 + 0.5 * Math.sin(this.time * Math.PI * 2 * 9); // buffet
     this.windGain.gain.setTargetAtTime(this.muted ? 0 : wind, t, 0.05);
     this.windFilter.frequency.setTargetAtTime(280 + spd * 13, t, 0.1);
+
+    // rolling rumble: silent parked, clearly audible around 30 m/s
+    const roll = phys.grounded ? Math.min(0.4, Math.pow(spd / 30, 1.4) * 0.34) : 0;
+    this.rumbleGain.gain.setTargetAtTime(this.muted ? 0 : roll, t, 0.09);
+    this.rumbleFilter.frequency.setTargetAtTime(90 + spd * 4, t, 0.15);
+
+    const sq = (phys.grounded && spd > 6 && this.braking) ? Math.min(0.06, 0.018 + spd * 0.0012) : 0;
+    this.squealGain.gain.setTargetAtTime(this.muted ? 0 : sq, t, 0.05);
+    this.squealFilter.frequency.setTargetAtTime(2200 + Math.sin(this.time * 23) * 260, t, 0.05);
+  }
+
+  // ~1.6s servo whir: filtered saw sweeps down then back up, ends with a clunk
+  gearMove() {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const o = ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(150, t);
+    o.frequency.exponentialRampToValueAtTime(85, t + 0.8);
+    o.frequency.exponentialRampToValueAtTime(145, t + 1.55);
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = 420;
+    f.Q.value = 2;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.045, t + 0.06);
+    g.gain.setValueAtTime(0.045, t + 1.45);
+    g.gain.linearRampToValueAtTime(0, t + 1.6);
+    o.connect(f);
+    f.connect(g);
+    g.connect(this.master);
+    o.start(t);
+    o.stop(t + 1.62);
+    const c = ctx.createOscillator();
+    c.type = 'sine';
+    c.frequency.setValueAtTime(120, t + 1.5);
+    c.frequency.exponentialRampToValueAtTime(55, t + 1.62);
+    const cg = ctx.createGain();
+    cg.gain.setValueAtTime(0.09, t + 1.5);
+    cg.gain.exponentialRampToValueAtTime(0.001, t + 1.66);
+    c.connect(cg);
+    cg.connect(this.master);
+    c.start(t + 1.5);
+    c.stop(t + 1.68);
+  }
+
+  // tire chirp + thud; sink ~1 m/s subtle, ~5 m/s heavy
+  touchdown(sink) {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const k = Math.min(1, Math.max(0.12, (sink - 0.4) / 4.6));
+    const src = ctx.createBufferSource();
+    src.buffer = this.noiseBuf;
+    const f = ctx.createBiquadFilter();
+    f.type = 'bandpass';
+    f.frequency.setValueAtTime(2600, t);
+    f.frequency.exponentialRampToValueAtTime(1400, t + 0.12);
+    f.Q.value = 5;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.05 + 0.22 * k, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.13);
+    src.connect(f);
+    f.connect(g);
+    g.connect(this.master);
+    src.start(t);
+    src.stop(t + 0.15);
+    const o = ctx.createOscillator();
+    o.type = 'sine';
+    o.frequency.setValueAtTime(110, t);
+    o.frequency.exponentialRampToValueAtTime(45, t + 0.22);
+    const og = ctx.createGain();
+    og.gain.setValueAtTime(0.08 + 0.4 * k, t);
+    og.gain.exponentialRampToValueAtTime(0.001, t + 0.25);
+    o.connect(og);
+    og.connect(this.master);
+    o.start(t);
+    o.stop(t + 0.28);
   }
 
   crash() {

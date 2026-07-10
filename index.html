@@ -10,15 +10,28 @@
   #ui { position: fixed; inset: 0; pointer-events: none; font-family: ui-monospace, Consolas, monospace; color: #eaf4ff; }
   .panel { background: rgba(8, 16, 26, 0.45); border: 1px solid rgba(160, 210, 255, 0.18); border-radius: 8px; backdrop-filter: blur(3px); }
   #brand { position: absolute; top: 14px; right: 16px; font-size: 13px; letter-spacing: 3px; color: rgba(230,244,255,0.75); text-shadow: 0 1px 4px rgba(0,0,0,0.5); }
-  #readouts { position: absolute; top: 14px; left: 16px; padding: 10px 14px; font-size: 14px; line-height: 1.65; min-width: 130px; }
+  #readouts { position: absolute; top: 14px; left: 16px; padding: 10px 14px; font-size: 14px; line-height: 1.65; min-width: 150px; }
   #readouts b { display: inline-block; width: 42px; font-weight: 400; color: rgba(180,215,245,0.6); font-size: 11px; letter-spacing: 1px; }
-  #readouts span { font-size: 16px; }
+  #readouts b + span { font-size: 16px; }
+  #vario { font-size: 12px; color: rgba(180,215,245,0.7); }
+  #vario.climb { color: #9ef0c0; }
+  #vario.sink { color: #ffb46b; }
+  #hdg-card { font-size: 12px; color: rgba(180,215,245,0.7); }
+  #chips { display: flex; gap: 6px; margin-top: 7px; }
+  #chips .chip { font-size: 10px; letter-spacing: 1.5px; padding: 2px 8px 3px; border-radius: 4px; border: 1px solid rgba(160,210,255,0.22); color: rgba(180,215,245,0.45); }
+  #chips #gear-chip.down { color: #8effb0; border-color: rgba(110,255,160,0.5); background: rgba(70,200,110,0.12); }
+  #chips #gear-chip.transit { color: #ffc861; border-color: rgba(255,200,95,0.6); animation: blink 0.4s steps(2) infinite; }
+  #chips #brake-chip { display: none; }
+  #chips #brake-chip.on { display: inline-block; color: #ffc98a; border-color: rgba(255,170,80,0.55); background: rgba(255,150,60,0.14); }
+  #minimap { position: absolute; top: 40px; right: 16px; width: 140px; height: 140px; }
   #throttle-wrap { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 220px; padding: 8px 12px 10px; text-align: center; }
   #throttle-label { font-size: 10px; letter-spacing: 2px; color: rgba(180,215,245,0.65); margin-bottom: 5px; }
   #throttle-track { height: 7px; background: rgba(120,170,220,0.18); border-radius: 4px; overflow: hidden; }
   #throttle-bar { height: 100%; width: 65%; background: linear-gradient(90deg, #57b8ff, #9ef0c0); border-radius: 4px; transition: width 0.1s linear; }
   #stall { position: absolute; top: 32%; left: 50%; transform: translate(-50%, -50%); font-size: 30px; letter-spacing: 8px; color: #ff5a4d; text-shadow: 0 0 18px rgba(255,60,40,0.8); display: none; animation: blink 0.45s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0.15; } }
+  #gearwarn { position: absolute; top: 24%; left: 50%; transform: translate(-50%, -50%); font-size: 26px; letter-spacing: 6px; color: #ff5a4d; text-shadow: 0 0 16px rgba(255,60,40,0.85); display: none; animation: pulsewarn 0.7s ease-in-out infinite; }
+  @keyframes pulsewarn { 50% { opacity: 0.35; transform: translate(-50%, -50%) scale(1.09); } }
   #msg { position: absolute; top: 44%; left: 50%; transform: translate(-50%, -50%); font-size: 20px; letter-spacing: 3px; color: #ffe9b0; text-shadow: 0 1px 8px rgba(0,0,0,0.7); opacity: 0; transition: opacity 0.3s; }
   #help { position: absolute; bottom: 16px; left: 16px; padding: 9px 13px; font-size: 11.5px; line-height: 1.75; color: rgba(210,232,250,0.82); }
   #help kbd { background: rgba(140,190,240,0.16); border: 1px solid rgba(160,210,255,0.25); border-radius: 4px; padding: 0 5px; font-family: inherit; }
@@ -27,27 +40,34 @@
   #flash.fade { opacity: 0; transition: opacity 0.9s ease-out; }
 </style>
 <script type="importmap">
-{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js" } }
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/"
+} }
 </script>
 </head>
 <body>
 <div id="ui">
   <div id="brand">F L I G H F E E L</div>
+  <canvas id="minimap" class="panel" width="280" height="280"></canvas>
   <div id="readouts" class="panel">
     <div><b>SPD</b> <span id="spd">0</span> km/h</div>
-    <div><b>ALT</b> <span id="alt">0</span> m</div>
+    <div><b>ALT</b> <span id="alt">0</span> m <span id="vario">▲0.0</span></div>
+    <div><b>HDG</b> <span id="hdg">000</span>° <span id="hdg-card">N</span></div>
     <div><b>G</b> <span id="g">1.0</span></div>
+    <div id="chips"><span id="gear-chip" class="chip">GEAR UP</span><span id="brake-chip" class="chip">BRAKE</span></div>
   </div>
   <div id="throttle-wrap" class="panel">
     <div id="throttle-label">THROTTLE <span id="thr-pct">65</span>%</div>
     <div id="throttle-track"><div id="throttle-bar"></div></div>
   </div>
   <div id="stall">STALL</div>
+  <div id="gearwarn">GEAR!</div>
   <div id="msg"></div>
   <div id="help" class="panel">
     <kbd>S</kbd> pull up &nbsp; <kbd>W</kbd> nose down &nbsp; <kbd>A</kbd>/<kbd>D</kbd> roll &nbsp; <kbd>Q</kbd>/<kbd>E</kbd> rudder<br>
-    <kbd>X</kbd>/<kbd>Z</kbd> throttle &nbsp; <kbd>R</kbd> reset &nbsp; <kbd>I</kbd> invert &nbsp; <kbd>M</kbd> mute<br>
-    mouse drag look &nbsp; wheel zoom &nbsp; gamepad: stick + triggers
+    <kbd>X</kbd>/<kbd>Z</kbd> throttle &nbsp; <kbd>G</kbd> gear &nbsp; <kbd>Space</kbd> brake &nbsp; <kbd>T</kbd> runway start<br>
+    <kbd>R</kbd> reset &nbsp; <kbd>I</kbd> invert &nbsp; <kbd>M</kbd> mute &nbsp; mouse drag look &nbsp; wheel zoom &nbsp; gamepad
   </div>
   <div id="flash"></div>
 </div>

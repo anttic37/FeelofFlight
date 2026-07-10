@@ -1,44 +1,118 @@
 import * as THREE from 'three';
 
-// Wingtip vortex ribbons. Additive lines that fade along their length;
-// intensity comes from G-load / near-stall AoA, so hard pulls draw the air.
+// Wingtip vortex ribbons: camera-facing tapered triangle strips, additive.
+// Intensity comes from G-load / near-stall AoA, so hard pulls draw the air.
+// The vertex shader expands each history point ±width/2 along
+// cross(viewDir, segDir) using the built-in cameraPosition uniform; segment
+// directions are computed CPU-side into a 'dir' attribute every frame.
 
 const N = 70;
 
+const VERT = `
+attribute float side;
+attribute float age;
+attribute float intensity;
+attribute vec3 dir;
+varying float vAlpha;
+void main() {
+  vec3 wp = position;
+  vec3 perp = cross(cameraPosition - wp, dir);
+  float pl = length(perp);
+  perp = pl > 1e-4 ? perp / pl : vec3(0.0, 1.0, 0.0);
+  wp += perp * (side * 0.5 * mix(0.28, 0.04, age));
+  vAlpha = intensity * pow(1.0 - age, 1.5);
+  gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
+}`;
+
+const FRAG = `
+varying float vAlpha;
+void main() {
+  gl_FragColor = vec4(vec3(0.72, 0.93, 1.0), vAlpha * 0.85);
+}`;
+
+let ribbonMat = null;
+function getRibbonMat() {
+  if (!ribbonMat) {
+    ribbonMat = new THREE.ShaderMaterial({
+      vertexShader: VERT, fragmentShader: FRAG,
+      transparent: true, depthWrite: false,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide, // strip winding flips as the plane maneuvers
+    });
+  }
+  return ribbonMat;
+}
+
 class Ribbon {
   constructor(scene) {
-    this.positions = new Float32Array(N * 3);
-    this.intensity = new Float32Array(N);
+    this.centers = new Float32Array(N * 3); // world-space history, newest first
+    this.intens = new Float32Array(N);
+    const V = N * 2;
     const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(this.positions, 3));
-    this.colors = new Float32Array(N * 3);
-    geo.setAttribute('color', new THREE.BufferAttribute(this.colors, 3));
-    this.line = new THREE.Line(geo, new THREE.LineBasicMaterial({
-      vertexColors: true, transparent: true, opacity: 0.8,
-      blending: THREE.AdditiveBlending, depthWrite: false,
-    }));
-    this.line.frustumCulled = false;
-    scene.add(this.line);
+    this.posA = new THREE.BufferAttribute(new Float32Array(V * 3), 3);
+    this.dirA = new THREE.BufferAttribute(new Float32Array(V * 3), 3);
+    this.intA = new THREE.BufferAttribute(new Float32Array(V), 1);
+    const side = new Float32Array(V);
+    const age = new Float32Array(V);
+    for (let i = 0; i < N; i++) {
+      side[i * 2] = 1;
+      side[i * 2 + 1] = -1;
+      age[i * 2] = age[i * 2 + 1] = i / (N - 1);
+    }
+    const idx = new Uint16Array((N - 1) * 6);
+    for (let i = 0, k = 0; i < N - 1; i++) {
+      const a = i * 2;
+      idx[k++] = a; idx[k++] = a + 1; idx[k++] = a + 2;
+      idx[k++] = a + 1; idx[k++] = a + 3; idx[k++] = a + 2;
+    }
+    geo.setIndex(new THREE.BufferAttribute(idx, 1));
+    geo.setAttribute('position', this.posA);
+    geo.setAttribute('dir', this.dirA);
+    geo.setAttribute('intensity', this.intA);
+    geo.setAttribute('side', new THREE.BufferAttribute(side, 1));
+    geo.setAttribute('age', new THREE.BufferAttribute(age, 1));
+    this.mesh = new THREE.Mesh(geo, getRibbonMat());
+    this.mesh.frustumCulled = false; // verts are world-space, bounds never updated
+    this.mesh.renderOrder = 4;
+    scene.add(this.mesh);
   }
 
   reset(p) {
     for (let i = 0; i < N; i++) {
-      this.positions.set([p.x, p.y, p.z], i * 3);
-      this.intensity[i] = 0;
+      const ci = i * 3;
+      this.centers[ci] = p.x;
+      this.centers[ci + 1] = p.y;
+      this.centers[ci + 2] = p.z;
+      this.intens[i] = 0;
     }
+    this.push(p, 0);
   }
 
   push(p, val) {
-    this.positions.copyWithin(3, 0, (N - 1) * 3);
-    this.positions.set([p.x, p.y, p.z], 0);
-    this.intensity.copyWithin(1, 0, N - 1);
-    this.intensity[0] = val;
+    const c = this.centers, w = this.intens;
+    c.copyWithin(3, 0, (N - 1) * 3);
+    c[0] = p.x; c[1] = p.y; c[2] = p.z;
+    w.copyWithin(1, 0, N - 1);
+    w[0] = val;
+    const pos = this.posA.array, dir = this.dirA.array, inten = this.intA.array;
+    let dx = 0, dy = 0, dz = 1; // carried into degenerate (stationary) segments
     for (let i = 0; i < N; i++) {
-      const v = this.intensity[i] * (1 - i / N) * 0.85;
-      this.colors.set([v, v, v], i * 3);
+      const ci = i * 3, vi = i * 6;
+      const j = i < N - 1 ? ci + 3 : ci;
+      const ex = c[ci] - c[j], ey = c[ci + 1] - c[j + 1], ez = c[ci + 2] - c[j + 2];
+      const len = Math.sqrt(ex * ex + ey * ey + ez * ez);
+      if (len > 1e-5) { dx = ex / len; dy = ey / len; dz = ez / len; }
+      pos[vi] = pos[vi + 3] = c[ci];
+      pos[vi + 1] = pos[vi + 4] = c[ci + 1];
+      pos[vi + 2] = pos[vi + 5] = c[ci + 2];
+      dir[vi] = dir[vi + 3] = dx;
+      dir[vi + 1] = dir[vi + 4] = dy;
+      dir[vi + 2] = dir[vi + 5] = dz;
+      inten[i * 2] = inten[i * 2 + 1] = w[i];
     }
-    this.line.geometry.attributes.position.needsUpdate = true;
-    this.line.geometry.attributes.color.needsUpdate = true;
+    this.posA.needsUpdate = true;
+    this.dirA.needsUpdate = true;
+    this.intA.needsUpdate = true;
   }
 }
 
