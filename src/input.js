@@ -6,6 +6,7 @@ export class Input {
     this.keys = new Set();
     this.pitch = 0; this.roll = 0; this.yaw = 0;          // targets [-1, 1]
     this.pitchSm = 0; this.rollSm = 0; this.yawSm = 0;     // smoothed (drives surfaces + physics)
+    this.wingFlexSm = 0;                                   // G-load wing bend, written by main from physics
     this.throttle = 0.65;
     this.invertY = false;
     this.brake = false;

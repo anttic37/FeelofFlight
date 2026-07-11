@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createWorld, heightAt, surfaceAt } from './world.js';
 import { RUNWAYS } from './runways.js';
-import { buildPlane, updatePlaneVisual } from './crimson-kestrel.js'; // KX-1; original model lives on in plane.js
+import { buildPlane, updatePlaneVisual } from './crimson-kestrel.js'; // KX-1 with load-flexing wings
 import { FlightModel } from './physics.js';
 import { ChaseCam } from './camera.js';
 import { WingTrails } from './trails.js';
@@ -38,6 +38,12 @@ function syncPlaneToPhysics() {
   plane.group.position.copy(phys.pos);
   plane.group.quaternion.copy(phys.quat);
   plane.group.updateMatrixWorld(true);
+}
+
+// wings bend with lift load: 1 g rest, ~3.5 g = full +8° bow, pushovers droop
+function updateWingFlex(dt) {
+  const target = Math.max(-1, Math.min(1, (phys.gLoad - 1) / 2.5));
+  input.wingFlexSm += (target - input.wingFlexSm) * Math.min(1, dt * 5);
 }
 
 function reset(message) {
@@ -87,6 +93,7 @@ window.__ff = {
     const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake };
     if (!phys.crashed) phys.update(dt, controls);
     syncPlaneToPhysics();
+    updateWingFlex(dt);
     updatePlaneVisual(plane, input, phys, dt);
     chase.update(dt, phys);
     trails.update(dt, phys);
@@ -132,6 +139,7 @@ renderer.setAnimationLoop(() => {
 
   sound.setBrake(input.brake);
   syncPlaneToPhysics();
+  updateWingFlex(dt);
   updatePlaneVisual(plane, input, phys, dt);
   chase.update(dt, phys);
   trails.update(dt, phys);

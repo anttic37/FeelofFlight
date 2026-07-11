@@ -34,6 +34,17 @@ function addMesh(parent, geometry, material, position = [0, 0, 0], name = '') {
   return mesh;
 }
 
+function taperedBoxGeometry(width, height, depth, topScale = 0.72) {
+  const geometry = new THREE.BoxGeometry(width, height, depth);
+  const position = geometry.getAttribute('position');
+  for (let i = 0; i < position.count; i++) {
+    if (position.getY(i) > 0) position.setX(i, position.getX(i) * topScale);
+  }
+  position.needsUpdate = true;
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 function loftGeometry(stations, radialSegments = 20) {
   const positions = [];
   const indices = [];
@@ -101,20 +112,45 @@ const AIRFOIL = [
   [0.045, -0.17],
 ];
 
+// Fixed wing skin stops just ahead of the control-surface hinge. The closing
+// pair forms a real rear spar, so moving surfaces never overlap the base wing.
+const FIXED_AIRFOIL = [
+  [0.000, 0.000],
+  [0.045, 0.48],
+  [0.155, 0.88],
+  [0.350, 1.00],
+  [0.610, 0.70],
+  [0.690, 0.52],
+  [0.690, -0.27],
+  [0.610, -0.31],
+  [0.350, -0.40],
+  [0.155, -0.34],
+  [0.045, -0.17],
+];
+
 function wingPoint(spec, sign, spanT, chordT, height = 0) {
   const rootX = spec.rootX;
   const tipX = spec.tipX;
   const unsignedX = THREE.MathUtils.lerp(rootX, tipX, spanT);
   const lead = THREE.MathUtils.lerp(spec.rootLead, spec.tipLead, spanT);
   const chord = THREE.MathUtils.lerp(spec.rootChord, spec.tipChord, spanT);
-  const y = spec.yRoot + (unsignedX - rootX) * spec.dihedral + height;
+  const localZ = chord * chordT;
+  const washout = THREE.MathUtils.lerp(0, spec.washout ?? 0, spanT);
+  const y = spec.yRoot + (unsignedX - rootX) * spec.dihedral + washout * localZ + height;
   return new THREE.Vector3(sign * unsignedX, y, lead + chord * chordT);
+}
+
+function wingSurfacePoint(spec, sign, spanT, chordT) {
+  const thickness = THREE.MathUtils.lerp(spec.rootThickness, spec.tipThickness, spanT);
+  const camberOffset = (1 - chordT) * thickness * 0.50;
+  return wingPoint(spec, sign, spanT, chordT, camberOffset);
 }
 
 function wingGeometry(spec, sign, spanSegments = 7) {
   const positions = [];
   const indices = [];
-  const sectionSize = AIRFOIL.length;
+  const profile = spec.profile ?? AIRFOIL;
+  const sectionSize = profile.length;
 
   for (let span = 0; span <= spanSegments; span++) {
     const t = span / spanSegments;
@@ -125,7 +161,7 @@ function wingGeometry(spec, sign, spanSegments = 7) {
     const washout = THREE.MathUtils.lerp(0, spec.washout ?? -0.018, t);
     const centerY = spec.yRoot + (unsignedX - spec.rootX) * spec.dihedral;
 
-    for (const [u, v] of AIRFOIL) {
+    for (const [u, v] of profile) {
       const localZ = chord * u;
       positions.push(
         sign * unsignedX,
@@ -142,7 +178,7 @@ function wingGeometry(spec, sign, spanSegments = 7) {
       const b = span * sectionSize + next;
       const c = a + sectionSize;
       const d = b + sectionSize;
-      indices.push(a, c, b, b, c, d);
+      indices.push(a, b, c, b, d, c);
     }
   }
 
@@ -174,9 +210,15 @@ function reverseWinding(geometry) {
 }
 
 function prismGeometry(corners, thickness = 0.07) {
+  const thicknesses = Array.isArray(thickness)
+    ? thickness
+    : corners.map(() => thickness);
   const positions = [];
-  for (const yOffset of [-thickness / 2, thickness / 2]) {
-    for (const point of corners) positions.push(point.x, point.y + yOffset, point.z);
+  for (const side of [-0.5, 0.5]) {
+    for (let i = 0; i < corners.length; i++) {
+      const point = corners[i];
+      positions.push(point.x, point.y + side * thicknesses[i], point.z);
+    }
   }
   const indices = [
     0, 2, 1, 0, 3, 2,
@@ -189,28 +231,48 @@ function prismGeometry(corners, thickness = 0.07) {
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setIndex(indices);
-  geometry.computeVertexNormals();
-  return geometry;
+  reverseWinding(geometry);
+  const faceted = geometry.toNonIndexed();
+  faceted.computeVertexNormals();
+  return faceted;
 }
 
 function makeWingSurface(parent, spec, sign, spanStart, spanEnd, hingeFraction, material, name) {
-  const hingeA = wingPoint(spec, sign, spanStart, hingeFraction);
-  const hingeB = wingPoint(spec, sign, spanEnd, hingeFraction);
-  const trailB = wingPoint(spec, sign, spanEnd, 0.992);
-  const trailA = wingPoint(spec, sign, spanStart, 0.992);
+  const hingeA = wingSurfacePoint(spec, sign, spanStart, hingeFraction);
+  const hingeB = wingSurfacePoint(spec, sign, spanEnd, hingeFraction);
+  const trailB = wingSurfacePoint(spec, sign, spanEnd, 0.992);
+  const trailA = wingSurfacePoint(spec, sign, spanStart, 0.992);
   const pivot = hingeA.clone().add(hingeB).multiplyScalar(0.5);
-  const corners = [hingeA, hingeB, trailB, trailA].map(point => point.clone().sub(pivot));
-  const group = new THREE.Group();
-  group.position.copy(pivot);
-  group.name = name;
-  const geometry = prismGeometry(corners, 0.075);
-  if (sign < 0) {
-    reverseWinding(geometry);
-    geometry.computeVertexNormals();
-  }
-  addMesh(group, geometry, material, [0, 0, 0], `${name} mesh`);
-  parent.add(group);
-  return group;
+  const hingeAxis = hingeB.clone().sub(hingeA).normalize();
+  const trailingAxis = trailA.clone().add(trailB).multiplyScalar(0.5).sub(pivot);
+  trailingAxis.addScaledVector(hingeAxis, -trailingAxis.dot(hingeAxis)).normalize();
+  const normalAxis = trailingAxis.clone().cross(hingeAxis).normalize();
+  const basis = new THREE.Matrix4().makeBasis(hingeAxis, normalAxis, trailingAxis);
+  const alignment = new THREE.Quaternion().setFromRotationMatrix(basis);
+  const inverseAlignment = alignment.clone().invert();
+  const corners = [hingeA, hingeB, trailB, trailA].map(point => (
+    point.clone().sub(pivot).applyQuaternion(inverseAlignment)
+  ));
+  const hingeThicknessA = THREE.MathUtils.lerp(spec.rootThickness, spec.tipThickness, spanStart) * 0.79;
+  const hingeThicknessB = THREE.MathUtils.lerp(spec.rootThickness, spec.tipThickness, spanEnd) * 0.79;
+
+  const mount = new THREE.Group();
+  mount.position.copy(pivot);
+  mount.quaternion.copy(alignment);
+  mount.name = `${name} mount`;
+
+  const hinge = new THREE.Group();
+  hinge.name = name;
+  addMesh(
+    hinge,
+    prismGeometry(corners, [hingeThicknessA, hingeThicknessB, 0.012, 0.012]),
+    material,
+    [0, 0, 0],
+    `${name} mesh`,
+  );
+  mount.add(hinge);
+  parent.add(mount);
+  return hinge;
 }
 
 function profileGeometry(pointsYZ, halfWidth) {
@@ -302,7 +364,7 @@ function canopyGeometry() {
   return { geometry, stations, arcSegments };
 }
 
-function propBladeGeometry(sections) {
+function propBladeGeometry(sections, { capStart = true, capEnd = true } = {}) {
   const positions = [];
   const indices = [];
   for (const section of sections) {
@@ -329,9 +391,9 @@ function propBladeGeometry(sections) {
       indices.push(base + i, nextBase + i, base + next, base + next, nextBase + i, nextBase + next);
     }
   }
-  indices.push(0, 2, 1, 0, 3, 2);
+  if (capStart) indices.push(0, 1, 2, 0, 2, 3);
   const end = (sections.length - 1) * 4;
-  indices.push(end, end + 1, end + 2, end, end + 2, end + 3);
+  if (capEnd) indices.push(end, end + 2, end + 1, end, end + 3, end + 2);
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setIndex(indices);
@@ -371,6 +433,7 @@ function addRoundel(parent, x, y, z, sign, materials) {
   middle.rotation.z = sign * 0.058;
   const center = addMesh(parent, new THREE.CylinderGeometry(0.105, 0.105, 0.024, 24), materials.navy, [x, y + 0.028, z], 'Wing roundel center');
   center.rotation.z = sign * 0.058;
+  return [outer, middle, center];
 }
 
 export function buildPlane() {
@@ -423,9 +486,13 @@ export function buildPlane() {
   addMesh(group, loftGeometry(fuselageStations), materials.crimson, [0, 0, 0], 'Fuselage');
 
   // Cream belly fairing and raised coach lines soften the large painted body.
-  const belly = addMesh(group, new THREE.CapsuleGeometry(0.29, 2.85, 8, 16), materials.cream, [0, -0.46, -0.72], 'Belly fairing');
-  belly.rotation.x = Math.PI / 2;
-  belly.scale.set(1.0, 1.0, 0.72);
+  addMesh(group, loftGeometry([
+    { z: -3.02, width: 0.12, height: 0.045, y: -0.54, exponent: 2.0 },
+    { z: -2.45, width: 0.25, height: 0.085, y: -0.60, exponent: 2.2 },
+    { z: -1.55, width: 0.30, height: 0.10, y: -0.61, exponent: 2.3 },
+    { z: -0.58, width: 0.27, height: 0.085, y: -0.53, exponent: 2.2 },
+    { z: 0.42, width: 0.12, height: 0.04, y: -0.39, exponent: 2.0 },
+  ], 14), materials.cream, [0, 0, 0], 'Belly fairing');
   for (const sign of [-1, 1]) {
     tube(group, [
       new THREE.Vector3(sign * 0.575, 0.00, -2.75),
@@ -437,23 +504,24 @@ export function buildPlane() {
   }
 
   // Open annular cowl, inner duct, panel rings and subtle fasteners.
-  const cowl = addMesh(group, new THREE.CylinderGeometry(0.54, 0.59, 0.46, 28, 2, true), materials.crimsonDark, [0, -0.015, -3.65], 'Engine cowling');
+  // Broad at the fuselage and narrower at the intake: the cowl tapers forward.
+  const cowl = addMesh(group, new THREE.CylinderGeometry(0.59, 0.52, 0.46, 28, 2, true), materials.crimsonDark, [0, -0.015, -3.65], 'Engine cowling');
   cowl.rotation.x = Math.PI / 2;
   const cowlLip = addMesh(group, new THREE.TorusGeometry(0.515, 0.052, 10, 32), materials.darkMetal, [0, -0.015, -3.90], 'Cowl lip');
   cowlLip.scale.y = 0.97;
-  const cowlIntake = addMesh(group, new THREE.CircleGeometry(0.455, 30), materials.cockpit, [0, -0.015, -3.915], 'Cowl intake');
+  const cowlIntake = addMesh(group, new THREE.RingGeometry(0.245, 0.455, 36), materials.cockpit, [0, -0.015, -3.78], 'Recessed cowl intake');
   cowlIntake.rotation.y = Math.PI;
-  const innerHub = addMesh(group, new THREE.CylinderGeometry(0.18, 0.24, 0.30, 20), materials.darkMetal, [0, -0.015, -3.93], 'Propeller gearbox');
+  const innerHub = addMesh(group, new THREE.CylinderGeometry(0.24, 0.18, 0.30, 20), materials.darkMetal, [0, -0.015, -3.84], 'Propeller gearbox');
   innerHub.rotation.x = Math.PI / 2;
-  for (const z of [-3.43, -3.72]) {
-    const seam = addMesh(group, new THREE.TorusGeometry(0.574, 0.012, 5, 28), materials.seam, [0, 0, z], 'Cowling panel seam');
+  for (const [z, radius] of [[-3.43, 0.586], [-3.72, 0.544]]) {
+    const seam = addMesh(group, new THREE.TorusGeometry(radius, 0.012, 5, 28), materials.seam, [0, -0.015, z], 'Cowling panel seam');
     seam.scale.y = 1.02;
   }
 
   const fastenerGeo = new THREE.SphereGeometry(0.021, 6, 4);
   for (let i = 0; i < 12; i++) {
     const angle = (i / 12) * Math.PI * 2;
-    addMesh(group, fastenerGeo, materials.steel, [Math.cos(angle) * 0.574, Math.sin(angle) * 0.574, -3.69], 'Cowl fastener');
+    addMesh(group, fastenerGeo, materials.steel, [Math.cos(angle) * 0.560, -0.015 + Math.sin(angle) * 0.560, -3.69], 'Cowl fastener');
   }
 
   // Intake duct and paired aerodynamic gun/rocker covers.
@@ -485,19 +553,23 @@ export function buildPlane() {
 
   // Cockpit interior: tub, seat, headrest, panel, gauges and control stick.
   addMesh(group, new THREE.BoxGeometry(0.90, 0.22, 1.72), materials.cockpit, [0, 0.44, -0.33], 'Cockpit tub');
-  const seatBack = addMesh(group, new THREE.BoxGeometry(0.62, 0.72, 0.12), materials.leather, [0, 0.80, 0.20], 'Pilot seat');
-  seatBack.rotation.x = -0.14;
+  const seatBack = addMesh(group, taperedBoxGeometry(0.50, 0.50, 0.10, 0.72), materials.leather, [0, 0.72, 0.24], 'Pilot seat');
+  seatBack.rotation.x = 0.16;
   addMesh(group, new THREE.BoxGeometry(0.60, 0.12, 0.52), materials.leather, [0, 0.51, -0.08], 'Seat cushion');
-  const headrest = addMesh(group, new THREE.CapsuleGeometry(0.13, 0.17, 6, 10), materials.leather, [0, 1.04, 0.30], 'Headrest');
+  const headrest = addMesh(group, new THREE.CapsuleGeometry(0.105, 0.13, 6, 10), materials.leather, [0, 0.87, 0.34], 'Headrest');
   headrest.scale.z = 0.82;
-  const panel = addMesh(group, new THREE.BoxGeometry(0.88, 0.48, 0.075), materials.cockpit, [0, 0.80, -1.09], 'Instrument panel');
-  panel.rotation.x = -0.10;
-  const gaugeGeo = new THREE.CylinderGeometry(0.075, 0.075, 0.018, 18);
-  for (const [x, y] of [[-0.25, 0.91], [0, 0.94], [0.25, 0.91], [-0.14, 0.72], [0.14, 0.72]]) {
-    const gauge = addMesh(group, gaugeGeo, materials.steel, [x, y, -1.045], 'Instrument bezel');
+  const instrumentPanel = new THREE.Group();
+  instrumentPanel.position.set(0, 0.75, -1.04);
+  instrumentPanel.rotation.x = -0.10;
+  instrumentPanel.name = 'Instrument panel assembly';
+  addMesh(instrumentPanel, taperedBoxGeometry(0.74, 0.36, 0.060, 0.73), materials.cockpit, [0, 0, 0], 'Instrument panel');
+  const gaugeGeo = new THREE.CylinderGeometry(0.060, 0.060, 0.016, 18);
+  for (const [x, y] of [[-0.21, 0.08], [0, 0.10], [0.21, 0.08], [-0.12, -0.07], [0.12, -0.07]]) {
+    const gauge = addMesh(instrumentPanel, gaugeGeo, materials.steel, [x, y, 0.047], 'Instrument bezel');
     gauge.rotation.x = Math.PI / 2;
-    addMesh(group, new THREE.CircleGeometry(0.057, 16), materials.cockpit, [x, y, -1.033], 'Instrument face');
+    addMesh(instrumentPanel, new THREE.CircleGeometry(0.045, 16), materials.cockpit, [x, y, 0.058], 'Instrument face');
   }
+  group.add(instrumentPanel);
   cylinderBetween(group, new THREE.Vector3(0, 0.53, -0.44), new THREE.Vector3(0.08, 0.94, -0.55), 0.025, materials.darkMetal, 8, 'Control stick');
   addMesh(group, new THREE.TorusGeometry(0.075, 0.018, 6, 16), materials.leather, [0.08, 0.96, -0.55], 'Control grip').rotation.x = Math.PI / 2;
 
@@ -537,22 +609,99 @@ export function buildPlane() {
     yRoot: -0.20,
     dihedral: 0.060,
     washout: -0.014,
+    profile: FIXED_AIRFOIL,
   };
   const tipObjects = {};
   const ailerons = {};
+  const wingAssemblies = {};
+  const wingParents = {};
+  const wingJoint = { x: 0.62, y: -0.060, z: -0.31 };
+
+  // Each complete wing lives in a root-pivot assembly. The counter-offset
+  // child lets all existing aircraft-space coordinates remain exact while the
+  // parent rotates around a fore-aft hinge line at the wing root.
   for (const sign of [-1, 1]) {
-    addMesh(group, wingGeometry(wingSpec, sign), materials.cream, [0, 0, 0], sign < 0 ? 'Left wing' : 'Right wing');
+    const pivot = new THREE.Vector3(sign * wingJoint.x, wingJoint.y, wingJoint.z);
+    const flexRoot = new THREE.Group();
+    flexRoot.position.copy(pivot);
+    flexRoot.name = sign < 0 ? 'Left wing flex joint' : 'Right wing flex joint';
+    const content = new THREE.Group();
+    content.position.copy(pivot).multiplyScalar(-1);
+    content.name = sign < 0 ? 'Left complete wing' : 'Right complete wing';
+    flexRoot.add(content);
+    group.add(flexRoot);
+    wingAssemblies[sign] = flexRoot;
+    wingParents[sign] = content;
+  }
+
+  for (const sign of [-1, 1]) {
+    const wingParent = wingParents[sign];
+    addMesh(wingParent, wingGeometry(wingSpec, sign), materials.cream, [0, 0, 0], sign < 0 ? 'Left wing' : 'Right wing');
     const fillet = addMesh(group, new THREE.SphereGeometry(1, 20, 10), materials.crimson, [sign * 0.57, -0.16, -0.24], 'Wing root fillet');
-    fillet.scale.set(0.39, 0.105, 0.74);
+    fillet.scale.set(0.36, 0.095, 0.64);
     fillet.rotation.z = sign * 0.045;
 
-    makeWingSurface(group, wingSpec, sign, 0.08, 0.46, 0.73, materials.crimsonDark, sign < 0 ? 'Left flap' : 'Right flap');
-    const aileron = makeWingSurface(group, wingSpec, sign, 0.47, 0.92, 0.70, materials.crimson, sign < 0 ? 'Left aileron' : 'Right aileron');
+    makeWingSurface(wingParent, wingSpec, sign, 0.00, 0.075, 0.705, materials.cream, sign < 0 ? 'Left root trailing panel' : 'Right root trailing panel');
+    makeWingSurface(wingParent, wingSpec, sign, 0.08, 0.46, 0.705, materials.crimsonDark, sign < 0 ? 'Left flap' : 'Right flap');
+    const aileron = makeWingSurface(wingParent, wingSpec, sign, 0.47, 0.92, 0.705, materials.crimson, sign < 0 ? 'Left aileron' : 'Right aileron');
+    makeWingSurface(wingParent, wingSpec, sign, 0.925, 1.00, 0.705, materials.cream, sign < 0 ? 'Left tip trailing panel' : 'Right tip trailing panel');
     ailerons[sign] = aileron;
 
+    // Coaxial exposed hinge along the upper root spar. Alternating fixed and
+    // moving knuckles, collars and mounting ears make the articulation legible.
+    const axle = addMesh(
+      group,
+      new THREE.CylinderGeometry(0.023, 0.023, 1.56, 12),
+      materials.darkMetal,
+      [sign * wingJoint.x, wingJoint.y, -0.55],
+      sign < 0 ? 'Left wing hinge axle' : 'Right wing hinge axle',
+    );
+    axle.rotation.x = Math.PI / 2;
+    const sleeveData = [
+      { z: -1.18, parent: group, material: materials.darkMetal },
+      { z: -0.54, parent: wingParent, material: materials.steel },
+      { z: 0.04, parent: group, material: materials.darkMetal },
+    ];
+    for (const sleeve of sleeveData) {
+      const barrel = addMesh(
+        sleeve.parent,
+        new THREE.CylinderGeometry(0.060, 0.060, 0.30, 16),
+        sleeve.material,
+        [sign * wingJoint.x, wingJoint.y, sleeve.z],
+        sign < 0 ? 'Left wing hinge sleeve' : 'Right wing hinge sleeve',
+      );
+      barrel.rotation.x = Math.PI / 2;
+      for (const endOffset of [-0.151, 0.151]) {
+        addMesh(
+          sleeve.parent,
+          new THREE.TorusGeometry(0.063, 0.008, 5, 16),
+          materials.steel,
+          [sign * wingJoint.x, wingJoint.y, sleeve.z + endOffset],
+          'Wing hinge retaining collar',
+        );
+      }
+    }
+    for (const earZ of [-1.18, 0.04]) {
+      addMesh(
+        group,
+        new THREE.BoxGeometry(0.16, 0.06, 0.18),
+        materials.crimsonDark,
+        [sign * 0.54, -0.055, earZ],
+        sign < 0 ? 'Left fixed hinge ear' : 'Right fixed hinge ear',
+      );
+    }
+    addMesh(
+      wingParent,
+      new THREE.BoxGeometry(0.20, 0.06, 0.18),
+      materials.crimson,
+      [sign * 0.72, -0.055, -0.54],
+      sign < 0 ? 'Left moving hinge ear' : 'Right moving hinge ear',
+    );
+
     // Outer span color band and inset navigation lens.
-    const bandPoint = wingPoint(wingSpec, sign, 0.88, 0.46, 0.075);
-    const band = addMesh(group, new THREE.BoxGeometry(0.42, 0.026, 0.92), materials.crimson, [bandPoint.x, bandPoint.y, bandPoint.z], 'Wing identification band');
+    const bandPoint = wingSurfacePoint(wingSpec, sign, 0.88, 0.34);
+    bandPoint.y += 0.012;
+    const band = addMesh(wingParent, new THREE.BoxGeometry(0.34, 0.022, 0.46), materials.crimson, [bandPoint.x, bandPoint.y, bandPoint.z], 'Wing identification band');
     band.rotation.z = sign * 0.060;
     const navMaterial = standard(sign < 0 ? 0xff352f : 0x35ec72, {
       emissive: sign < 0 ? 0xff1f18 : 0x18df58,
@@ -560,89 +709,76 @@ export function buildPlane() {
       roughness: 0.15,
     });
     const tipPoint = wingPoint(wingSpec, sign, 1, 0.34, 0.015);
-    addMesh(group, new THREE.SphereGeometry(0.064, 12, 8), navMaterial, [tipPoint.x, tipPoint.y, tipPoint.z], 'Navigation light').scale.set(1.12, 0.70, 1.38);
+    addMesh(wingParent, new THREE.SphereGeometry(0.064, 12, 8), navMaterial, [tipPoint.x, tipPoint.y, tipPoint.z], 'Navigation light').scale.set(1.12, 0.70, 1.38);
     const tip = new THREE.Object3D();
     tip.position.copy(tipPoint);
-    group.add(tip);
+    wingParent.add(tip);
     tipObjects[sign] = tip;
 
     const roundelPoint = wingPoint(wingSpec, sign, 0.58, 0.43, 0.125);
-    addRoundel(group, roundelPoint.x, roundelPoint.y, roundelPoint.z, sign, materials);
+    addRoundel(wingParent, roundelPoint.x, roundelPoint.y, roundelPoint.z, sign, materials);
   }
 
-  // Wing panel seams are one light-weight line object rather than many meshes.
-  const seamPositions = [];
+  // Per-side seam objects flex with their complete wing assemblies.
   for (const sign of [-1, 1]) {
+    const seamPositions = [];
     for (const spanT of [0.20, 0.38, 0.65, 0.82]) {
-      const start = wingPoint(wingSpec, sign, spanT, 0.09, 0.105);
-      const end = wingPoint(wingSpec, sign, spanT, 0.69, 0.055);
+      const start = wingSurfacePoint(wingSpec, sign, spanT, 0.09);
+      const end = wingSurfacePoint(wingSpec, sign, spanT, 0.69);
+      start.y += 0.006;
+      end.y += 0.006;
       seamPositions.push(start.x, start.y, start.z, end.x, end.y, end.z);
     }
+    const seamGeometry = new THREE.BufferGeometry();
+    seamGeometry.setAttribute('position', new THREE.Float32BufferAttribute(seamPositions, 3));
+    const wingSeams = new THREE.LineSegments(seamGeometry, new THREE.LineBasicMaterial({ color: 0x776d62, transparent: true, opacity: 0.52 }));
+    wingSeams.name = sign < 0 ? 'Left wing panel seams' : 'Right wing panel seams';
+    wingParents[sign].add(wingSeams);
   }
-  const seamGeometry = new THREE.BufferGeometry();
-  seamGeometry.setAttribute('position', new THREE.Float32BufferAttribute(seamPositions, 3));
-  const wingSeams = new THREE.LineSegments(seamGeometry, new THREE.LineBasicMaterial({ color: 0x776d62, transparent: true, opacity: 0.52 }));
-  wingSeams.name = 'Wing panel seams';
-  group.add(wingSeams);
 
   // Pitot tube and a clear-covered landing lamp.
   const pitotRoot = wingPoint(wingSpec, -1, 0.73, 0.03, -0.02);
-  cylinderBetween(group, pitotRoot, pitotRoot.clone().add(new THREE.Vector3(0, 0, -0.62)), 0.018, materials.steel, 8, 'Pitot tube');
+  cylinderBetween(wingParents[-1], pitotRoot, pitotRoot.clone().add(new THREE.Vector3(0, 0, -0.62)), 0.018, materials.steel, 8, 'Pitot tube');
   const lampMaterial = standard(0xffffff, { emissive: 0xfff1cc, emissiveIntensity: 2.0, roughness: 0.1 });
   const lampPoint = wingPoint(wingSpec, -1, 0.33, 0.012, -0.01);
-  addMesh(group, new THREE.SphereGeometry(0.105, 14, 8), lampMaterial, [lampPoint.x, lampPoint.y, lampPoint.z], 'Landing light').scale.set(1.25, 0.58, 0.42);
+  addMesh(wingParents[-1], new THREE.SphereGeometry(0.105, 14, 8), lampMaterial, [lampPoint.x, lampPoint.y, lampPoint.z], 'Landing light').scale.set(1.25, 0.58, 0.42);
 
   // Thin airfoil tailplanes and two elevator panels on a single hinge group.
   const tailSpec = {
     rootX: 0.22,
     tipX: 2.05,
     rootLead: 2.18,
-    tipLead: 2.46,
+    tipLead: 2.621,
     rootChord: 1.35,
     tipChord: 0.72,
     rootThickness: 0.095,
     tipThickness: 0.045,
     yRoot: 0.38,
-    dihedral: 0.015,
+    dihedral: 0,
     washout: 0,
+    profile: FIXED_AIRFOIL,
   };
   for (const sign of [-1, 1]) {
     addMesh(group, wingGeometry(tailSpec, sign, 4), materials.cream, [0, 0, 0], sign < 0 ? 'Left stabilizer' : 'Right stabilizer');
   }
   const elevator = new THREE.Group();
-  elevator.position.set(0, 0.40, 3.08);
-  elevator.name = 'Elevator hinge';
-  for (const sign of [-1, 1]) {
-    const corners = [
-      wingPoint(tailSpec, sign, 0.06, 0.70),
-      wingPoint(tailSpec, sign, 0.94, 0.70),
-      wingPoint(tailSpec, sign, 0.94, 0.99),
-      wingPoint(tailSpec, sign, 0.06, 0.99),
-    ].map(point => point.sub(elevator.position));
-    const elevatorGeometry = prismGeometry(corners, 0.052);
-    if (sign < 0) {
-      reverseWinding(elevatorGeometry);
-      elevatorGeometry.computeVertexNormals();
-    }
-    addMesh(elevator, elevatorGeometry, materials.crimson, [0, 0, 0], 'Elevator panel');
-  }
+  elevator.name = 'Elevator controller';
   group.add(elevator);
+  const elevatorL = makeWingSurface(elevator, tailSpec, -1, 0.00, 1.00, 0.705, materials.crimson, 'Left elevator');
+  const elevatorR = makeWingSurface(elevator, tailSpec, 1, 0.00, 1.00, 0.705, materials.crimson, 'Right elevator');
 
   // Swept fin with a true separate rudder instead of intersecting slab geometry.
   addMesh(group, profileGeometry([
     [0.36, 2.08],
-    [0.94, 2.25],
-    [1.58, 2.43],
-    [2.13, 2.66],
-    [2.25, 2.79],
+    [2.25, 2.70],
     [2.20, 3.02],
-    [0.38, 3.22],
+    [0.38, 3.02],
   ], 0.095), materials.crimson, [0, 0, 0], 'Vertical stabilizer');
   const finInset = addMesh(group, profileGeometry([
     [0.94, 2.54],
     [1.24, 2.63],
-    [1.18, 3.08],
-    [0.84, 3.13],
+    [1.18, 2.95],
+    [0.84, 2.99],
   ], 0.101), materials.cream, [0, 0, 0], 'Fin identification flash');
   finInset.scale.y = 0.96;
   const rudder = new THREE.Group();
@@ -657,11 +793,17 @@ export function buildPlane() {
   addMesh(rudder, profileGeometry(rudderProfile, 0.075), materials.crimsonDark, [0, 0, 0], 'Rudder');
   group.add(rudder);
 
-  // Tail light, fin beacon, aerial mast and wire.
+  // The white tail lens sits in an aft-pointing fairing attached to the rudder,
+  // so it is visible at the actual tail and follows rudder movement.
+  const tailLightFairing = addMesh(rudder, new THREE.ConeGeometry(0.082, 0.18, 16), materials.crimsonDark, [0, 0.47, 0.57], 'Tail light fairing');
+  tailLightFairing.rotation.x = Math.PI / 2;
+  const tailLight = addMesh(rudder, new THREE.SphereGeometry(0.055, 12, 8), standard(0xffffff, { emissive: 0xffffff, emissiveIntensity: 1.8 }), [0, 0.47, 0.655], 'Tail light');
+  tailLight.scale.set(0.70, 0.78, 1.10);
+
+  // Integrated fin beacon, aerial mast and wire.
   const beaconMaterial = standard(0x7a1113, { emissive: 0xff2025, emissiveIntensity: 0.12, roughness: 0.18 });
-  addMesh(group, new THREE.CylinderGeometry(0.065, 0.075, 0.075, 10), materials.darkMetal, [0, 2.29, 2.76], 'Beacon mount');
-  const beacon = addMesh(group, new THREE.SphereGeometry(0.085, 12, 8), beaconMaterial, [0, 2.37, 2.76], 'Fin beacon');
-  addMesh(group, new THREE.SphereGeometry(0.072, 10, 7), standard(0xffffff, { emissive: 0xffffff, emissiveIntensity: 1.8 }), [0, 0.39, 3.61], 'Tail light');
+  const beacon = addMesh(group, new THREE.SphereGeometry(0.070, 12, 8), beaconMaterial, [0, 2.225, 2.76], 'Fin beacon');
+  beacon.scale.set(0.82, 0.65, 0.82);
   cylinderBetween(group, new THREE.Vector3(0, 0.67, 1.07), new THREE.Vector3(0, 1.16, 1.02), 0.019, materials.darkMetal, 8, 'Aerial mast');
   const aerialGeometry = new THREE.BufferGeometry().setFromPoints([
     new THREE.Vector3(0, 1.16, 1.02),
@@ -676,19 +818,20 @@ export function buildPlane() {
   const spinner = addMesh(propeller, new THREE.ConeGeometry(0.27, 0.58, 24, 4), materials.crimson, [0, 0, -0.28], 'Spinner');
   spinner.rotation.x = -Math.PI / 2;
   const blades = new THREE.Group();
-  blades.position.z = -0.075;
+  // Keep the pitched blade roots forward of the cowl lip while the spinner
+  // still overlaps and visually captures their inner ends.
+  blades.position.z = -0.055;
   blades.name = 'Propeller blades';
   const bladeGeometry = propBladeGeometry([
     { radius: 0.16, width: 0.23, thickness: 0.085, sweep: 0.00, twist: 0.58 },
     { radius: 0.42, width: 0.31, thickness: 0.072, sweep: 0.035, twist: 0.51 },
     { radius: 0.88, width: 0.28, thickness: 0.055, sweep: 0.08, twist: 0.38 },
-    { radius: 1.25, width: 0.20, thickness: 0.042, sweep: 0.14, twist: 0.27 },
-    { radius: 1.43, width: 0.11, thickness: 0.030, sweep: 0.17, twist: 0.22 },
-  ]);
+    { radius: 1.20, width: 0.21, thickness: 0.043, sweep: 0.13, twist: 0.29 },
+  ], { capEnd: false });
   const tipGeometry = propBladeGeometry([
     { radius: 1.20, width: 0.21, thickness: 0.043, sweep: 0.13, twist: 0.29 },
     { radius: 1.43, width: 0.11, thickness: 0.030, sweep: 0.17, twist: 0.22 },
-  ]);
+  ], { capStart: false });
   for (let i = 0; i < 3; i++) {
     const bladeHolder = new THREE.Group();
     bladeHolder.rotation.z = (i / 3) * Math.PI * 2;
@@ -701,7 +844,7 @@ export function buildPlane() {
     propeller,
     new THREE.CircleGeometry(1.50, 48),
     new THREE.MeshBasicMaterial({ map: propDiscTexture(), transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }),
-    [0, 0, -0.13],
+    [0, 0, -0.075],
     'Propeller blur',
   );
   propDisc.renderOrder = 3;
@@ -710,36 +853,38 @@ export function buildPlane() {
   // Retractable gear with wheel wells, oleo struts, forks, brake hubs and doors.
   const wheelWellMaterial = standard(0x20272c, { metalness: 0.28, roughness: 0.72 });
   for (const side of [-1, 1]) {
-    const well = addMesh(group, new THREE.CylinderGeometry(0.37, 0.37, 0.026, 24), wheelWellMaterial, [side * 1.52, -0.37, -0.61], 'Wheel well');
-    well.scale.set(0.70, 1, 1.35);
+    const well = addMesh(wingParents[side], new THREE.CylinderGeometry(0.37, 0.37, 0.026, 24), wheelWellMaterial, [side * 0.41, -0.31, -0.605], 'Wheel well');
+    well.scale.set(0.92, 1, 1.08);
+    const pivotSocket = addMesh(wingParents[side], new THREE.CylinderGeometry(0.15, 0.15, 0.030, 18), wheelWellMaterial, [side * 1.48, -0.215, -0.66], 'Gear pivot socket');
+    pivotSocket.scale.z = 1.25;
   }
 
   function buildGear(side) {
     const gear = new THREE.Group();
-    gear.position.set(side * 1.48, -0.32, -0.66);
+    gear.position.set(side * 1.48, -0.22, -0.66);
     gear.name = side < 0 ? 'Left landing gear' : 'Right landing gear';
-    const knee = new THREE.Vector3(side * 0.11, -0.63, 0.02);
-    const axle = new THREE.Vector3(side * 0.17, -0.96, 0.055);
+    const knee = new THREE.Vector3(side * 0.11, -0.69, 0.02);
+    const axle = new THREE.Vector3(side * 0.17, -1.06, 0.055);
     cylinderBetween(gear, new THREE.Vector3(0, 0, 0), knee, 0.064, materials.steel, 12, 'Main strut');
     cylinderBetween(gear, knee, axle, 0.052, materials.darkMetal, 12, 'Oleo piston');
-    cylinderBetween(gear, new THREE.Vector3(side * 0.04, -0.74, 0.03), new THREE.Vector3(side * 0.25, -0.94, 0.055), 0.030, materials.steel, 8, 'Wheel fork');
-    const door = addMesh(gear, new THREE.CapsuleGeometry(0.13, 0.48, 6, 12), materials.cream, [side * 0.13, -0.40, 0.02], 'Gear door');
+    cylinderBetween(gear, new THREE.Vector3(side * 0.04, -0.82, 0.03), new THREE.Vector3(side * 0.25, -1.04, 0.055), 0.030, materials.steel, 8, 'Wheel fork');
+    const door = addMesh(gear, new THREE.CapsuleGeometry(0.13, 0.54, 6, 12), materials.cream, [side * 0.13, -0.46, 0.02], 'Gear door');
     door.scale.set(0.42, 1.0, 1.18);
     door.rotation.z = -side * 0.075;
 
     const wheelSpin = new THREE.Group();
     wheelSpin.position.copy(axle);
     wheelSpin.name = 'Main wheel spin';
-    const tireMesh = addMesh(wheelSpin, new THREE.TorusGeometry(0.30, 0.105, 12, 28), materials.rubber, [0, 0, 0], 'Main tire');
+    const tireMesh = addMesh(wheelSpin, new THREE.TorusGeometry(0.25, 0.09, 12, 28), materials.rubber, [0, 0, 0], 'Main tire');
     tireMesh.rotation.y = Math.PI / 2;
-    const hub = addMesh(wheelSpin, new THREE.CylinderGeometry(0.135, 0.135, 0.19, 20), materials.crimsonDark, [0, 0, 0], 'Wheel hub');
+    const hub = addMesh(wheelSpin, new THREE.CylinderGeometry(0.125, 0.125, 0.17, 20), materials.crimsonDark, [0, 0, 0], 'Wheel hub');
     hub.rotation.z = Math.PI / 2;
-    const brake = addMesh(wheelSpin, new THREE.CylinderGeometry(0.105, 0.105, 0.196, 20), materials.steel, [0, 0, 0], 'Brake disc');
+    const brake = addMesh(wheelSpin, new THREE.CylinderGeometry(0.095, 0.095, 0.176, 20), materials.steel, [0, 0, 0], 'Brake disc');
     brake.rotation.z = Math.PI / 2;
-    const hubRim = addMesh(wheelSpin, new THREE.TorusGeometry(0.155, 0.014, 6, 18), materials.steel, [0, 0, 0], 'Hub rim');
+    const hubRim = addMesh(wheelSpin, new THREE.TorusGeometry(0.142, 0.012, 6, 18), materials.steel, [0, 0, 0], 'Hub rim');
     hubRim.rotation.y = Math.PI / 2;
     gear.add(wheelSpin);
-    group.add(gear);
+    wingParents[side].add(gear);
     return { gear, wheelSpin };
   }
 
@@ -779,9 +924,13 @@ export function buildPlane() {
     aileronL: ailerons[-1],
     aileronR: ailerons[1],
     elevator,
+    elevatorL,
+    elevatorR,
     rudder,
     tipL: tipObjects[-1],
     tipR: tipObjects[1],
+    wingFlexL: wingAssemblies[-1],
+    wingFlexR: wingAssemblies[1],
     gearL: leftGear.gear,
     gearR: rightGear.gear,
     tailWheel,
@@ -808,14 +957,26 @@ export function updatePlaneVisual(plane, input = {}, physics = compatibilityPhys
   const roll = input.rollSm ?? 0;
   const pitch = input.pitchSm ?? 0;
   const yaw = input.yawSm ?? 0;
-  const aileronAngle = roll * 0.46;
+  const wingFlex = THREE.MathUtils.clamp(input.wingFlexSm ?? 0, -1, 1);
+  const wingFlexAngle = wingFlex * THREE.MathUtils.degToRad(8);
+  plane.wingFlexL.rotation.z = -wingFlexAngle;
+  plane.wingFlexR.rotation.z = wingFlexAngle;
+  // mirrored hinge bases: one shared angle deflects the sides oppositely in
+  // world space; negated so roll-right drops the LEFT trailing edge
+  const aileronAngle = -roll * 0.46;
   plane.aileronL.rotation.x = aileronAngle;
-  plane.aileronR.rotation.x = -aileronAngle;
-  plane.elevator.rotation.x = -pitch * 0.46;
+  plane.aileronR.rotation.x = aileronAngle;
+  const elevatorAngle = -pitch * 0.46;
+  if (plane.elevatorL && plane.elevatorR) {
+    plane.elevatorL.rotation.x = -elevatorAngle;
+    plane.elevatorR.rotation.x = elevatorAngle;
+  } else {
+    plane.elevator.rotation.x = elevatorAngle;
+  }
   plane.rudder.rotation.y = yaw * 0.48;
 
   const gearTransit = THREE.MathUtils.clamp(physics.gearTransit ?? 1, 0, 1);
-  const fold = (1 - gearTransit) * 1.48;
+  const fold = (1 - gearTransit) * 1.72;
   plane.gearL.rotation.z = fold;
   plane.gearR.rotation.z = -fold;
 
