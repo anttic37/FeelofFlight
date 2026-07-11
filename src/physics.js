@@ -44,7 +44,7 @@ export class FlightModel {
     this.pitchStab = 9000;
     this.stallBreak = 38000;   // extra nose-down past the stall
     this.yawStab = 15000;
-    this.dihedral = 1200;
+    this.dihedral = 1200; // sideslip rolls the plane into the turn (kept at the regression-tested value)
     this.pitchDamp = 9000;
     this.yawDamp = 12000;
     this.rollDamp = 5200;
@@ -258,6 +258,14 @@ export class FlightModel {
         this.gLoad = lift / (this.mass * G);
         liftN = lift;
       }
+      // fuselage side force from sideslip: this is what curves the flight path
+      // under held rudder — without it the nose just crabs and the track stays
+      // straight, so rudder "turns a bit but doesn't keep turning". Gated by
+      // rudder input: ambient (wind-crab) sideslip adds NO side force, keeping
+      // hands-off glides exactly on the regression-tested baseline.
+      const bodyRight = t.v2.set(1, 0, 0).applyQuaternion(this.quat);
+      force.addScaledVector(bodyRight, -beta * q * this.wingArea * 0.75 * Math.abs(controls.yaw));
+
       // vertical turbulence gust (not while rolling on wheels)
       if (!this.grounded) force.y += fbm1(this.time * 0.45, 4) * 2200;
     } else {
