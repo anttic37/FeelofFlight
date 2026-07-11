@@ -91,10 +91,13 @@ export class ChaseCam {
     this.velC.addScaledVector(t.a, dt);
     this.pos.addScaledVector(this.velC, dt);
 
-    // look slightly ahead of the plane; when orbiting, center on the plane itself
+    // look slightly ahead of the plane; when orbiting, center on the plane itself.
+    // Deliberately loose aim: a slow spring (2.2/s) plus a G-load offset push the
+    // plane away from screen center in maneuvers; the camera catches up afterwards.
     const ahead = 9 / (1 + 3 * orbitMag);
-    const lt = t.lt.copy(phys.pos).addScaledVector(fwd, ahead).addScaledVector(planeUp, 0.8);
-    this.look.lerp(lt, 1 - Math.exp(-dt * 8));
+    const gOff = Math.max(-0.8, Math.min(1.6, (phys.gLoad - 1) * 0.55));
+    const lt = t.lt.copy(phys.pos).addScaledVector(fwd, ahead).addScaledVector(planeUp, 0.8 + gOff);
+    this.look.lerp(lt, 1 - Math.exp(-dt * 2.2));
 
     // FOV stretches with speed
     const fovTarget = Math.min(84, Math.max(60, 62 + Math.max(0, phys.speed - 32) * 0.24));
