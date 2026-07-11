@@ -2,9 +2,8 @@ import * as THREE from 'three';
 import { heightAt } from './world.js';
 import { RUNWAYS } from './runways.js';
 
-// Minimap projection: north (-Z) is map up. The contract heading atan2(-fx,-fz)
-// puts east at world -X, so the map mirrors X to keep compass labels consistent
-// with on-map motion (a plane reading E moves right on the map).
+// Minimap projection: north (-Z) is map up, east (+X) is map right — matching
+// the out-the-window world. Compass heading = atan2(fx, -fz): right turn counts up.
 const MAP_S = 280;      // backing pixels (140 css px at 2x)
 const MAP_HALF = 1900;  // meters from map center to edge
 const CARDINALS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
@@ -17,7 +16,7 @@ function bakeIslandMap() {
   for (let j = 0; j < N; j++) {
     const z = ((j + 0.5) / N * 2 - 1) * MAP_HALF;
     for (let i = 0; i < N; i++) {
-      const x = -(((i + 0.5) / N * 2 - 1) * MAP_HALF);
+      const x = ((i + 0.5) / N * 2 - 1) * MAP_HALF;
       const h = heightAt(x, z);
       const o = (j * N + i) * 4;
       let r, g, b, a = 242;
@@ -45,8 +44,8 @@ function bakeIslandMap() {
   const s = MAP_S / (MAP_HALF * 2);
   for (const rw of RUNWAYS) {
     g.save();
-    g.translate(MAP_S / 2 - rw.x * s, MAP_S / 2 + rw.z * s);
-    g.rotate(rw.heading);
+    g.translate(MAP_S / 2 + rw.x * s, MAP_S / 2 + rw.z * s);
+    g.rotate(-rw.heading);
     const w = Math.max(2.4, rw.width * s), l = Math.max(9, rw.length * s);
     g.fillStyle = 'rgba(255,255,255,0.92)';
     g.fillRect(-w / 2, -l / 2, w, l);
@@ -101,7 +100,7 @@ export class HUD {
 
     // north = -Z, heading increases N -> E per contract convention
     _fwd.set(0, 0, -1).applyQuaternion(phys.quat);
-    const hdgRad = Math.atan2(-_fwd.x, -_fwd.z);
+    const hdgRad = Math.atan2(_fwd.x, -_fwd.z);
     const deg = (hdgRad * 180 / Math.PI + 360) % 360;
     this.hdg.textContent = String(Math.round(deg) % 360).padStart(3, '0');
     this.hdgCard.textContent = CARDINALS[Math.round(deg / 45) % 8];
@@ -127,7 +126,7 @@ export class HUD {
     const g = this.mapCtx, s = MAP_S / (MAP_HALF * 2);
     g.clearRect(0, 0, MAP_S, MAP_S);
     g.drawImage(this._bake, 0, 0);
-    const px = Math.min(MAP_S - 8, Math.max(8, MAP_S / 2 - pos.x * s));
+    const px = Math.min(MAP_S - 8, Math.max(8, MAP_S / 2 + pos.x * s));
     const py = Math.min(MAP_S - 8, Math.max(8, MAP_S / 2 + pos.z * s));
     g.save();
     g.translate(px, py);

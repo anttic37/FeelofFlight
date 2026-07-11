@@ -1,12 +1,14 @@
 # flighfeel
 
-Third-person flight *feel* proof of concept in Three.js. No build step — plain ES modules,
+Third-person flight *feel* game in Three.js. No build step — plain ES modules,
 Three.js from CDN. The whole point: see the plane move in the air and feel it fly.
+Now with retractable gear, three landing strips, full landing/takeoff physics,
+shader water with shore foam, puffy cumulus, and a minimap.
 
 ## Run
 
-Any static file server pointed at this folder, e.g. the preconfigured launch config
-(`.claude/launch.json` → `flighfeel`, port 5601), then open `http://localhost:5601/`.
+Double-click `fly.bat`, or start the launch config (`.claude/launch.json` →
+`flighfeel`, port 5601) and open `http://localhost:5601/`.
 
 ## Controls
 
@@ -14,11 +16,24 @@ Any static file server pointed at this folder, e.g. the preconfigured launch con
 |---|---|
 | `W`/`S` or `↑`/`↓` | pitch — `S`/`↓` pulls up, flight-sim style (press `I` to invert) |
 | `A`/`D` or `←`/`→` | roll |
-| `Q`/`E` | rudder |
+| `Q`/`E` | rudder (steers the tailwheel on the ground) |
 | `X` / `Z` (or `Shift`) | throttle up / down |
-| `R` | reset | 
+| `G` | landing gear up/down |
+| `Space` | wheel brakes |
+| `T` | spawn parked on runway 1, ready for takeoff |
+| `R` | reset to air spawn |
 | `M` | mute |
-| Gamepad | left stick = pitch/roll (stick back = pull up), triggers = throttle, bumpers = rudder |
+| Gamepad | left stick = pitch/roll (stick back = pull up), triggers = throttle, bumpers = rudder, A = brake, Y = gear |
+
+## Flying it
+
+- **Takeoff** (`T` first): full throttle, hold `S` — it rotates and lifts off around 100 km/h.
+- **Landing**: gear down (`G`) below ~200 km/h, aim for a strip (check the minimap),
+  touch down gently (< 6 m/s sink), wings level, then `Space` to brake. Grass works
+  too if you're gentle — expect drag. Belly landings, hard slams, high-speed or
+  banked touchdowns and water all end the flight, with the reason on screen.
+- Runways: 1 — main coastal strip dead ahead of the air spawn; 2 — short mountain
+  plateau strip (elev 70 m); 3 — small angled coastal shelf.
 
 ## What makes the "feel" (and where to tune it)
 

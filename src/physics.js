@@ -122,7 +122,7 @@ export class FlightModel {
   }
 
   toggleGear() {
-    if (this.grounded && this.gearDown) return; // can't retract on the ground
+    if (this.grounded) return; // can't cycle the gear on the ground
     this.gearDown = !this.gearDown;
     this.justGearMoved = true;
   }
@@ -315,6 +315,7 @@ export class FlightModel {
       else if (pitchG < -0.08 || pitchG > 0.35) this.crashed = 'nosed over';
       else {
         this.grounded = true;
+        this.gearDown = true; // weight-on-wheels cancels any retraction in progress
         this.justTouchedDown = Math.max(0, sink);
         this.vel.y = 0;
         this.pos.y = contact + gearHeight;

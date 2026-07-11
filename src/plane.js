@@ -216,6 +216,7 @@ export function buildPlane() {
     new THREE.MeshBasicMaterial({ map: discTexture(), transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false })
   );
   propDisc.position.z = -0.16;
+  propDisc.renderOrder = 3; // after clouds (2): the disc is nearly always nearer than they are
   propGroup.add(propDisc);
   group.add(propGroup);
 

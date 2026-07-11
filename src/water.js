@@ -71,7 +71,9 @@ normal = normalize(normal + vec3(
   scene.add(water);
 
   function update(time) {
-    uTime.value = time;
+    // wrap at 2000π: every uTime factor has ≤3 decimals, so k·2000π is a whole
+    // number of cycles — seamless wrap, and float32 phase precision never degrades
+    uTime.value = time % 6283.18530718;
   }
 
   return { update };
