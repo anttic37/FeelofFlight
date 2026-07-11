@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { createWorld, heightAt, surfaceAt } from './world.js';
 import { RUNWAYS } from './runways.js';
-import { buildPlane, updatePlaneVisual } from './plane.js';
+import { buildPlane, updatePlaneVisual } from './crimson-kestrel.js'; // KX-1; original model lives on in plane.js
 import { FlightModel } from './physics.js';
 import { ChaseCam } from './camera.js';
 import { WingTrails } from './trails.js';
