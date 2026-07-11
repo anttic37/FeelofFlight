@@ -17,6 +17,7 @@ export class ChaseCam {
     this.look = new THREE.Vector3();
     this.fov = 62;
     this.time = 0;
+    this.gLagSm = 0; // smoothed G-pull camera lag
 
     // mouse orbit + zoom
     this.orbitYaw = 0;
@@ -64,8 +65,13 @@ export class ChaseCam {
     const fwd = t.fwd.set(0, 0, -1).applyQuaternion(phys.quat);
     const planeUp = t.up.set(0, 1, 0).applyQuaternion(phys.quat);
 
-    // camera up: mostly world, a bit of plane roll so banking reads on screen
-    const upMix = t.mix.copy(WORLD_UP).multiplyScalar(0.75).addScaledVector(planeUp, 0.25).normalize();
+    // camera up: mostly world in level flight so banking reads on screen, but as
+    // the nose leaves level (loops, verticals) blend toward the plane's own up —
+    // a world-locked up flips/spins the view when fwd nears +-Y.
+    const sv = Math.min(1, Math.max(0, (Math.abs(fwd.y) - 0.45) / 0.45));
+    const steep = sv * sv * (3 - 2 * sv); // smoothstep(0.45, 0.9, |fwd.y|)
+    const upMix = t.mix.copy(WORLD_UP).multiplyScalar(0.75 * (1 - steep))
+      .addScaledVector(planeUp, 0.25 + 0.75 * steep).normalize();
 
     // orbit eases back behind the plane when the mouse is released
     if (!this._dragging) {
@@ -75,7 +81,11 @@ export class ChaseCam {
     }
     this.zoomSm += (this.zoomOff - this.zoomSm) * Math.min(1, dt * 6);
 
-    const dist = 11.5 + phys.speed * 0.03 + this.zoomSm;
+    // G-lag: sustained pull eases the camera back a touch — pulls feel heavier
+    const gk = Math.min(1, Math.max(0, ((phys.gLoad ?? 1) - 1) / 3));
+    this.gLagSm += (gk - this.gLagSm) * Math.min(1, dt * 3.5);
+
+    const dist = 11.5 + phys.speed * 0.03 + this.zoomSm + this.gLagSm * 0.9;
     const dir = t.dir.copy(fwd).negate();
     const orbitMag = Math.abs(this.orbitYaw) + Math.abs(this.orbitPitch);
     if (orbitMag > 1e-4) {
@@ -105,8 +115,9 @@ export class ChaseCam {
     this.camera.fov = this.fov;
     this.camera.updateProjectionMatrix();
 
-    // shake: speed² + stall buffet
-    const amp = Math.pow(phys.speed / 115, 2) * 0.25 + (phys.stalled ? 0.55 : 0);
+    // shake: speed² + stall buffet + flaps-overspeed buffet + airframe overspeed
+    const amp = Math.pow(phys.speed / 115, 2) * 0.25 + (phys.stalled ? 0.55 : 0)
+      + (phys.flapBuffet ?? 0) * 0.35 + (phys.overspeed ?? 0) * 0.4;
     const right = t.right.copy(fwd).cross(upMix).normalize();
     this.camera.position.copy(this.pos)
       .addScaledVector(right, fbm1(this.time * 6.5, 6) * amp)

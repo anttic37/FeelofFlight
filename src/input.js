@@ -13,6 +13,7 @@ export class Input {
     this.onReset = null;
     this.onMute = null;
     this.onGear = null;
+    this.onFlaps = null;
     this.onRunwaySpawn = null;
     this._gpGearHeld = false;
 
@@ -24,6 +25,7 @@ export class Input {
       if (e.code === 'KeyI') this.invertY = !this.invertY;
       if (e.code === 'KeyM' && this.onMute) this.onMute();
       if (e.code === 'KeyG' && this.onGear) this.onGear();
+      if (e.code === 'KeyF' && this.onFlaps) this.onFlaps();
       if (e.code === 'KeyT' && this.onRunwaySpawn) this.onRunwaySpawn();
     });
     window.addEventListener('keyup', e => this.keys.delete(e.code));

@@ -74,6 +74,12 @@ export class HUD {
     this.stall = document.getElementById('stall');
     this.msgEl = document.getElementById('msg');
     this.flashEl = document.getElementById('flash');
+    this.flapChip = document.getElementById('flap-chip');
+    this.overspd = document.getElementById('overspd');
+    this.stressTrack = document.getElementById('stress-track');
+    this.stressBar = document.getElementById('stress-bar');
+    this.gvign = document.getElementById('gvign');
+    this.gvignRed = document.getElementById('gvign-red');
     this.map = document.getElementById('minimap');
     this.mapCtx = this.map.getContext('2d');
     this._bake = bakeIslandMap();
@@ -82,6 +88,14 @@ export class HUD {
     this._gearState = '';
     this._brakeOn = false;
     this._gearWarnOn = false;
+    this._flapState = '';
+    this._overspdOn = false;
+    this._stressVis = false;
+    this._vign = 0;
+    this._vignRed = 0;
+    this._vignShown = -1;
+    this._vignRedShown = -1;
+    this._pt = 0;
   }
 
   update(phys, input) {
@@ -119,10 +133,61 @@ export class HUD {
     const warn = !phys.gearDown && phys.altitude < 90 && phys.speed < 45 && vy < 0;
     if (warn !== this._gearWarnOn) { this._gearWarnOn = warn; this.gearWarn.style.display = warn ? 'block' : 'none'; }
 
-    this._drawMap(phys.pos, hdgRad);
+    // flaps chip: dim UP / amber 1 / amber 2, blinking while between detents
+    const fs = phys.flapSetting ?? 0;
+    const ft = phys.flapTransit ?? 0;
+    const detent = Math.min(Math.abs(ft), Math.abs(ft - 0.5), Math.abs(ft - 1));
+    const fState = (fs === 0 ? 'up' : 'f' + fs) + (detent > 0.02 ? ' transit' : '');
+    if (fState !== this._flapState) {
+      this._flapState = fState;
+      this.flapChip.className = 'chip ' + fState;
+      this.flapChip.textContent = fs === 0 ? 'FLAPS UP' : 'FLAPS ' + fs;
+    }
+
+    // overspeed: red speed readout + pulsing banner (small hysteresis vs flicker)
+    const ov = phys.overspeed ?? 0;
+    const oOn = this._overspdOn ? ov > 0.12 : ov > 0.15;
+    if (oOn !== this._overspdOn) {
+      this._overspdOn = oOn;
+      this.overspd.style.display = oOn ? 'block' : 'none';
+      this.spd.className = oOn ? 'over' : '';
+    }
+
+    // airframe stress bar under the G readout
+    const st = phys.stress ?? 0;
+    const sVis = st > 0.05;
+    if (sVis !== this._stressVis) { this._stressVis = sVis; this.stressTrack.style.display = sVis ? 'block' : 'none'; }
+    if (sVis) this.stressBar.style.width = Math.min(100, st * 100).toFixed(0) + '%';
+
+    this._updateVignette(phys.gLoad);
+    this._drawMap(phys, hdgRad);
   }
 
-  _drawMap(pos, hdgRad) {
+  // grey-out toward high positive g, red-out below -0.8 g; wall-clock smoothed
+  // (~3/s) because update() gets no dt
+  _updateVignette(gLoad) {
+    const now = performance.now();
+    const dt = Math.min(0.1, Math.max(0, (now - (this._pt || now)) / 1000));
+    this._pt = now;
+    const k = 1 - Math.exp(-3 * dt);
+    const vT = Math.min(1, Math.max(0, (gLoad - 3.2) / 2.2)) * 0.85;
+    const rT = Math.min(1, Math.max(0, (-0.8 - gLoad) / 2.0)) * 0.8;
+    this._vign += (vT - this._vign) * k;
+    this._vignRed += (rT - this._vignRed) * k;
+    if (this._vign < 0.004) this._vign = 0;
+    if (this._vignRed < 0.004) this._vignRed = 0;
+    if (Math.abs(this._vign - this._vignShown) > 0.003) {
+      this._vignShown = this._vign;
+      this.gvign.style.opacity = this._vign.toFixed(3);
+    }
+    if (Math.abs(this._vignRed - this._vignRedShown) > 0.003) {
+      this._vignRedShown = this._vignRed;
+      this.gvignRed.style.opacity = this._vignRed.toFixed(3);
+    }
+  }
+
+  _drawMap(phys, hdgRad) {
+    const pos = phys.pos;
     const g = this.mapCtx, s = MAP_S / (MAP_HALF * 2);
     g.clearRect(0, 0, MAP_S, MAP_S);
     g.drawImage(this._bake, 0, 0);
@@ -149,6 +214,37 @@ export class HUD {
     g.fill();
     g.stroke();
     g.restore();
+
+    // wind: bottom-left corner — arrow points where the wind blows TOWARD in the
+    // same north-up frame as the map, speed in m/s below it
+    const w = phys.wind;
+    const wx = w ? w.x : 0, wz = w ? w.z : 0;
+    const ws = Math.hypot(wx, wz);
+    g.fillStyle = 'rgba(6,13,22,0.55)';
+    g.fillRect(8, MAP_S - 64, 48, 56);
+    if (ws > 0.05) {
+      g.save();
+      g.translate(32, MAP_S - 42);
+      g.rotate(Math.atan2(wx, -wz));
+      g.strokeStyle = 'rgba(160,220,255,0.95)';
+      g.fillStyle = 'rgba(160,220,255,0.95)';
+      g.lineWidth = 2.4;
+      g.beginPath();
+      g.moveTo(0, 11);
+      g.lineTo(0, -4);
+      g.stroke();
+      g.beginPath();
+      g.moveTo(0, -12);
+      g.lineTo(4.8, -3.5);
+      g.lineTo(-4.8, -3.5);
+      g.closePath();
+      g.fill();
+      g.restore();
+    }
+    g.font = '600 12px ui-monospace, Consolas, monospace';
+    g.textAlign = 'center';
+    g.fillStyle = 'rgba(210,235,255,0.9)';
+    g.fillText(ws > 0.05 ? ws.toFixed(1) + ' m/s' : 'CALM', 32, MAP_S - 15);
   }
 
   msg(text, ms = 2200) {

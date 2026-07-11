@@ -14,6 +14,12 @@ const SPAWN_SPEED = 55;
 
 const GEAR_TIME = 1.6;      // s to extend/retract
 const STANCE_PITCH = 0.10;  // taildragger nose-up at rest
+const FLAP_TIME = 1.2;      // s full travel up <-> full
+
+// steady wind: velocity of the AIR MASS in world frame — 4.2 m/s FROM the
+// southwest, i.e. the air moves toward the northeast (+x, -z)
+const WIND_X = 3.0, WIND_Z = -2.9;
+const WINGSPAN = 11;        // ground-effect fade height
 
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 
@@ -43,6 +49,8 @@ export class FlightModel {
     this.yawDamp = 12000;
     this.rollDamp = 5200;
     this.trim = 0.10;          // built-in elevator trim → hands-off ~level at cruise
+    this.gustDepth = 0.35;     // slow wind magnitude modulation (fraction of steady)
+    this.oroBoost = 0.9;       // extra turbulence approaching terrain (fraction, at 15 m AGL)
 
     // state
     this.pos = new THREE.Vector3();
@@ -51,6 +59,21 @@ export class FlightModel {
     this.angVel = new THREE.Vector3(); // body frame, rad/s
     this.throttle = 0.65;              // actual (spooled)
     this.time = 0;
+
+    // flaps
+    this.flapSetting = 0;              // 0 up | 1 half | 2 full
+    this.flapTransit = 0;              // 0..1 eased actual position
+    this.justFlapsMoved = false;       // integrator clears
+    this.flapBuffet = 0;               // 0..1 shake: flaps out past blowback speed
+
+    // wind (steady + slow gusts), exposed for the HUD
+    this.wind = new THREE.Vector3(WIND_X, 0, WIND_Z);
+    this.airspeed = 0;
+
+    // structural
+    this.overG = 0;                    // 0..1 instantaneous past 4.5 g
+    this.stress = 0;                   // 0..1 accumulated — 1 tears the wings off
+    this.overspeed = 0;                // 0..1 past ~Vne
 
     // gear / ground
     this.gearDown = false;
@@ -71,6 +94,7 @@ export class FlightModel {
 
     this._tmp = {
       v: new THREE.Vector3(), v2: new THREE.Vector3(), v3: new THREE.Vector3(),
+      va: new THREE.Vector3(), // air-relative velocity, world frame
       q: new THREE.Quaternion(), force: new THREE.Vector3(), torque: new THREE.Vector3(),
       e: new THREE.Euler(0, 0, 0, 'YXZ'),
     };
@@ -81,7 +105,9 @@ export class FlightModel {
   reset() {
     this.pos.copy(SPAWN_POS);
     this.quat.setFromEuler(new THREE.Euler(0.05, 0, 0)); // slight nose-up, heading -Z
-    this.vel.set(0, 0, -SPAWN_SPEED);
+    // spawn at SPAWN_SPEED of AIRSPEED — drift with the air mass so the tuned
+    // final-approach feel is identical whatever the wind is doing right now
+    this.vel.set(this.wind.x, 0, -SPAWN_SPEED + this.wind.z);
     this.angVel.set(0, 0, 0);
     this.throttle = 0.65;
     this.crashed = false;
@@ -94,6 +120,11 @@ export class FlightModel {
     this.justTouchedDown = null;
     this.justGearMoved = false;
     this._gYaw = 0; this._gPitch = 0; this._gBank = 0;
+    this.flapSetting = 0;
+    this.flapTransit = 0;
+    this.justFlapsMoved = false;
+    this.flapBuffet = 0;
+    this.overG = 0; this.stress = 0; this.overspeed = 0;
   }
 
   resetTo({ x, z, y, yaw, speed, grounded, gearDown }) {
@@ -119,12 +150,24 @@ export class FlightModel {
     this.justTouchedDown = null;
     this.justGearMoved = false;
     this.onRunwaySurface = surf.type === 'runway';
+    this.flapSetting = 0;
+    this.flapTransit = 0;
+    this.justFlapsMoved = false;
+    this.flapBuffet = 0;
+    this.overG = 0; this.stress = 0; this.overspeed = 0;
   }
 
   toggleGear() {
     if (this.grounded) return; // can't cycle the gear on the ground
     this.gearDown = !this.gearDown;
     this.justGearMoved = true;
+  }
+
+  setFlaps(n) {
+    n = clamp(Math.round(n), 0, 2);
+    if (n === this.flapSetting) return;
+    this.flapSetting = n;
+    this.justFlapsMoved = true;
   }
 
   update(dt, controls) {
@@ -135,51 +178,82 @@ export class FlightModel {
       ? Math.min(1, this.gearTransit + dt / GEAR_TIME)
       : Math.max(0, this.gearTransit - dt / GEAR_TIME);
 
+    // flaps ease toward the selected detent
+    const dft = dt / FLAP_TIME;
+    this.flapTransit += clamp(this.flapSetting / 2 - this.flapTransit, -dft, dft);
+    const ft = this.flapTransit;
+
     // throttle spool lag
     this.throttle += (controls.throttle - this.throttle) * Math.min(1, dt * 1.4);
 
-    const speed = this.vel.length();
-    this.speed = speed;
+    const agl = this.altitude;
 
-    // velocity in body frame
+    // wind: steady SW breeze + slow gusts (magnitude ±35%, heading wander ±10°),
+    // eased down through the boundary layer — ~57% strength at the surface, full
+    // by 60 m AGL. Keeps every strip landable and the low phugoid dip gentle.
+    const bl = clamp(agl / 60, 0, 1);
+    const gustM = (1 + this.gustDepth * fbm1(this.time * 0.11, 7)) * (0.55 + 0.45 * bl * bl * (3 - 2 * bl));
+    const gustA = 0.175 * fbm1(this.time * 0.08, 8);
+    const cga = Math.cos(gustA), sga = Math.sin(gustA);
+    this.wind.set((WIND_X * cga + WIND_Z * sga) * gustM, 0, (WIND_Z * cga - WIND_X * sga) * gustM);
+
+    const speed = this.vel.length(); // GROUND speed: friction, steering, landing checks
+    this.speed = speed;
+    const vAir = t.va.copy(this.vel).sub(this.wind); // AIR-relative: all aerodynamics
+    const airSpeed = vAir.length();
+    this.airspeed = airSpeed;
+
+    // air-relative velocity in body frame (grounded slow-taxi keeps aoa/beta quiet
+    // so a parked tailwind can't wrap atan2 into a giant fake stability torque)
     const invQ = t.q.copy(this.quat).invert();
-    const vBody = t.v.copy(this.vel).applyQuaternion(invQ);
-    const aero = speed > 4;
+    const vBody = t.v.copy(vAir).applyQuaternion(invQ);
+    const aero = airSpeed > 4 && (!this.grounded || -vBody.z > 2);
     this.aoa = aero ? Math.atan2(-vBody.y, -vBody.z) : 0;
     const beta = aero ? Math.atan2(vBody.x, Math.max(1, -vBody.z)) : 0;
-    const q = 0.5 * RHO * speed * speed;
+    const q = 0.5 * RHO * airSpeed * airSpeed;
 
-    // lift coefficient with stall break
-    let cl = this.clSlope * this.aoa;
-    const clMax = this.clSlope * this.stallAoA;
-    this.stalled = aero && Math.abs(this.aoa) > this.stallAoA && speed > 8;
-    let cd = this.cd0 + this.inducedK * cl * cl;
-    if (Math.abs(this.aoa) > this.stallAoA) {
-      const over = Math.abs(this.aoa) - this.stallAoA;
-      cl = Math.sign(this.aoa) * Math.max(0.25, clMax - over * 2.4);
+    // ground effect: within a wingspan of the surface, induced drag fades to 45%
+    // and lift firms up +8% — floaty flare
+    const gh = clamp(1 - agl / WINGSPAN, 0, 1);
+    const ge = gh * gh * (3 - 2 * gh); // 1 at the surface -> 0 by one wingspan up
+
+    // lift coefficient with flaps and stall break (flaps lower the stall AoA)
+    const stallEff = this.stallAoA - 0.03 * ft;
+    let cl = this.clSlope * this.aoa + 0.55 * ft;
+    const clMax = this.clSlope * stallEff;
+    this.stalled = aero && Math.abs(this.aoa) > stallEff && airSpeed > 8;
+    let cd = this.cd0 + this.inducedK * cl * cl * (1 - 0.55 * ge)
+           + (0.035 + 0.06 * ft) * ft; // flap drag
+    if (Math.abs(this.aoa) > stallEff) {
+      const over = Math.abs(this.aoa) - stallEff;
+      cl = Math.sign(this.aoa) * Math.max(0.25, clMax - over * 2.4) + 0.55 * ft;
       const sa = Math.sin(this.aoa);
       cd += 0.05 + 0.9 * sa * sa; // flat-plate drag when the wing lets go
     }
     cd += 0.022 * this.gearTransit; // gear hanging in the wind
 
+    // flap blowback buffet past 62 m/s (shake flag only — no auto-retract)
+    this.flapBuffet = ft > 0.05 ? clamp((airSpeed - 62) / 8, 0, 1) * ft : 0;
+    this.overspeed = clamp((airSpeed - 108) / 18, 0, 1); // Vne ~115
+
     // --- forces (world frame) ---
     const force = t.force.set(0, -G * this.mass, 0);
 
     const fwd = t.v2.set(0, 0, -1).applyQuaternion(this.quat);
-    const propEff = Math.max(0.35, 1 - speed / 220);
+    const propEff = Math.max(0.35, 1 - airSpeed / 220);
     force.addScaledVector(fwd, this.maxThrust * this.throttle * propEff);
 
     let liftN = 0;
     if (aero) {
-      const velDir = t.v3.copy(this.vel).divideScalar(speed);
+      const velDir = t.v3.copy(vAir).divideScalar(airSpeed);
       force.addScaledVector(velDir, -q * this.wingArea * cd); // drag
 
-      // lift: body-up projected perpendicular to velocity
+      // lift: body-up projected perpendicular to the air-relative velocity
       const bodyUp = t.v2.set(0, 1, 0).applyQuaternion(this.quat);
       const liftDir = bodyUp.addScaledVector(velDir, -bodyUp.dot(velDir));
       if (liftDir.lengthSq() > 1e-6) {
         liftDir.normalize();
-        const lift = q * this.wingArea * cl;
+        const lift = q * this.wingArea * cl * (1 + 0.08 * ge);
         force.addScaledVector(liftDir, lift);
         this.gLoad = lift / (this.mass * G);
         liftN = lift;
@@ -191,6 +265,17 @@ export class FlightModel {
     }
 
     this.vel.addScaledVector(force, dt / this.mass);
+
+    // structural stress: sustained 4.5 g+ tears the wings; overspeed pulls compound
+    this.overG = this.grounded ? 0 : clamp((Math.abs(this.gLoad) - 4.5) / 2.5, 0, 1);
+    if (this.overG > 0) {
+      let rate = this.overG / 0.6;
+      if (this.overspeed > 0.6 && this.gLoad > 3) rate *= 2;
+      this.stress = Math.min(1, this.stress + rate * dt);
+      if (this.stress >= 1) this.crashed = 'the wings tore off';
+    } else {
+      this.stress = Math.max(0, this.stress - dt / 3);
+    }
 
     if (this.grounded) {
       // tires grip: damp sideways velocity toward the wheel track
@@ -235,6 +320,12 @@ export class FlightModel {
       this._gYaw -= controls.yaw * steerRate * dt;
       w.y = -controls.yaw * steerRate;
 
+      // wind weathervane: nothing parked, mild while rolling (same sign as -beta*yawStab)
+      this._gYaw -= beta * 0.09 * clamp((speed - 2) / 18, 0, 1) * dt;
+      // prop P-factor: gentle nose-left bias on the power, only once rolling
+      this._gYaw += (480 * this.throttle * Math.max(0, 1 - airSpeed / 45) / this.inertia.y)
+                  * Math.min(1, speed / 6) * dt;
+
       // wheels level the wings
       this._gBank += (0 - this._gBank) * Math.min(1, dt * 6);
       w.z += (0 - w.z) * Math.min(1, dt * 8);
@@ -242,7 +333,8 @@ export class FlightModel {
       // pitch: elevator keeps flight authority; gear geometry pulls to stance when slow
       const tqx = (controls.pitch + this.trim) * this.elevPower * qn
                 - this.aoa * this.pitchStab * qnS
-                - w.x * this.pitchDamp * qnD;
+                - w.x * this.pitchDamp * qnD
+                - 900 * ft * qn; // flap balloon trim nudge
       w.x += (tqx / this.inertia.x) * dt;
       this._gPitch += w.x * dt;
       const slow = Math.max(0, 1 - speed / 18);
@@ -268,19 +360,38 @@ export class FlightModel {
     const pitchIn = controls.pitch + this.trim;
     tq.x = pitchIn * this.elevPower * qn
          - this.aoa * this.pitchStab * qnS
-         - w.x * this.pitchDamp * qnD;
-    if (Math.abs(this.aoa) > this.stallAoA) {
-      tq.x -= Math.sign(this.aoa) * (Math.abs(this.aoa) - this.stallAoA) * this.stallBreak * qnS;
-    }
+         - w.x * this.pitchDamp * qnD
+         - 900 * ft * qn; // flaps balloon, then need nose-down retrim
     tq.y = -controls.yaw * this.rudPower * qn
          - beta * this.yawStab * qn
-         - w.y * this.yawDamp * qnD;
+         - w.y * this.yawDamp * qnD
+         + controls.roll * 700 * qn; // adverse yaw: aileron drags the nose opposite
     tq.z = -controls.roll * this.ailPower * qn
          + beta * this.dihedral * qn
          - w.z * this.rollDamp * qnD;
+    if (Math.abs(this.aoa) > stallEff) {
+      const over = Math.abs(this.aoa) - stallEff;
+      tq.x -= Math.sign(this.aoa) * over * this.stallBreak * qnS; // stall break
+      // stall wing-drop: slowly-wandering asymmetry — a different wing each time
+      tq.z += fbm1(this.time * 0.16, 5) * (600 + 1400 * over) * qnS;
+    }
 
-    // turbulence: slow noise nudging pitch/roll, a little yaw
-    const turb = 0.4 + Math.min(1.2, q / 3000);
+    // prop torque / P-factor: high power at low airspeed rolls and yaws LEFT —
+    // takeoff and climb-out want a touch of right rudder
+    tq.z += 320 * this.throttle * Math.max(0, 1 - airSpeed / 55);
+    tq.y += 480 * this.throttle * Math.max(0, 1 - airSpeed / 45);
+
+    // overspeed airframe buffet past ~Vne
+    if (this.overspeed > 0) {
+      tq.x += fbm1(this.time * 3.7, 9) * 4200 * this.overspeed;
+      tq.z += fbm1(this.time * 4.3, 10) * 5200 * this.overspeed;
+      tq.y += fbm1(this.time * 3.1, 11) * 1600 * this.overspeed;
+    }
+
+    // turbulence: slow noise nudging pitch/roll, a little yaw — orographic factor
+    // makes the air bumpier near the terrain (kept below elevator authority on final)
+    const oh = clamp((120 - agl) / 105, 0, 1);
+    const turb = (0.4 + Math.min(1.2, q / 3000)) * (1 + this.oroBoost * (oh * oh * (3 - 2 * oh)));
     tq.x += fbm1(this.time * 0.55, 1) * 1500 * turb;
     tq.z += fbm1(this.time * 0.62, 2) * 2300 * turb;
     tq.y += fbm1(this.time * 0.4, 3) * 500 * turb;

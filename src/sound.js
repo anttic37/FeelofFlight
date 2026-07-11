@@ -67,6 +67,18 @@ export class SoundFX {
     this.rumbleFilter.connect(this.rumbleGain);
     this.rumbleGain.connect(this.master);
 
+    // airframe creak: very low slow-attack groan off the same noise, under g-load
+    this.creakFilter = ctx.createBiquadFilter();
+    this.creakFilter.type = 'lowpass';
+    this.creakFilter.frequency.value = 90;
+    this.creakFilter.Q.value = 4;
+    this.creakGain = ctx.createGain();
+    this.creakGain.gain.value = 0;
+    src.connect(this.creakFilter);
+    this.creakFilter.connect(this.creakGain);
+    this.creakGain.connect(this.master);
+    this._creakPrev = 0;
+
     // brake squeal: narrow bandpass path, driven only via setBrake()
     this.squealFilter = ctx.createBiquadFilter();
     this.squealFilter.type = 'bandpass';
@@ -99,10 +111,23 @@ export class SoundFX {
     this.engFilter.frequency.setTargetAtTime(300 + thr * 950 + spd * 4, t, 0.08);
     this.engGain.gain.setTargetAtTime(this.muted ? 0 : 0.045 + thr * 0.16, t, 0.08);
 
-    let wind = Math.min(0.5, Math.pow(spd / 95, 2) * 0.45);
+    // wind: gain cap and filter keep rising past 95 m/s with overspeed — the
+    // scream gets louder, brighter and rougher the deeper into the red you go
+    const ovs = Math.min(1, Math.max(0, phys.overspeed ?? 0));
+    let wind = Math.min(0.5 + ovs * 0.4, Math.pow(spd / 95, 2) * 0.45);
     if (phys.stalled) wind *= 1 + 0.5 * Math.sin(this.time * Math.PI * 2 * 9); // buffet
+    if (ovs > 0) wind *= 1 + 0.18 * ovs * Math.sin(this.time * Math.PI * 2 * 11); // flutter
     this.windGain.gain.setTargetAtTime(this.muted ? 0 : wind, t, 0.05);
-    this.windFilter.frequency.setTargetAtTime(280 + spd * 13, t, 0.1);
+    this.windFilter.frequency.setTargetAtTime(280 + spd * 13 + ovs * 950, t, 0.1);
+    this.windFilter.Q.setTargetAtTime(0.55 + ovs * 1.5, t, 0.2);
+
+    // airframe creak: sustained g bends the wings — slow attack, slow AM wobble
+    const drive = Math.min(1, (phys.overG ?? 0) + Math.abs((phys.gLoad ?? 1) - 1) / 3);
+    const wob = 0.62 + 0.28 * Math.sin(this.time * 2.3) + 0.1 * Math.sin(this.time * 0.83);
+    const creak = this.muted ? 0 : drive * 0.05 * wob;
+    this.creakGain.gain.setTargetAtTime(creak, t, creak > this._creakPrev ? 0.45 : 0.15);
+    this._creakPrev = creak;
+    this.creakFilter.frequency.setTargetAtTime(72 + drive * 28 + Math.sin(this.time * 1.7) * 12, t, 0.2);
 
     // rolling rumble: silent parked, clearly audible around 30 m/s
     const roll = phys.grounded ? Math.min(0.4, Math.pow(spd / 30, 1.4) * 0.34) : 0;
@@ -148,6 +173,31 @@ export class SoundFX {
     cg.connect(this.master);
     c.start(t + 1.5);
     c.stop(t + 1.68);
+  }
+
+  // ~1.2s flap servo: softer, slower and higher-pitched than the gear whir
+  flapMove() {
+    if (!this.ctx || this.muted) return;
+    const ctx = this.ctx, t = ctx.currentTime;
+    const o = ctx.createOscillator();
+    o.type = 'sawtooth';
+    o.frequency.setValueAtTime(210, t);
+    o.frequency.exponentialRampToValueAtTime(160, t + 0.55);
+    o.frequency.exponentialRampToValueAtTime(195, t + 1.12);
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.value = 520;
+    f.Q.value = 1.4;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(0.026, t + 0.18);
+    g.gain.setValueAtTime(0.026, t + 1.0);
+    g.gain.linearRampToValueAtTime(0, t + 1.2);
+    o.connect(f);
+    f.connect(g);
+    g.connect(this.master);
+    o.start(t);
+    o.stop(t + 1.22);
   }
 
   // tire chirp + thud; sink ~1 m/s subtle, ~5 m/s heavy

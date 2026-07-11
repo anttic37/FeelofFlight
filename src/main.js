@@ -58,6 +58,7 @@ function reset(message) {
 input.onReset = () => reset('RESET');
 input.onMute = () => hud.msg(sound.toggleMute() ? 'MUTED' : 'SOUND ON', 1200);
 input.onGear = () => phys.toggleGear();
+input.onFlaps = () => { if (phys.setFlaps) phys.setFlaps(((phys.flapSetting || 0) + 1) % 3); };
 let runwayCycle = -1;
 input.onRunwaySpawn = () => {
   runwayCycle = (runwayCycle + 1) % RUNWAYS.length;
@@ -122,6 +123,11 @@ renderer.setAnimationLoop(() => {
     phys.justGearMoved = false;
     sound.gearMove();
     hud.msg(phys.gearDown ? 'GEAR DOWN' : 'GEAR UP', 1100);
+  }
+  if (phys.justFlapsMoved) {
+    phys.justFlapsMoved = false;
+    if (sound.flapMove) sound.flapMove();
+    hud.msg(phys.flapSetting ? `FLAPS ${phys.flapSetting}` : 'FLAPS UP', 1100);
   }
   if (phys.justTouchedDown != null) {
     const sink = phys.justTouchedDown;

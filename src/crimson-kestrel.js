@@ -613,6 +613,7 @@ export function buildPlane() {
   };
   const tipObjects = {};
   const ailerons = {};
+  const flaps = {};
   const wingAssemblies = {};
   const wingParents = {};
   const wingJoint = { x: 0.62, y: -0.060, z: -0.31 };
@@ -642,7 +643,7 @@ export function buildPlane() {
     fillet.rotation.z = sign * 0.045;
 
     makeWingSurface(wingParent, wingSpec, sign, 0.00, 0.075, 0.705, materials.cream, sign < 0 ? 'Left root trailing panel' : 'Right root trailing panel');
-    makeWingSurface(wingParent, wingSpec, sign, 0.08, 0.46, 0.705, materials.crimsonDark, sign < 0 ? 'Left flap' : 'Right flap');
+    flaps[sign] = makeWingSurface(wingParent, wingSpec, sign, 0.08, 0.46, 0.705, materials.crimsonDark, sign < 0 ? 'Left flap' : 'Right flap');
     const aileron = makeWingSurface(wingParent, wingSpec, sign, 0.47, 0.92, 0.705, materials.crimson, sign < 0 ? 'Left aileron' : 'Right aileron');
     makeWingSurface(wingParent, wingSpec, sign, 0.925, 1.00, 0.705, materials.cream, sign < 0 ? 'Left tip trailing panel' : 'Right tip trailing panel');
     ailerons[sign] = aileron;
@@ -923,6 +924,8 @@ export function buildPlane() {
     propDisc,
     aileronL: ailerons[-1],
     aileronR: ailerons[1],
+    flapL: flaps[-1],
+    flapR: flaps[1],
     elevator,
     elevatorL,
     elevatorR,
@@ -966,6 +969,13 @@ export function updatePlaneVisual(plane, input = {}, physics = compatibilityPhys
   const aileronAngle = -roll * 0.46;
   plane.aileronL.rotation.x = aileronAngle;
   plane.aileronR.rotation.x = aileronAngle;
+
+  // flaps: opposite local angles = both trailing edges DOWN (elevator pattern)
+  if (plane.flapL && plane.flapR) {
+    const flapAngle = (physics.flapTransit ?? 0) * 0.6;
+    plane.flapL.rotation.x = -flapAngle;
+    plane.flapR.rotation.x = flapAngle;
+  }
   const elevatorAngle = -pitch * 0.46;
   if (plane.elevatorL && plane.elevatorR) {
     plane.elevatorL.rotation.x = -elevatorAngle;

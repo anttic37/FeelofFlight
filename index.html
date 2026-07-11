@@ -23,6 +23,11 @@
   #chips #gear-chip.transit { color: #ffc861; border-color: rgba(255,200,95,0.6); animation: blink 0.4s steps(2) infinite; }
   #chips #brake-chip { display: none; }
   #chips #brake-chip.on { display: inline-block; color: #ffc98a; border-color: rgba(255,170,80,0.55); background: rgba(255,150,60,0.14); }
+  #chips #flap-chip.f1, #chips #flap-chip.f2 { color: #ffc861; border-color: rgba(255,200,95,0.55); background: rgba(255,180,70,0.10); }
+  #chips #flap-chip.transit { animation: blink 0.4s steps(2) infinite; }
+  #spd.over { color: #ff5a4d; text-shadow: 0 0 8px rgba(255,60,40,0.6); }
+  #stress-track { display: none; height: 3px; margin: 2px 0 3px; background: rgba(255,90,77,0.14); border-radius: 2px; overflow: hidden; }
+  #stress-bar { height: 100%; width: 0%; background: #ff5a4d; border-radius: 2px; }
   #minimap { position: absolute; top: 40px; right: 16px; width: 140px; height: 140px; }
   #throttle-wrap { position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); width: 220px; padding: 8px 12px 10px; text-align: center; }
   #throttle-label { font-size: 10px; letter-spacing: 2px; color: rgba(180,215,245,0.65); margin-bottom: 5px; }
@@ -32,9 +37,13 @@
   @keyframes blink { 50% { opacity: 0.15; } }
   #gearwarn { position: absolute; top: 24%; left: 50%; transform: translate(-50%, -50%); font-size: 26px; letter-spacing: 6px; color: #ff5a4d; text-shadow: 0 0 16px rgba(255,60,40,0.85); display: none; animation: pulsewarn 0.7s ease-in-out infinite; }
   @keyframes pulsewarn { 50% { opacity: 0.35; transform: translate(-50%, -50%) scale(1.09); } }
+  #overspd { position: absolute; top: 39%; left: 50%; transform: translate(-50%, -50%); font-size: 16px; letter-spacing: 5px; color: #ff5a4d; text-shadow: 0 0 12px rgba(255,60,40,0.8); display: none; animation: pulsewarn 0.55s ease-in-out infinite; }
   #msg { position: absolute; top: 44%; left: 50%; transform: translate(-50%, -50%); font-size: 20px; letter-spacing: 3px; color: #ffe9b0; text-shadow: 0 1px 8px rgba(0,0,0,0.7); opacity: 0; transition: opacity 0.3s; }
   #help { position: absolute; bottom: 16px; left: 16px; padding: 9px 13px; font-size: 11.5px; line-height: 1.75; color: rgba(210,232,250,0.82); }
   #help kbd { background: rgba(140,190,240,0.16); border: 1px solid rgba(160,210,255,0.25); border-radius: 4px; padding: 0 5px; font-family: inherit; }
+  #gvign, #gvign-red { position: absolute; inset: 0; opacity: 0; pointer-events: none; will-change: opacity; }
+  #gvign { background: radial-gradient(ellipse at center, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 62%, rgba(0,0,0,0.97) 100%); }
+  #gvign-red { background: radial-gradient(ellipse at center, rgba(60,0,0,0) 28%, rgba(120,8,8,0.5) 60%, rgba(150,10,14,0.95) 100%); }
   #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
   #flash.on { opacity: 0.85; transition: none; }
   #flash.fade { opacity: 0; transition: opacity 0.9s ease-out; }
@@ -55,7 +64,8 @@
     <div><b>ALT</b> <span id="alt">0</span> m <span id="vario">▲0.0</span></div>
     <div><b>HDG</b> <span id="hdg">000</span>° <span id="hdg-card">N</span></div>
     <div><b>G</b> <span id="g">1.0</span></div>
-    <div id="chips"><span id="gear-chip" class="chip">GEAR UP</span><span id="brake-chip" class="chip">BRAKE</span></div>
+    <div id="stress-track"><div id="stress-bar"></div></div>
+    <div id="chips"><span id="gear-chip" class="chip">GEAR UP</span><span id="flap-chip" class="chip">FLAPS UP</span><span id="brake-chip" class="chip">BRAKE</span></div>
   </div>
   <div id="throttle-wrap" class="panel">
     <div id="throttle-label">THROTTLE <span id="thr-pct">65</span>%</div>
@@ -63,12 +73,15 @@
   </div>
   <div id="stall">STALL</div>
   <div id="gearwarn">GEAR!</div>
+  <div id="overspd">OVERSPEED</div>
   <div id="msg"></div>
   <div id="help" class="panel">
     <kbd>S</kbd> pull up &nbsp; <kbd>W</kbd> nose down &nbsp; <kbd>A</kbd>/<kbd>D</kbd> roll &nbsp; <kbd>Q</kbd>/<kbd>E</kbd> rudder<br>
-    <kbd>X</kbd>/<kbd>Z</kbd> throttle &nbsp; <kbd>G</kbd> gear &nbsp; <kbd>Space</kbd> brake &nbsp; <kbd>T</kbd> next runway<br>
+    <kbd>X</kbd>/<kbd>Z</kbd> throttle &nbsp; <kbd>G</kbd> gear &nbsp; <kbd>F</kbd> flaps &nbsp; <kbd>Space</kbd> brake &nbsp; <kbd>T</kbd> next runway<br>
     <kbd>R</kbd> reset &nbsp; <kbd>I</kbd> invert &nbsp; <kbd>M</kbd> mute &nbsp; mouse drag look &nbsp; wheel zoom &nbsp; gamepad
   </div>
+  <div id="gvign"></div>
+  <div id="gvign-red"></div>
   <div id="flash"></div>
 </div>
 <script type="module" src="./src/main.js"></script>
