@@ -10,10 +10,12 @@ import { createClouds } from './clouds.js';
 
 // Procedural island, radius ~7000 m: five noise-warped biome regions (south
 // hills, east desert, west forest, north+center mountains to ~650 m, and a
-// canyon gorge running to the southeast sea), all shaped AROUND the runway
-// anchors from runways.js — per-strip terrain platforms and capped approach
-// corridors guarantee every strip fits its theme by construction, then
-// applyRunwayFlattening does the final exact grading.
+// meandering stepped-wall canyon system running to the southeast sea), all
+// shaped AROUND the runway anchors from runways.js — per-strip terrain
+// platforms and capped approach corridors guarantee every strip fits its
+// theme by construction, then applyRunwayFlattening does the final grading.
+// Island-wide domain-warped rolling relief + a small detail layer keep the
+// lowlands reading as real terrain at altitude and at low-level speed.
 
 const R_MASK = 7200; // radial falloff denominator; beach lands around r ~6600-7400
 
@@ -45,14 +47,15 @@ for (let i = 0; i < CANYON_PATH.length - 1; i++) {
 const CANYON_LEN = _acc;
 let CB_X0 = 1e9, CB_X1 = -1e9, CB_Z0 = 1e9, CB_Z1 = -1e9;
 for (const p of CANYON_PATH) {
-  CB_X0 = Math.min(CB_X0, p.x - 850); CB_X1 = Math.max(CB_X1, p.x + 850);
-  CB_Z0 = Math.min(CB_Z0, p.z - 850); CB_Z1 = Math.max(CB_Z1, p.z + 850);
+  CB_X0 = Math.min(CB_X0, p.x - 1000); CB_X1 = Math.max(CB_X1, p.x + 1000);
+  CB_Z0 = Math.min(CB_Z0, p.z - 1000); CB_Z1 = Math.max(CB_Z1, p.z + 1000);
 }
 
-let _cd = 0, _cs = 0; // module scratch: distance to path, param 0..1 along it
+// module scratch: distance to path, param 0..1 along it, signed lateral offset
+let _cd = 0, _cs = 0, _cx = 0;
 function canyonLocate(x, z) {
   if (x < CB_X0 || x > CB_X1 || z < CB_Z0 || z > CB_Z1) return false;
-  let best = 1e18, bs = 0;
+  let best = 1e18, bs = 0, side = 0;
   for (let i = 0; i < CSEG.length; i++) {
     const g = CSEG[i];
     const dx = x - g.ax, dz = z - g.az;
@@ -60,10 +63,11 @@ function canyonLocate(x, z) {
     t = t < 0 ? 0 : t > g.len ? g.len : t;
     const px = dx - g.ux * t, pz = dz - g.uz * t;
     const d2 = px * px + pz * pz;
-    if (d2 < best) { best = d2; bs = g.s0 + t; }
+    if (d2 < best) { best = d2; bs = g.s0 + t; side = dx * g.uz - dz * g.ux; }
   }
   _cd = Math.sqrt(best);
   _cs = bs / CANYON_LEN;
+  _cx = side < 0 ? -_cd : _cd;
   return true;
 }
 
@@ -82,17 +86,111 @@ function pathPoint(sN) {
   }
 }
 
-// gorge cut: flat floor (~72 m at the strip), steep strata walls 170-270 m above
-// it, raised tableland shoulders blending back to the biome over ~430 m
+// ---- canyon cross-section, all smooth functions of the along-path param s ----
+// floor half-width 102-168 m (floor 200-340 wide), held at 170 around the strip
+// segment so the corridor (half-width 144) never meets a wall base
+const stripHold = (s) => smooth(0.43, 0.466, s) * (1 - smooth(0.704, 0.74, s));
+function cWf(s) {
+  const v = 102 + 66 * noise2(s * 4.3 + 7.7, 2.5);
+  return v + (170 - v) * stripHold(s);
+}
+function cWr(s) { return 140 + 140 * noise2(s * 3.1 + 3.3, 8.8); } // stepped-wall run 140-280 m
+// floor level: 140 in the foothills -> 72 held across the strip + 800 m
+// approaches (thresholds sit at s 0.562/0.607) -> drowned estuary right where
+// the island mask fades out (r ~7200), so the gorge flows into the sea
+function cFl(s) { return 140 - 68 * smooth(0.03, 0.42, s) - 88 * smooth(0.692, 0.86, s); }
+// rim height above the floor 140-230 m (+-22 lateral noise on top), easing off
+// toward the mouth so the climb-out over the sea stays shallow
+function cDepth(s) { return (128 + 112 * noise2(s * 3.9 + 11.3, 4.4)) * (1 - 0.4 * smooth(0.72, 0.88, s)); }
+// dry-wash channel meander: lateral offset of the wash bed within the floor
+function washOff(s, wf) { return (noise2(s * 9.3 + 5.5, 6.2) - 0.5) * 2 * (wf - 58); }
+
+// gorge cut: flat floor with a meandering 1.7 m dry-wash channel, walls
+// quantized into 3 noise-jittered strata benches, raised tableland shoulders
+// blending back into the biome over ~430 m
 function carveCanyon(x, z, h) {
   const s = _cs, d = _cd;
-  const wf = 128 + 62 * smooth(0.30, 0.62, s); // floor half-width 128 -> 190 m
-  if (d >= wf + 535) return h;
-  const fl = 135 - 63 * smooth(0.04, 0.40, s) - 88 * smooth(0.70, 0.99, s); // 135 -> 72 -> sea
-  const rim = Math.max(h + 26, fl + 172 + noise2(x * 0.0012 + 40.2, z * 0.0012 + 12.8) * 96);
-  if (d < wf) return fl + (noise2(x * 0.02 + 3.3, z * 0.02 + 6.1) - 0.5) * 2.4;
-  if (d < wf + 105) return fl + (rim - fl) * smooth(0, 1, (d - wf) / 105);
-  return rim + (h - rim) * smooth(0, 1, (d - wf - 105) / 430);
+  const wf = cWf(s), wr = cWr(s);
+  if (d >= wf + wr + 430) return h;
+  const fl = cFl(s);
+  const rim = Math.max(h + 24, fl + cDepth(s) + (noise2(x * 0.0011 + 40.2, z * 0.0011 + 12.8) - 0.5) * 44);
+  if (d < wf) {
+    let f = fl + (noise2(x * 0.02 + 3.3, z * 0.02 + 6.1) - 0.5) * 2.4;
+    const dw = Math.abs(_cx - washOff(s, wf));
+    if (dw < 30) f -= 1.7 * (1 - smooth(6, 30, dw));
+    return f;
+  }
+  if (d < wf + wr) {
+    const t = (d - wf) / wr;
+    // bench-edge jitter fades at both ends so the profile stays continuous
+    const jA = smooth(0, 0.12, t) * (1 - smooth(0.85, 1, t)) * 0.16;
+    let tj = t + (noise2(x * 0.006 + 9.4, z * 0.006 + 4.2) - 0.5) * 2 * jA;
+    tj = tj < 0 ? 0 : tj > 0.9999 ? 0.9999 : tj;
+    const u = tj * 3, bi = u | 0, fr = u - bi;
+    const prof = 0.74 * ((bi + smooth(0.56, 0.97, fr)) / 3) + 0.26 * t;
+    return fl + (rim - fl) * prof;
+  }
+  return rim + (h - rim) * smooth(0, 1, (d - wf - wr) / 430);
+}
+
+// ---- tributary gullies: short 2-bench side cuts notching the gorge shoulders,
+// merged with min() so they fade out wherever the biome is already lower ----
+const TRIBS = [
+  { pts: [{ x: 1780, z: 1780 }, { x: 2210, z: 1460 }, { x: 2620, z: 1130 }], joinFl: 85 },
+  { pts: [{ x: 5150, z: 4760 }, { x: 4760, z: 4960 }, { x: 4380, z: 5180 }], joinFl: 59 },
+].map((tb) => {
+  const segs = [];
+  let acc = 0;
+  for (let i = 0; i < tb.pts.length - 1; i++) {
+    const a = tb.pts[i], b = tb.pts[i + 1];
+    const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
+    segs.push({ ax: a.x, az: a.z, ux: dx / len, uz: dz / len, len, s0: acc });
+    acc += len;
+  }
+  let x0 = 1e9, x1 = -1e9, z0 = 1e9, z1 = -1e9;
+  for (const p of tb.pts) {
+    x0 = Math.min(x0, p.x - 420); x1 = Math.max(x1, p.x + 420);
+    z0 = Math.min(z0, p.z - 420); z1 = Math.max(z1, p.z + 420);
+  }
+  return { segs, len: acc, joinFl: tb.joinFl, x0, x1, z0, z1 };
+});
+
+let _td = 0, _ts = 0; // module scratch: distance to tributary, param along it
+function tribLocate(tb, x, z) {
+  if (x < tb.x0 || x > tb.x1 || z < tb.z0 || z > tb.z1) return false;
+  let best = 1e18, bs = 0;
+  for (let i = 0; i < tb.segs.length; i++) {
+    const g = tb.segs[i];
+    const dx = x - g.ax, dz = z - g.az;
+    let t = dx * g.ux + dz * g.uz;
+    t = t < 0 ? 0 : t > g.len ? g.len : t;
+    const px = dx - g.ux * t, pz = dz - g.uz * t;
+    const d2 = px * px + pz * pz;
+    if (d2 < best) { best = d2; bs = g.s0 + t; }
+  }
+  _td = Math.sqrt(best);
+  _ts = bs / tb.len;
+  return _td < 420;
+}
+function carveTribs(x, z, h) {
+  for (let i = 0; i < TRIBS.length; i++) {
+    const tb = TRIBS[i];
+    if (!tribLocate(tb, x, z)) continue;
+    const d = _td, sT = _ts;
+    const wf = 34 + 44 * sT, wr = 80 + 50 * sT;
+    if (d >= wf + wr + 240) continue;
+    const fl = tb.joinFl + 46 * (1 - sT) * (1 - sT); // climbs upstream from the junction
+    const rim = Math.max(h + 16, fl + 74 + 62 * sT);
+    let g;
+    if (d < wf) g = fl + (noise2(x * 0.02 + 3.3, z * 0.02 + 6.1) - 0.5) * 2;
+    else if (d < wf + wr) {
+      const t = (d - wf) / wr;
+      const u = Math.min(t, 0.9999) * 2, bi = u | 0, fr = u - bi;
+      g = fl + (rim - fl) * (0.7 * ((bi + smooth(0.5, 0.95, fr)) / 2) + 0.3 * t);
+    } else g = rim + (h - rim) * smooth(0, 1, (d - wf - wr) / 240);
+    if (g < h) h = g;
+  }
+  return h;
 }
 
 // ---- per-strip terrain platforms: pull the base terrain to strip elevation over
@@ -159,20 +257,44 @@ function nearCorridor(x, z) { // vegetation keep-out over the first stretch of f
   return false;
 }
 
+// ---- shared feature masks (height field AND vertex colors read these, so the
+// paint always lands exactly on the feature) ----
+const DUNE_CA = Math.cos(0.42), DUNE_SA = Math.sin(0.42);
+function duneRidge(x, z) { // anisotropic ridges stretched along the prevailing wind axis
+  const u = x * DUNE_CA + z * DUNE_SA, v = z * DUNE_CA - x * DUNE_SA;
+  return 1 - Math.abs(fbm(u * 0.00062 + 3.3, v * 0.0036 + 9.1, 2));
+}
+function desertWash(x, z) { // dendritic shallow washes along fbm zero-contours
+  return 1 - smooth(0.02, 0.062, Math.abs(fbm(x * 0.00058 + 27.4, z * 0.00058 + 14.9, 2)));
+}
+function outcropMask(x, z) { // scattered grey rock bosses in the woods
+  return smooth(0.72, 0.8, noise2(x * 0.0019 + 55.5, z * 0.0019 + 21.2));
+}
+function terrace(t) { // 3 flat benches with smooth risers, for cliff-banded mesa flanks
+  if (t <= 0) return 0;
+  const u = Math.min(t, 0.9999) * 3, i = u | 0, f = u - i;
+  return (i + smooth(0.55, 0.96, f)) / 3;
+}
+
 // ---- biome height fields (only evaluated where their region weight matters) ----
-function hillsH(x, z) { // rolling green hills to ~130
+function hillsH(x, z) { // rolling swells + knolls, with shallow valley lines
   const b = fbm(x * 0.00095 + 7.3, z * 0.00095 + 3.1, 4) * 0.5 + 0.5;
-  return 16 + Math.pow(b, 1.3) * 118 + fbm(x * 0.0042, z * 0.0042, 2) * 7;
+  let h = 16 + Math.pow(b, 1.3) * 118 + fbm(x * 0.0042, z * 0.0042, 2) * 7;
+  h += smooth(0.66, 0.8, noise2(x * 0.0013 + 31.2, z * 0.0013 + 8.4)) * 26; // knolls
+  h -= (1 - smooth(0.02, 0.09, Math.abs(fbm(x * 0.00052 + 13.7, z * 0.00052 + 4.9, 2)))) * 13; // valleys
+  return h;
 }
-function desertH(x, z) { // soft dunes < ~80 plus clamped flat-topped mesas to ~150
+function desertH(x, z) { // directional dune ridges + banded mesas + shallow washes
   const b = fbm(x * 0.0014 + 11.2, z * 0.0014 + 5.6, 3) * 0.5 + 0.5;
-  const dn = Math.abs(fbm(x * 0.004 + z * 0.0013, z * 0.0021, 2)); // stretched ripples
   const mf = fbm(x * 0.00085 + 31.7, z * 0.00085 + 17.3, 3);
-  return 10 + b * 52 + dn * 16 + smooth(0.30, 0.40, mf) * 82 + smooth(0.46, 0.54, mf) * 28;
+  let h = 10 + b * 48 + Math.pow(duneRidge(x, z), 1.7) * 18;
+  h += terrace(smooth(0.30, 0.44, mf)) * 88 + smooth(0.47, 0.55, mf) * 26;
+  return h - desertWash(x, z) * 4.4;
 }
-function forestH(x, z) { // gentle wooded terrain to ~180
+function forestH(x, z) { // gentle wooded terrain to ~180 with rocky outcrops
   const b = fbm(x * 0.0011 + 2.2, z * 0.0011 + 9.9, 4) * 0.5 + 0.5;
-  return 22 + Math.pow(b, 1.2) * 158 + fbm(x * 0.005 + 1.1, z * 0.005, 2) * 6;
+  let h = 22 + Math.pow(b, 1.2) * 158 + fbm(x * 0.005 + 1.1, z * 0.005, 2) * 6;
+  return h + outcropMask(x, z) * (9 + 8 * noise2(x * 0.02 + 6.6, z * 0.02 + 1.9));
 }
 function mtnH(x, z, w) { // ridged fbm range + explicit summit bump at PEAK
   const rv = 1 - Math.abs(fbm(x * 0.0016 + 5.5, z * 0.0016 + 1.5, 5));
@@ -189,7 +311,7 @@ function biomeWeights(x, z) {
   _wH = 1 - smooth(1500, 4300, Math.hypot(wx - HILLS_C.x, wz - HILLS_C.z));
   _wD = 1 - smooth(1700, 4300, Math.hypot(wx - DESERT_C.x, wz - DESERT_C.z));
   _wF = 1 - smooth(1600, 4200, Math.hypot(wx - FOREST_C.x, wz - FOREST_C.z));
-  _wM = 1 - smooth(700, 3400, ridgeDist(wx, wz));
+  _wM = 1 - smooth(650, 4200, ridgeDist(wx, wz)); // long tail: foothills roll out into the plains
 }
 
 function baseHeight(x, z) {
@@ -205,7 +327,20 @@ function baseHeight(x, z) {
   if (_wF > 0.012) { h += _wF * forestH(x, z); sum += _wF; }
   if (_wM > 0.012) { h += _wM * mtnH(x, z, _wM); sum += _wM; }
   h = (h / sum) * Math.min(1, Math.pow(m, 0.85) * 1.3) - 6 + m * 12; // beach band at the rim
+  // island-wide relief, faded at the shore: domain-warped mid-frequency rolling
+  // (~300-900 m, +-15-35 m, halved in the already-ridged mountains), a small
+  // detail layer (~45-95 m, +-3-6 m) so low-level flight reads speed, and a
+  // subtle sand berm just above the waterline
+  const mSh = smooth(0.03, 0.22, m);
+  if (mSh > 0.01) {
+    const rx = x + (noise2(x * 0.00085 + 21.4, z * 0.00085 + 3.3) - 0.5) * 640;
+    const rz = z + (noise2(x * 0.00085 + 7.9, z * 0.00085 + 15.2) - 0.5) * 640;
+    h += fbm(rx * 0.00135 + 4.7, rz * 0.00135 + 8.3, 3) * 40 * (1 - 0.5 * _wM) * mSh;
+    h += fbm(x * 0.0105 + 2.9, z * 0.0105 + 5.7, 2) * 7 * mSh;
+    h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
+  }
   if (canyonLocate(x, z)) h = carveCanyon(x, z, h);
+  h = carveTribs(x, z, h);
   h = applyPlatforms(x, z, h);
   return applyCorridors(x, z, h);
 }
@@ -282,7 +417,7 @@ export function createWorld(scene) {
   scene.add(sun, sun.target);
 
   // terrain
-  const terrainGeo = new THREE.PlaneGeometry(15600, 15600, 440, 440);
+  const terrainGeo = new THREE.PlaneGeometry(15600, 15600, 500, 500);
   terrainGeo.rotateX(-Math.PI / 2);
   const tPos = terrainGeo.attributes.position;
   for (let i = 0; i < tPos.count; i++) tPos.setY(i, heightAt(tPos.getX(i), tPos.getZ(i)));
@@ -297,8 +432,11 @@ export function createWorld(scene) {
         cOchre = new THREE.Color(0xc0904f), cSage = new THREE.Color(0x9aa468),
         cForL = new THREE.Color(0x4d7a39), cForD = new THREE.Color(0x2f5129),
         cMtnLow = new THREE.Color(0x8a7355), cRubble = new THREE.Color(0xa9825c),
-        cDeep = new THREE.Color(0x35635d);
+        cDeep = new THREE.Color(0x35635d), cWashBed = new THREE.Color(0xd8c6a0),
+        cCrest = new THREE.Color(0xead9a8), cScree = new THREE.Color(0x8f8a81),
+        cRiser = new THREE.Color(0x5f3020);
   const strata = [0x8f4a34, 0xb46b46, 0xc98f5f, 0x7c4030].map((v) => new THREE.Color(v));
+  const benchCol = [strata[3], strata[0], strata[1]]; // canyon benches, bottom -> top
   const c = new THREE.Color(), c2 = new THREE.Color();
   let ar = 0, ag = 0, ab = 0;
   const addC = (col, w) => { ar += col.r * w; ag += col.g * w; ab += col.b * w; };
@@ -319,23 +457,68 @@ export function createWorld(scene) {
     if (_wF > 0.004) { c2.copy(cForL).lerp(cForD, 0.3 + patch * 0.6); addC(c2, _wF); }
     if (_wM > 0.004) { c2.copy(cMtnLow).lerp(cRock, smooth(90, 300, h)).lerp(cRockD, jit * 0.4); addC(c2, _wM); }
     c.setRGB(ar / sum, ag / sum, ab / sum);
-    // exposed rock on steep faces (warm-toned where the desert dominates)
+    // exposed rock on steep faces; desert cliffs get height-banded strata (mesas)
     const steep = smooth(0.28, 0.55, 1 - tNorm.getY(i));
     if (steep > 0 && h > 2) {
       c2.copy(cRock).lerp(cRockD, jit * 0.7);
-      if (_wD / sum > 0.5) c2.copy(cOchre).lerp(strata[1], 0.5);
+      if (_wD / sum > 0.45) {
+        const band = h * 0.055 + jit * 0.9;
+        const bi = ((band | 0) % 4 + 4) % 4;
+        c2.copy(strata[bi]).lerp(strata[(bi + 1) % 4], (band - Math.floor(band)) * 0.5).lerp(cOchre, 0.3);
+      }
       c.lerp(c2, steep * 0.85);
     }
-    // canyon: layered red/brown strata on the walls, rubble on the floor
+    // desert flats: sunlit dune crests vs shadowed flanks, pale dry-wash beds
+    const wDs = _wD / sum;
+    if (wDs > 0.3 && h > 4 && steep < 0.3) {
+      const rv = duneRidge(x, z);
+      if (rv > 0.62) c.lerp(cCrest, smooth(0.62, 0.95, rv) * 0.4 * wDs);
+      else c.lerp(cOchre, (1 - rv) * 0.1 * wDs);
+      const wm = desertWash(x, z);
+      if (wm > 0.05) c.lerp(cWashBed, wm * 0.5 * wDs);
+    }
+    // forest rocky outcrops go grey
+    if (_wF / sum > 0.3) {
+      const om = outcropMask(x, z);
+      if (om > 0.02) c.lerp(c2.copy(cRock).lerp(cRockD, jit * 0.5), om * 0.85);
+    }
+    // scree aprons skirting the mountain bases
+    if (_wM / sum > 0.2 && h > 40 && h < 250) {
+      const scr = smooth(0.1, 0.3, 1 - tNorm.getY(i)) * smooth(42, 80, h) * (1 - smooth(175, 245, h));
+      if (scr > 0.02) c.lerp(c2.copy(cScree).lerp(cRubble, 0.3).lerp(cRockD, jit * 0.35), scr * 0.6 * Math.min(1, _wM * 1.6));
+    }
+    // canyon: strata banded to the wall benches, rubble floor + pale wash bed
     if (canyonLocate(x, z)) {
-      const wf = 128 + 62 * smooth(0.30, 0.62, _cs);
-      if (_cd < wf) c.lerp(cRubble, 0.55);
-      else if (_cd < wf + 330) {
-        const band = h * 0.045 + jit * 0.8;
-        const bi = ((band | 0) % 4 + 4) % 4;
-        c2.copy(strata[bi]).lerp(strata[(bi + 1) % 4], (band - Math.floor(band)) * 0.6);
-        const wallW = smooth(wf - 35, wf + 15, _cd) * (1 - smooth(wf + 150, wf + 320, _cd));
-        c.lerp(c2, wallW * (0.35 + 0.65 * smooth(0.2, 0.5, 1 - tNorm.getY(i))));
+      const wfC = cWf(_cs), wrC = cWr(_cs);
+      if (_cd < wfC) {
+        c.lerp(cRubble, 0.5);
+        const dw = Math.abs(_cx - washOff(_cs, wfC));
+        if (dw < 28) c.lerp(cWashBed, (1 - smooth(8, 28, dw)) * 0.6);
+      } else if (_cd < wfC + wrC + 60) {
+        const t = Math.min(1, (_cd - wfC) / wrC);
+        const jA = smooth(0, 0.12, t) * (1 - smooth(0.85, 1, t)) * 0.16;
+        let tj = t + (noise2(x * 0.006 + 9.4, z * 0.006 + 4.2) - 0.5) * 2 * jA;
+        tj = tj < 0 ? 0 : tj > 0.9999 ? 0.9999 : tj;
+        const u = tj * 3, bi = u | 0, fr = u - bi;
+        const riser = smooth(0.56, 0.97, fr);
+        c2.copy(benchCol[bi]).lerp(bi < 2 ? benchCol[bi + 1] : strata[2], riser * 0.65);
+        c2.lerp(cRiser, riser * (1 - riser) * 1.2); // shadowed riser faces
+        if (riser < 0.2) c2.lerp(cRubble, 0.18);    // dusty bench tops
+        const wallW = smooth(wfC - 40, wfC + 20, _cd) * (1 - smooth(wfC + wrC, wfC + wrC + 60, _cd));
+        c.lerp(c2, wallW * (0.5 + 0.5 * steep));
+      }
+    }
+    // tributary gullies: light strata tint, only where the cut actually landed
+    // (the min() merge means the gully fades out over lower ground)
+    for (let k = 0; k < TRIBS.length; k++) {
+      if (!tribLocate(TRIBS[k], x, z)) continue;
+      const wfT = 34 + 44 * _ts, wrT = 80 + 50 * _ts;
+      const flT = TRIBS[k].joinFl + 46 * (1 - _ts) * (1 - _ts);
+      if (_td < wfT) {
+        if (Math.abs(h - flT) < 5) c.lerp(cRubble, 0.4);
+      } else if (_td < wfT + wrT + 30 && h > flT - 4 && h < flT + 158) {
+        c2.copy(strata[1]).lerp(strata[0], jit * 0.5);
+        c.lerp(c2, (0.3 + 0.55 * steep) * (1 - smooth(wfT + wrT - 20, wfT + wrT + 30, _td)) * 0.8);
       }
     }
     // coastal beach band: wet -> dry sand, then blend up into the biome
@@ -359,10 +542,11 @@ export function createWorld(scene) {
     const gz = heightAt(x, z + 7) - heightAt(x, z - 7);
     return Math.hypot(gx, gz) / 14;
   }
-  // shared vegetation rejection: strips, short final, and the gorge itself
+  // shared vegetation rejection: strips, short final, the gorge and its gullies
   function vetoed(x, z) {
     if (runwayInfluence(x, z) > 0.02) return true;
-    if (canyonLocate(x, z) && _cd < 380) return true;
+    if (canyonLocate(x, z) && _cd < cWf(_cs) + cWr(_cs) + 60) return true;
+    for (let k = 0; k < TRIBS.length; k++) if (tribLocate(TRIBS[k], x, z) && _td < 230) return true;
     return nearCorridor(x, z);
   }
 
@@ -413,7 +597,7 @@ export function createWorld(scene) {
     const x = HILLS_C.x + (noise2(td * 1.618 + 9.9, 0.31) * 2 - 1) * 2150;
     const z = HILLS_C.z + (noise2(0.7, td * 2.113 + 0.3) * 2 - 1) * 2150;
     const h = heightAt(x, z);
-    if (h < 3.5 || h > 125) continue;
+    if (h < 3.5 || h > 145) continue; // hills carry knolls + relief now
     if (vetoed(x, z)) continue;
     if (slopeAt(x, z) > 0.5) continue;
     const s = 0.7 + noise2(x * 0.5, z * 0.5);
@@ -447,7 +631,7 @@ export function createWorld(scene) {
     const x = DESERT_C.x + (noise2(tc * 1.618 + 5.5, 0.13) * 2 - 1) * 2350;
     const z = DESERT_C.z + (noise2(0.9, tc * 2.113 + 2.6) * 2 - 1) * 2350;
     const h = heightAt(x, z);
-    if (h < 8 || h > 115) continue;
+    if (h < 8 || h > 125) continue;
     if (vetoed(x, z)) continue;
     if (slopeAt(x, z) > 0.38) continue;
     const s = 0.75 + noise2(x * 0.7, z * 0.7) * 0.85;
@@ -477,8 +661,8 @@ export function createWorld(scene) {
     if (pick < 4) { // canyon (low-discrepancy param along the path)
       const sN = 0.06 + ((rt * 0.618034) % 1) * 0.86;
       pathPoint(sN);
-      const wfv = 128 + 62 * smooth(0.30, 0.62, sN);
-      const mag = (wfv - 45 + noise2(rt * 2.3, 3.1) * 375) * (noise2(rt * 0.77, 9.9) > 0.5 ? 1 : -1);
+      const wfv = cWf(sN);
+      const mag = (wfv - 45 + noise2(rt * 2.3, 3.1) * 430) * (noise2(rt * 0.77, 9.9) > 0.5 ? 1 : -1);
       x = _ppx - _ppuz * mag;
       z = _ppz + _ppux * mag;
       red = true;

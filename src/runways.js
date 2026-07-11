@@ -17,16 +17,20 @@ export const MTN_A    = { x: -3000, z: -2000 }; // mountain ridge west end
 export const MTN_B    = { x: 1400,  z: -3100 }; // mountain ridge east end
 export const PEAK     = { x: -350,  z: -2750 }; // highest summit (~650 m)
 
-// Canyon carve waypoints, mountain foothills -> southeast sea. Segment [2]->[3]
-// is straight (2482 m) and carries the Canyon strip dead-center, so the flat
-// gorge floor runs clear for 800+ m past both thresholds by construction.
+// Canyon carve waypoints, mountain foothills -> southeast sea: a meandering
+// ~9.5 km gorge (bends kept under ~30 deg so the capsule-union distance field
+// stays clean). Segment [5]->[6] is straight (2290 m) and carries the Canyon
+// strip dead-center, so the flat gorge floor runs clear for ~935 m past both
+// thresholds by construction.
 export const CANYON_PATH = [
-  { x: 1250, z: -1250 }, { x: 2250, z: 550 }, { x: 3050, z: 2350 },
-  { x: 4200, z: 4550 }, { x: 5350, z: 6350 },
+  { x: 1150, z: -1350 }, { x: 1795, z: -600 }, { x: 2010, z: 420 },
+  { x: 2620, z: 1130 }, { x: 2795, z: 2050 }, { x: 3095, z: 2435 },
+  { x: 4155, z: 4465 }, { x: 4380, z: 5180 }, { x: 4310, z: 5920 },
+  { x: 4560, z: 6480 }, { x: 5000, z: 7000 },
 ];
 
 // m = flattening margin; pad = base-terrain platform blend consumed by world.js.
-// [3] heading matches CANYON_PATH segment [2]->[3]; [4] axis runs E-W along the
+// [3] heading matches CANYON_PATH segment [5]->[6]; [4] axis runs E-W along the
 // range's south flank with PEAK ~810 m away, perpendicular to the approach.
 export const RUNWAYS = [
   { name: 'Coast',  x: 250,   z: 6050,  heading: 0,       length: 450, width: 26, elev: 12,  m: 90, pad: 300 },
