@@ -19,6 +19,7 @@ Double-click `fly.bat`, or start the launch config (`.claude/launch.json` →
 | `Q`/`E` | rudder (steers the tailwheel on the ground) |
 | `X` / `Z` (or `Shift`) | throttle up / down |
 | `G` | landing gear up/down |
+| `F` | flaps (up / 1 / 2) — slower approaches, lower stall speed |
 | `Space` | wheel brakes |
 | `T` | spawn parked on a runway — press again to cycle all six |
 | `R` | reset to air spawn |
