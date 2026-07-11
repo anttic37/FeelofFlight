@@ -5,7 +5,7 @@ import { RUNWAYS } from './runways.js';
 // Minimap projection: north (-Z) is map up, east (+X) is map right — matching
 // the out-the-window world. Compass heading = atan2(fx, -fz): right turn counts up.
 const MAP_S = 280;      // backing pixels (140 css px at 2x)
-const MAP_HALF = 1900;  // meters from map center to edge
+const MAP_HALF = 7500;  // meters from map center to edge (island r~7000 fits)
 const CARDINALS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const _fwd = new THREE.Vector3();
 
@@ -24,10 +24,10 @@ function bakeIslandMap() {
         const deep = Math.min(1, Math.max(0, -h / 10));
         r = 60 - 22 * deep; g = 116 - 40 * deep; b = 152 - 42 * deep; a = 200;
       } else if (h < 2) { r = 214; g = 196; b = 146; }
-      else if (h > 150) { r = 236; g = 240; b = 243; }
-      else if (h > 105) { r = 139; g = 136; b = 128; }
+      else if (h > 600) { r = 236; g = 240; b = 243; }
+      else if (h > 420) { r = 139; g = 136; b = 128; }
       else {
-        const k = h / 105;
+        const k = h / 420;
         r = 111 - 35 * k; g = 165 - 43 * k; b = 82 - 21 * k;
       }
       d[o] = r; d[o + 1] = g; d[o + 2] = b; d[o + 3] = a;

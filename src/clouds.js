@@ -3,12 +3,12 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { noise2 } from './noise.js';
 
 // Puffy cumulus: each cloud is 5-9 overlapping smooth-shaded ellipsoid puffs
-// merged into one geometry (one draw call per cloud, ~32 clouds). Lambert with
+// merged into one geometry (one draw call per cloud, ~80 clouds). Lambert with
 // smooth normals + emissive keeps undersides bright — no dark faceted faces.
-// Drift +X with wraparound over a 6000 m box centered on the island.
+// Drift +X with wraparound over a 20 km box centered on the island.
 
-const COUNT = 32;
-const BOX = 6000;
+const COUNT = 80;
+const BOX = 20000;
 const HALF = BOX / 2;
 
 export function createClouds(scene) {
@@ -52,8 +52,9 @@ diffuseColor.a *= mix(1.0, 0.35, fres);
     const mesh = new THREE.Mesh(mergeGeometries(parts), mat);
     mesh.renderOrder = 2;
     const a = noise2(i * 3.7, 1.1) * Math.PI * 4;
-    const r = 200 + noise2(i * 1.3, 8.8) * 2600;
-    const baseY = 230 + noise2(i * 2.9, 4.2) * 250;
+    const r = 300 + noise2(i * 1.3, 8.8) * 9200;
+    // 260-700 m: around and above the 650 m peaks; the ~500 m ones sit near the summit strip
+    const baseY = 260 + noise2(i * 2.9, 4.2) * 440;
     mesh.position.set(Math.cos(a) * r, baseY, Math.sin(a) * r);
     mesh.rotation.y = noise2(i * 6.1, 2.2) * Math.PI * 2;
     scene.add(mesh);

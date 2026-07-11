@@ -5,15 +5,15 @@ import * as THREE from 'three';
 // injected into MeshStandardMaterial via onBeforeCompile so fog/lights/shadows
 // keep working. A huge plain far plane fills the horizon underneath it.
 
-const SIZE = 5200; // covers island circle r~2600
-const SEG = 190;
+const SIZE = 16400; // covers island r~7000 + shore band
+const SEG = 300; // 301^2 ≈ 90k verts
 
 export function createWater(scene, heightAt) {
   const uTime = { value: 0 };
 
   // far ocean: plain dark blue horizon fill just below the detailed sheet
   const far = new THREE.Mesh(
-    new THREE.PlaneGeometry(42000, 42000),
+    new THREE.PlaneGeometry(80000, 80000),
     new THREE.MeshStandardMaterial({ color: 0x1a5580, roughness: 0.5, metalness: 0.1 })
   );
   far.rotation.x = -Math.PI / 2;

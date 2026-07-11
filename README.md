@@ -20,7 +20,7 @@ Double-click `fly.bat`, or start the launch config (`.claude/launch.json` →
 | `X` / `Z` (or `Shift`) | throttle up / down |
 | `G` | landing gear up/down |
 | `Space` | wheel brakes |
-| `T` | spawn parked on runway 1, ready for takeoff |
+| `T` | spawn parked on a runway — press again to cycle all six |
 | `R` | reset to air spawn |
 | `M` | mute |
 | Gamepad | left stick = pitch/roll (stick back = pull up), triggers = throttle, bumpers = rudder, A = brake, Y = gear |
@@ -32,8 +32,14 @@ Double-click `fly.bat`, or start the launch config (`.claude/launch.json` →
   touch down gently (< 6 m/s sink), wings level, then `Space` to brake. Grass works
   too if you're gentle — expect drag. Belly landings, hard slams, high-speed or
   banked touchdowns and water all end the flight, with the reason on screen.
-- Runways: 1 — main coastal strip dead ahead of the air spawn; 2 — short mountain
-  plateau strip (elev 70 m); 3 — small angled coastal shelf.
+- The island is ~14 km across with five biomes and six strips (`T` cycles them):
+  **Coast** — the primary, dead ahead of the air spawn, all-water final;
+  **Desert** — long strip in the eastern dunes, mesas and cacti;
+  **Forest** — short clearing strip in the western pines;
+  **Canyon** — on the floor of a red-walled gorge; fly the gorge mouth in from the
+  sea and land up-canyon (the signature approach);
+  **Summit** — short snow-line strip at 465 m beside the 620 m peak;
+  **Hills** — upland strip in the rolling south.
 
 ## What makes the "feel" (and where to tune it)
 

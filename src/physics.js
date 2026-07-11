@@ -9,7 +9,7 @@ import { fbm1 } from './noise.js';
 const G = 9.81;
 const RHO = 1.225;
 
-const SPAWN_POS = new THREE.Vector3(0, 170, 1500);
+const SPAWN_POS = new THREE.Vector3(250, 120, 7600); // 1.3 km final over water to the Coast strip
 const SPAWN_SPEED = 55;
 
 const GEAR_TIME = 1.6;      // s to extend/retract

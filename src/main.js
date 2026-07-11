@@ -52,9 +52,11 @@ function reset(message) {
 input.onReset = () => reset('RESET');
 input.onMute = () => hud.msg(sound.toggleMute() ? 'MUTED' : 'SOUND ON', 1200);
 input.onGear = () => phys.toggleGear();
+let runwayCycle = -1;
 input.onRunwaySpawn = () => {
-  const r = RUNWAYS[0];
-  // threshold at the shore (+Z) end, facing down the strip (yaw 0 faces -Z)
+  runwayCycle = (runwayCycle + 1) % RUNWAYS.length;
+  const r = RUNWAYS[runwayCycle];
+  // threshold at the +Z end, facing down the strip (yaw 0 faces -Z)
   const fx0 = -Math.sin(r.heading), fz0 = -Math.cos(r.heading);
   const back = r.length / 2 - 30;
   phys.resetTo({ x: r.x - fx0 * back, z: r.z - fz0 * back, y: r.elev + 1.55, yaw: r.heading, speed: 0, grounded: true, gearDown: true });
@@ -62,7 +64,7 @@ input.onRunwaySpawn = () => {
   syncPlaneToPhysics();
   chase.snap(phys);
   trails.reset();
-  hud.msg('READY FOR TAKEOFF — FULL THROTTLE, S TO ROTATE', 3200);
+  hud.msg(`${(r.name || 'RUNWAY ' + (runwayCycle + 1)).toUpperCase()} — FULL THROTTLE, S TO ROTATE`, 3200);
 };
 
 // audio needs a user gesture
