@@ -8,6 +8,15 @@ import { fbm1 } from './noise.js';
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
+// how hard the camera is glued to the plane — cycled with C. k = spring
+// stiffness, damp = damping ratio (1 critical, lower floats), look = aim lag
+const TIGHTNESS = [
+  { name: 'TIGHT', k: 60, damp: 1.0, look: 4.5 },
+  { name: 'NORMAL', k: 26, damp: 0.92, look: 2.2 },
+  { name: 'LOOSE', k: 12, damp: 0.85, look: 1.4 },
+  { name: 'FLOATY', k: 6, damp: 0.8, look: 0.9 },
+];
+
 export class ChaseCam {
   constructor(camera, heightAt) {
     this.camera = camera;
@@ -18,6 +27,7 @@ export class ChaseCam {
     this.fov = 62;
     this.time = 0;
     this.gLagSm = 0; // smoothed G-pull camera lag
+    this.mode = 1;   // TIGHTNESS index, default NORMAL
 
     // mouse orbit + zoom
     this.orbitYaw = 0;
@@ -40,13 +50,18 @@ export class ChaseCam {
     window.addEventListener('pointerup', () => { this._dragging = false; });
     window.addEventListener('blur', () => { this._dragging = false; });
     window.addEventListener('wheel', e => {
-      this.zoomOff = Math.max(-6.5, Math.min(22, this.zoomOff + e.deltaY * 0.012));
+      this.zoomOff = Math.max(-8, Math.min(34, this.zoomOff + e.deltaY * 0.012));
     }, { passive: true });
     window.addEventListener('contextmenu', e => e.preventDefault());
 
     this._t = { fwd: new THREE.Vector3(), up: new THREE.Vector3(), mix: new THREE.Vector3(),
                 des: new THREE.Vector3(), lt: new THREE.Vector3(), right: new THREE.Vector3(),
                 a: new THREE.Vector3(), dir: new THREE.Vector3() };
+  }
+
+  cycleTightness() {
+    this.mode = (this.mode + 1) % TIGHTNESS.length;
+    return TIGHTNESS[this.mode].name;
   }
 
   snap(phys) {
@@ -85,7 +100,7 @@ export class ChaseCam {
     const gk = Math.min(1, Math.max(0, ((phys.gLoad ?? 1) - 1) / 3));
     this.gLagSm += (gk - this.gLagSm) * Math.min(1, dt * 3.5);
 
-    const dist = 11.5 + phys.speed * 0.03 + this.zoomSm + this.gLagSm * 0.9;
+    const dist = 17 + phys.speed * 0.04 + this.zoomSm + this.gLagSm * 0.9;
     const dir = t.dir.copy(fwd).negate();
     const orbitMag = Math.abs(this.orbitYaw) + Math.abs(this.orbitPitch);
     if (orbitMag > 1e-4) {
@@ -95,8 +110,10 @@ export class ChaseCam {
     }
     const des = t.des.copy(phys.pos).addScaledVector(dir, dist).addScaledVector(upMix, 3.6);
 
-    // loose spring toward desired position (slightly underdamped → a touch of float)
-    const k = 26, damp = 2 * Math.sqrt(k) * 0.92;
+    // spring toward desired position; stiffness/damping come from the C-cycled
+    // tightness mode (underdamped modes hover and float around the plane)
+    const tn = TIGHTNESS[this.mode];
+    const k = tn.k, damp = 2 * Math.sqrt(k) * tn.damp;
     t.a.copy(des).sub(this.pos).multiplyScalar(k).addScaledVector(this.velC, -damp);
     this.velC.addScaledVector(t.a, dt);
     this.pos.addScaledVector(this.velC, dt);
@@ -107,7 +124,7 @@ export class ChaseCam {
     const ahead = 9 / (1 + 3 * orbitMag);
     const gOff = Math.max(-0.8, Math.min(1.6, (phys.gLoad - 1) * 0.55));
     const lt = t.lt.copy(phys.pos).addScaledVector(fwd, ahead).addScaledVector(planeUp, 0.8 + gOff);
-    this.look.lerp(lt, 1 - Math.exp(-dt * 2.2));
+    this.look.lerp(lt, 1 - Math.exp(-dt * tn.look));
 
     // FOV stretches with speed
     const fovTarget = Math.min(84, Math.max(60, 62 + Math.max(0, phys.speed - 32) * 0.24));
