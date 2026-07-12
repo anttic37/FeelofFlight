@@ -11,10 +11,10 @@ const WORLD_UP = new THREE.Vector3(0, 1, 0);
 // how hard the camera is glued to the plane — cycled with C. k = spring
 // stiffness, damp = damping ratio (1 critical, lower floats), look = aim lag
 const TIGHTNESS = [
-  { name: 'TIGHT', k: 60, damp: 1.0, look: 4.5 },
-  { name: 'NORMAL', k: 26, damp: 0.92, look: 2.2 },
-  { name: 'LOOSE', k: 12, damp: 0.85, look: 1.4 },
-  { name: 'FLOATY', k: 6, damp: 0.8, look: 0.9 },
+  { name: 'TIGHT', k: 60, damp: 1.0, look: 4.5, speedLag: 0.4 },
+  { name: 'NORMAL', k: 26, damp: 0.92, look: 2.2, speedLag: 1.0 },
+  { name: 'LOOSE', k: 12, damp: 0.85, look: 1.4, speedLag: 1.7 },
+  { name: 'FLOATY', k: 6, damp: 0.8, look: 0.9, speedLag: 2.6 },
 ];
 
 export class ChaseCam {
@@ -26,8 +26,10 @@ export class ChaseCam {
     this.look = new THREE.Vector3();
     this.fov = 62;
     this.time = 0;
-    this.gLagSm = 0; // smoothed G-pull camera lag
-    this.mode = 1;   // TIGHTNESS index, default NORMAL
+    this.gLagSm = 0;   // smoothed G-pull camera lag
+    this.accLagSm = 0; // smoothed speed-change lag (accel back, decel closer)
+    this._prevSpeed = 0;
+    this.mode = 1;     // TIGHTNESS index, default NORMAL
 
     // mouse orbit + zoom
     this.orbitYaw = 0;
@@ -72,6 +74,8 @@ export class ChaseCam {
     this.look.copy(phys.pos);
     this.orbitYaw = 0;
     this.orbitPitch = 0;
+    this.accLagSm = 0;
+    this._prevSpeed = phys.speed; // no lag spike from teleports
   }
 
   update(dt, phys) {
@@ -100,7 +104,17 @@ export class ChaseCam {
     const gk = Math.min(1, Math.max(0, ((phys.gLoad ?? 1) - 1) / 3));
     this.gLagSm += (gk - this.gLagSm) * Math.min(1, dt * 3.5);
 
-    const dist = 17 + phys.speed * 0.04 + this.zoomSm + this.gLagSm * 0.9;
+    // speed-change lag: acceleration stretches the tether (camera falls back),
+    // deceleration lets it surge closer. Builds fast, RELEASES slowly — the
+    // camera doesn't catch back up the moment the speed settles.
+    const tn = TIGHTNESS[this.mode];
+    const acc = dt > 0 ? (phys.speed - this._prevSpeed) / dt : 0;
+    this._prevSpeed = phys.speed;
+    const accTarget = Math.max(-8, Math.min(14, acc * 2.2)) * tn.speedLag;
+    const accRate = Math.abs(accTarget) > Math.abs(this.accLagSm) ? 3.0 : 0.55;
+    this.accLagSm += (accTarget - this.accLagSm) * Math.min(1, dt * accRate);
+
+    const dist = Math.max(7, 17 + phys.speed * 0.04 + this.zoomSm + this.gLagSm * 0.9 + this.accLagSm);
     const dir = t.dir.copy(fwd).negate();
     const orbitMag = Math.abs(this.orbitYaw) + Math.abs(this.orbitPitch);
     if (orbitMag > 1e-4) {
@@ -112,7 +126,6 @@ export class ChaseCam {
 
     // spring toward desired position; stiffness/damping come from the C-cycled
     // tightness mode (underdamped modes hover and float around the plane)
-    const tn = TIGHTNESS[this.mode];
     const k = tn.k, damp = 2 * Math.sqrt(k) * tn.damp;
     t.a.copy(des).sub(this.pos).multiplyScalar(k).addScaledVector(this.velC, -damp);
     this.velC.addScaledVector(t.a, dt);
