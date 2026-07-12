@@ -264,7 +264,7 @@ export class FlightModel {
       // rudder input: ambient (wind-crab) sideslip adds NO side force, keeping
       // hands-off glides exactly on the regression-tested baseline.
       const bodyRight = t.v2.set(1, 0, 0).applyQuaternion(this.quat);
-      force.addScaledVector(bodyRight, -beta * q * this.wingArea * 0.75 * Math.abs(controls.yaw));
+      force.addScaledVector(bodyRight, -beta * q * this.wingArea * 1.1 * Math.abs(controls.yaw));
 
       // vertical turbulence gust (not while rolling on wheels)
       if (!this.grounded) force.y += fbm1(this.time * 0.45, 4) * 2200;
@@ -377,6 +377,17 @@ export class FlightModel {
     tq.z = -controls.roll * this.ailPower * qn
          + beta * this.dihedral * qn
          - w.z * this.rollDamp * qnD;
+    // rudder banks the plane toward ~29° into the turn (gated by rudder input):
+    // the tilted lift vector turns the flight path far harder than the skid
+    // alone, and a touch of automatic back pressure pulls the nose through the
+    // turn instead of letting it dive
+    if (controls.yaw !== 0) {
+      const ry = 2 * (this.quat.x * this.quat.y + this.quat.w * this.quat.z); // world-y of body-right
+      const bank = Math.asin(clamp(ry, -1, 1)); // negative = banked right
+      const ryd = Math.abs(controls.yaw);
+      tq.z += (-0.5 * controls.yaw - bank) * 4500 * qn * ryd;
+      tq.x += ryd * Math.min(0.6, Math.abs(bank)) * 2600 * qn;
+    }
     if (Math.abs(this.aoa) > stallEff) {
       const over = Math.abs(this.aoa) - stallEff;
       tq.x -= Math.sign(this.aoa) * over * this.stallBreak * qnS; // stall break
