@@ -1,91 +1,16 @@
 import * as THREE from 'three';
 import { noise2 } from './noise.js';
-import { heightAt } from './world.js'; // circular with world.js — only called inside createRunways, safe
+import { RUNWAYS, heightAt } from './heightcore.js';
 
-// Landing strips + the shared feature anchors the terrain is shaped around.
-// heading = radians about +Y; heading 0 -> long axis along world -Z.
-// DESIGN: world.js builds the island around these anchors (biome centers, the
-// canyon carve path, the summit plateau) so every strip's surroundings fit its
-// theme by construction. runways.js never reads world.js bindings at module
-// scope — only heightAt inside createRunways, after all modules evaluated.
-
-// biome anchor points (world.js uses them for region masks + vegetation)
-export const HILLS_C  = { x: 900,   z: 4200 };  // southern rolling hills
-export const DESERT_C = { x: 4300,  z: 300 };   // eastern dunes + mesas
-export const FOREST_C = { x: -4200, z: -100 };  // western woods
-export const MTN_A    = { x: -3000, z: -2000 }; // mountain ridge west end
-export const MTN_B    = { x: 1400,  z: -3100 }; // mountain ridge east end
-export const PEAK     = { x: -350,  z: -2750 }; // highest summit (~650 m)
-
-// Canyon carve waypoints, mountain foothills -> southeast sea: a meandering
-// ~9.5 km gorge (bends kept under ~30 deg so the capsule-union distance field
-// stays clean). Segment [5]->[6] is straight (2290 m) and carries the Canyon
-// strip dead-center, so the flat gorge floor runs clear for ~935 m past both
-// thresholds by construction.
-export const CANYON_PATH = [
-  { x: 1150, z: -1350 }, { x: 1795, z: -600 }, { x: 2010, z: 420 },
-  { x: 2620, z: 1130 }, { x: 2795, z: 2050 }, { x: 3095, z: 2435 },
-  { x: 4155, z: 4465 }, { x: 4380, z: 5180 }, { x: 4310, z: 5920 },
-  { x: 4560, z: 6480 }, { x: 5000, z: 7000 },
-];
-
-// m = flattening margin; pad = base-terrain platform blend consumed by world.js.
-// [3] heading matches CANYON_PATH segment [5]->[6]; [4] axis runs E-W along the
-// range's south flank with PEAK ~810 m away, perpendicular to the approach.
-export const RUNWAYS = [
-  { name: 'Coast',  x: 250,   z: 6050,  heading: 0,       length: 450, width: 26, elev: 12,  m: 90, pad: 300 },
-  { name: 'Desert', x: 4350,  z: 900,   heading: 0.28,    length: 620, width: 30, elev: 36,  m: 90, pad: 320 },
-  { name: 'Forest', x: -4250, z: -300,  heading: 1.05,    length: 380, width: 22, elev: 64,  m: 70, pad: 260 },
-  { name: 'Canyon', x: 3625,  z: 3450,  heading: -2.6599, length: 420, width: 24, elev: 72,  m: 60, pad: 220 },
-  { name: 'Summit', x: 350,   z: -2350, heading: -1.64,   length: 340, width: 20, elev: 465, m: 70, pad: 300 },
-  { name: 'Hills',  x: 1600,  z: 3850,  heading: 2.30,    length: 400, width: 24, elev: 104, m: 80, pad: 280 },
-];
-for (const r of RUNWAYS) {
-  r._c = Math.cos(r.heading); r._s = Math.sin(r.heading);
-  const reach = Math.hypot(r.length, r.width) / 2 + r.m + 2;
-  r._r2 = reach * reach; // coarse circle reject for the hot per-sample loops
-}
-
-// blend weight: 1 on the strip, smoothstep down to 0 at r.m outside the rect
-function stripWeight(r, x, z) {
-  const dx = x - r.x, dz = z - r.z;
-  if (dx * dx + dz * dz > r._r2) return 0;
-  const lx = dx * r._c - dz * r._s, lz = dx * r._s + dz * r._c;
-  const du = Math.abs(lx) - r.width * 0.5, dv = Math.abs(lz) - r.length * 0.5;
-  if (du >= r.m || dv >= r.m) return 0;
-  if (du <= 0 && dv <= 0) return 1;
-  const d = Math.hypot(Math.max(0, du), Math.max(0, dv));
-  if (d >= r.m) return 0;
-  const t = d / r.m;
-  return 1 - t * t * (3 - 2 * t);
-}
-
-export function onRunway(x, z) {
-  for (const r of RUNWAYS) {
-    const dx = x - r.x, dz = z - r.z;
-    if (dx * dx + dz * dz > r._r2) continue;
-    const lx = dx * r._c - dz * r._s, lz = dx * r._s + dz * r._c;
-    if (Math.abs(lx) <= r.width * 0.5 && Math.abs(lz) <= r.length * 0.5) return true;
-  }
-  return false;
-}
-
-// max blend weight over all strips (0 clear .. 1 on asphalt). Extra helper used by
-// world.js for vegetation exclusion and dirt tinting; not part of the shared contract.
-export function runwayInfluence(x, z) {
-  let w = 0;
-  for (const r of RUNWAYS) w = Math.max(w, stripWeight(r, x, z));
-  return w;
-}
-
-export function applyRunwayFlattening(x, z, baseH) {
-  let h = baseH;
-  for (const r of RUNWAYS) { // strips never overlap, order irrelevant
-    const w = stripWeight(r, x, z);
-    if (w > 0) h += (r.elev - h) * w;
-  }
-  return h;
-}
+// Runway meshes, markings, lights, windsocks + the hangar. The strips, the
+// shared feature anchors and the flattening math live in heightcore.js (pure,
+// worker-loadable); they are re-exported here so consumer imports are
+// unchanged. The old world.js<->runways.js circular import is gone — both now
+// depend one-way on heightcore.js, and heightAt is safe to call anywhere.
+export {
+  HILLS_C, DESERT_C, FOREST_C, MTN_A, MTN_B, PEAK, CANYON_PATH, RUNWAYS,
+  onRunway, runwayInfluence, applyRunwayFlattening,
+} from './heightcore.js';
 
 export function createRunways(scene) {
   const group = new THREE.Group();
