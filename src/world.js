@@ -7,7 +7,7 @@ import {
   pathPoint, _ppx, _ppz, _ppux, _ppuz,
   HILLS_C, DESERT_C, FOREST_C, MTN_A, MTN_B,
 } from './heightcore.js';
-import { terrainColor } from './colorcore.js';
+import { createTerrain } from './terrain.js';
 import { createRunways } from './runways.js';
 import { createWater } from './water.js';
 import { createClouds } from './clouds.js';
@@ -78,23 +78,9 @@ export function createWorld(scene) {
   sun.shadow.bias = -0.0006;
   scene.add(sun, sun.target);
 
-  // terrain
-  const terrainGeo = new THREE.PlaneGeometry(15600, 15600, 500, 500);
-  terrainGeo.rotateX(-Math.PI / 2);
-  const tPos = terrainGeo.attributes.position;
-  for (let i = 0; i < tPos.count; i++) tPos.setY(i, heightAt(tPos.getX(i), tPos.getZ(i)));
-  terrainGeo.computeVertexNormals();
-  const tNorm = terrainGeo.attributes.normal;
-  const tCol = new Float32Array(tPos.count * 3);
-  const _col = [0, 0, 0]; // reused rgb out — the full rule set lives in colorcore.js
-  for (let i = 0; i < tPos.count; i++) {
-    terrainColor(tPos.getX(i), tPos.getZ(i), tPos.getY(i), tNorm.getY(i), _col);
-    tCol[i * 3] = _col[0]; tCol[i * 3 + 1] = _col[1]; tCol[i * 3 + 2] = _col[2];
-  }
-  terrainGeo.setAttribute('color', new THREE.BufferAttribute(tCol, 3));
-  const terrain = new THREE.Mesh(terrainGeo, new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1 }));
-  terrain.receiveShadow = true;
-  scene.add(terrain);
+  // terrain — static single mesh or streamed ring-LOD tiles (see terrain.js);
+  // either way heightAt stays the ground truth for physics/camera/vegetation
+  const terrain = createTerrain(scene);
 
   function slopeAt(x, z) {
     const gx = heightAt(x + 7, z) - heightAt(x - 7, z);
@@ -266,10 +252,11 @@ export function createWorld(scene) {
     sun.position.copy(planePos).addScaledVector(sunDir, 420);
     sun.target.position.copy(planePos);
     sky.position.set(planePos.x, 0, planePos.z);
+    terrain.update(planePos);
     runways.update(time);
     water.update(time);
     clouds.update(time, planePos);
   }
 
-  return { update };
+  return { update, terrain };
 }
