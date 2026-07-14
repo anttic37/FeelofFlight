@@ -425,6 +425,20 @@ function baseHeight(x, z) {
     h += fbm(rx * 0.00135 + 4.7, rz * 0.00135 + 8.3, 3) * 40 * (1 - 0.5 * _wM) * mSh;
     h += fbm(x * 0.0105 + 2.9, z * 0.0105 + 5.7, 2) * 7 * mSh;
     h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
+    // per-biome micro-detail — wavelengths only the 5 m tiled mesh can show
+    // (the 31 m static grid aliased everything under ~60 m, so this layer was
+    // pointless before dynamic terrain). Added BEFORE platforms/corridors/
+    // flattening so strips and approaches stay graded by construction.
+    if (_wM > 0.02) { // sharp rock crests + fine talus on the range
+      const rk = 1 - Math.abs(fbm(x * 0.0074 + 17.1, z * 0.0074 + 6.3, 3));
+      h += (rk * rk * 21 + fbm(x * 0.021 + 8.8, z * 0.021 + 2.4, 2) * 5) * _wM * mSh;
+    }
+    if (_wD > 0.02) { // wind ripples riding the big dunes, same prevailing axis
+      const u = x * DUNE_CA + z * DUNE_SA, v = z * DUNE_CA - x * DUNE_SA;
+      h += (1 - Math.abs(noise2(u * 0.0022 + 1.2, v * 0.03 + 7.5) * 2 - 1)) * 1.9 * _wD * mSh;
+    }
+    if (_wF > 0.02) h += fbm(x * 0.017 + 4.1, z * 0.017 + 12.6, 2) * 3.4 * _wF * mSh; // hummocky woods floor
+    if (_wH > 0.02) h += fbm(x * 0.012 + 9.7, z * 0.012 + 0.6, 2) * 2.6 * _wH * mSh;  // grassy micro-rolls
   }
   if (canyonLocate(x, z)) h = carveCanyon(x, z, h);
   h = carveTribs(x, z, h);
