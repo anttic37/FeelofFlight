@@ -89,13 +89,28 @@ export function createTerrain(scene) {
   const pending = new Map();  // key -> job awaiting a worker slot
   const inFlight = new Map(); // job id -> job (max MAX_IN_FLIGHT)
   const finished = [];        // worker results awaiting apply (<=1 applied/update)
-  let nextId = 1, built = 0, evicted = 0, trisLive = 0;
+  const finishedKeys = new Set(); // keys parked in finished[] — the want-scan must
+                                  // see them or every streamed tile gets baked twice
+  let nextId = 1, built = 0, evicted = 0, trisLive = 0, dispatched = 0;
 
   const worker = new Worker(new URL('./terrainworker.js', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {
     const job = inFlight.get(e.data.id);
     inFlight.delete(e.data.id);
-    if (job) finished.push({ job, positions: e.data.positions, colors: e.data.colors });
+    if (job) {
+      finished.push({ job, positions: e.data.positions, colors: e.data.colors });
+      finishedKeys.add(job.key);
+    }
+  };
+  // a dead worker (404 after a server restart, module error, uncaught throw)
+  // must not pin the in-flight slots forever and silently stall all streaming:
+  // log once, requeue the lost jobs, and fall back to main-thread baking
+  let workerDead = false;
+  worker.onerror = worker.onmessageerror = (e) => {
+    if (!workerDead) console.error('terrain worker failed — falling back to main-thread tile baking', e && (e.message || e.type));
+    workerDead = true;
+    for (const job of inFlight.values()) if (!pending.has(job.key) && !tiles.has(job.key)) pending.set(job.key, job);
+    inFlight.clear();
   };
 
   function tileKey(lod, ix, iz) { return lod + ':' + ix + ':' + iz; }
@@ -119,6 +134,7 @@ export function createTerrain(scene) {
     mesh.receiveShadow = true;
     scene.add(mesh);
     tiles.set(key, { mesh, ring, cx, cz });
+    pending.delete(key); // a re-queued entry for a now-built tile is moot
     built++;
     trisLive += geo.index.count / 3;
   }
@@ -204,7 +220,7 @@ export function createTerrain(scene) {
         if (finer && coveredByFiner(finer, px, pz, ix, iz, ring.tile)) return;
         const key = tileKey(ring.lod, ix, iz);
         _want.add(key);
-        if (!tiles.has(key) && !pending.has(key) && !keyInFlight(key)) {
+        if (!tiles.has(key) && !pending.has(key) && !keyInFlight(key) && !finishedKeys.has(key)) {
           pending.set(key, { key, ring, ix, iz, cx, cz });
         }
       });
@@ -228,6 +244,7 @@ export function createTerrain(scene) {
     // geometry creation + GPU upload bounded (the hitch budget)
     while (finished.length) {
       const { job, positions, colors } = finished.shift();
+      finishedKeys.delete(job.key);
       if (tiles.has(job.key)) continue; // teleport guard built it sync meanwhile
       const dx = job.cx - px, dz = job.cz - pz;
       const rr = job.ring.radius + EVICT_PAD;
@@ -237,7 +254,7 @@ export function createTerrain(scene) {
     }
 
     // dispatch: LOD ascending, then distance to the look-ahead point
-    while (inFlight.size < MAX_IN_FLIGHT && pending.size) {
+    while (!workerDead && inFlight.size < MAX_IN_FLIGHT && pending.size) {
       let best = null, bestScore = Infinity;
       for (const job of pending.values()) {
         const dx = job.cx - lookX, dz = job.cz - lookZ;
@@ -245,20 +262,34 @@ export function createTerrain(scene) {
         if (score < bestScore) { bestScore = score; best = job; }
       }
       pending.delete(best.key);
+      if (tiles.has(best.key)) continue; // already built — never re-dispatch
       const id = nextId++;
       inFlight.set(id, best);
+      dispatched++;
       worker.postMessage({
         id, x0: best.ix * best.ring.tile, z0: best.iz * best.ring.tile,
         size: best.ring.tile, res: best.ring.res, skirt: best.ring.skirt,
       });
+    }
+    // dead-worker fallback: keep the world streaming from the main thread,
+    // one tile per update to respect the hitch budget
+    if (workerDead && pending.size) {
+      let best = null, bestScore = Infinity;
+      for (const job of pending.values()) {
+        const dx = job.cx - lookX, dz = job.cz - lookZ;
+        const score = job.ring.lod * 1e9 + dx * dx + dz * dz;
+        if (score < bestScore) { bestScore = score; best = job; }
+      }
+      pending.delete(best.key);
+      buildTileSync(best.ring, best.ix, best.iz);
     }
   }
 
   function stats() {
     return {
       mode: 'dynamic', tiles: tiles.size, queued: pending.size,
-      inFlight: inFlight.size, tris: trisLive, built, evicted,
-      shellTris: SHELL_SEGS * SHELL_SEGS * 2,
+      inFlight: inFlight.size, tris: trisLive, built, evicted, dispatched,
+      workerDead, shellTris: SHELL_SEGS * SHELL_SEGS * 2,
     };
   }
 
