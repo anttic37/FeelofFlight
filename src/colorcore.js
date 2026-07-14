@@ -1,5 +1,8 @@
-import { noise2 } from './noise.js';
+// seededNoise2: the seed-shifted domain heightcore samples — paint must read
+// the SAME fields (canyon bench jitter aligns color bands to the geometry).
+// At seed 0 it is byte-identical to raw noise2.
 import {
+  seededNoise2 as noise2,
   smooth, biomeWeights, _wH, _wD, _wF, _wM,
   canyonLocate, _cd, _cs, _cx, cWf, cWr, washOff,
   TRIBS, tribLocate, _td, _ts,

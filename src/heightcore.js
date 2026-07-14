@@ -1,4 +1,39 @@
-import { fbm, noise2 } from './noise.js';
+import { fbm as fbm_, noise2 as noise2_ } from './noise.js';
+
+// ---- terrain seed: a NEW island every run ----
+// One seed reshapes the whole island: every noise field below samples a
+// seed-shifted domain, and per-seed "character" knobs scale biome amplitudes
+// (mountain height, mesa/dune size, hill/forest relief, coastline warp).
+// Anchors stay FIXED — runway positions, canyon path, biome centers — and
+// platforms/corridors/flattening run after everything, so every seed is
+// landable by construction. Seed 0 = the classic island (zero shift, knobs 1).
+// setTerrainSeed must run before any sampling, in EVERY thread that imports
+// this module (main thread AND the terrain worker).
+let SX = 0, SZ = 0, SEED = 0;
+let K_MTN = 1, K_MESA = 1, K_DUNE = 1, K_HILL = 1, K_FOR = 1, K_REL = 1, COAST_WARP = 760;
+function h01(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
+export function setTerrainSeed(seed) {
+  SEED = seed >>> 0;
+  if (SEED === 0) {
+    SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; COAST_WARP = 760;
+    return;
+  }
+  SX = (h01(SEED * 0.013 + 11.7) - 0.5) * 30000;
+  SZ = (h01(SEED * 0.017 + 23.1) - 0.5) * 30000;
+  K_MTN  = 0.80 + 0.65 * h01(SEED * 0.019 + 5.2);  // peaks ~550-1000
+  K_MESA = 0.70 + 0.90 * h01(SEED * 0.023 + 8.6);
+  K_DUNE = 0.70 + 1.30 * h01(SEED * 0.029 + 2.9);
+  K_HILL = 0.80 + 0.60 * h01(SEED * 0.031 + 14.3);
+  K_FOR  = 0.80 + 0.60 * h01(SEED * 0.037 + 6.8);
+  K_REL  = 0.80 + 0.70 * h01(SEED * 0.041 + 9.4);
+  COAST_WARP = 700 + 500 * h01(SEED * 0.043 + 3.6); // bays/peninsulas vary, Coast strip stays dry
+}
+export function getTerrainSeed() { return SEED; }
+// seeded noise: same functions, shifted domain. Exported so colorcore paints
+// with the SAME fields (canyon bench jitter etc. must match the geometry).
+export function seededNoise2(x, z) { return noise2_(x + SX, z + SZ); }
+const noise2 = seededNoise2;
+const fbm = (x, z, o) => fbm_(x + SX, z + SZ, o);
 
 // The pure analytic terrain core — heightAt(x,z) and everything under it, plus
 // the runway anchors/flattening it depends on. Dependency-free (noise.js only,
@@ -366,28 +401,30 @@ function terrace(t) { // 3 flat benches with smooth risers, for cliff-banded mes
 // ---- biome height fields (only evaluated where their region weight matters) ----
 function hillsH(x, z) { // rolling swells + knolls, with shallow valley lines
   const b = fbm(x * 0.00095 + 7.3, z * 0.00095 + 3.1, 4) * 0.5 + 0.5;
-  let h = 16 + Math.pow(b, 1.3) * 118 + fbm(x * 0.0042, z * 0.0042, 2) * 7;
-  h += smooth(0.66, 0.8, noise2(x * 0.0013 + 31.2, z * 0.0013 + 8.4)) * 26; // knolls
+  let h = 16 + Math.pow(b, 1.3) * 118 * K_HILL + fbm(x * 0.0042, z * 0.0042, 2) * 7;
+  h += smooth(0.66, 0.8, noise2(x * 0.0013 + 31.2, z * 0.0013 + 8.4)) * 26 * K_HILL; // knolls
   h -= (1 - smooth(0.02, 0.09, Math.abs(fbm(x * 0.00052 + 13.7, z * 0.00052 + 4.9, 2)))) * 13; // valleys
   return h;
 }
 function desertH(x, z) { // directional dune ridges + banded mesas + shallow washes
   const b = fbm(x * 0.0014 + 11.2, z * 0.0014 + 5.6, 3) * 0.5 + 0.5;
   const mf = fbm(x * 0.00085 + 31.7, z * 0.00085 + 17.3, 3);
-  let h = 10 + b * 48 + Math.pow(duneRidge(x, z), 1.7) * 18;
-  h += terrace(smooth(0.30, 0.44, mf)) * 88 + smooth(0.47, 0.55, mf) * 26;
+  let h = 10 + b * 48 + Math.pow(duneRidge(x, z), 1.7) * 18 * K_DUNE;
+  h += terrace(smooth(0.30, 0.44, mf)) * 88 * K_MESA + smooth(0.47, 0.55, mf) * 26 * K_MESA;
   return h - desertWash(x, z) * 4.4;
 }
 function forestH(x, z) { // gentle wooded terrain to ~180 with rocky outcrops
   const b = fbm(x * 0.0011 + 2.2, z * 0.0011 + 9.9, 4) * 0.5 + 0.5;
-  let h = 22 + Math.pow(b, 1.2) * 158 + fbm(x * 0.005 + 1.1, z * 0.005, 2) * 6;
+  let h = 22 + Math.pow(b, 1.2) * 158 * K_FOR + fbm(x * 0.005 + 1.1, z * 0.005, 2) * 6;
   return h + outcropMask(x, z) * (9 + 8 * noise2(x * 0.02 + 6.6, z * 0.02 + 1.9));
 }
 function mtnH(x, z, w) { // ridged fbm range + explicit summit bump at PEAK
   const rv = 1 - Math.abs(fbm(x * 0.0016 + 5.5, z * 0.0016 + 1.5, 5));
   const dx = x - PEAK.x, dz = z - PEAK.z;
-  const h = 55 + Math.pow(rv, 1.6) * 330 * w + 120 * w + 290 * Math.exp(-(dx * dx + dz * dz) / 384400);
-  return h > 560 ? 560 + (h - 560) * 0.55 : h; // soft ceiling: tops out ~650
+  const h = 55 + Math.pow(rv, 1.6) * 330 * K_MTN * w + 120 * K_MTN * w
+    + 290 * K_MTN * Math.exp(-(dx * dx + dz * dz) / 384400);
+  const cap = 560 * K_MTN; // soft ceiling scales with the seed's mountain knob
+  return h > cap ? cap + (h - cap) * 0.55 : h;
 }
 
 // noise-warped region weights around the biome anchors (module scratch, no alloc)
@@ -404,7 +441,7 @@ export function biomeWeights(x, z) {
 function baseHeight(x, z) {
   const r2 = x * x + z * z;
   if (r2 > 75690000) return -20; // beyond r 8700 the shelf has fully bottomed out
-  const rr = Math.sqrt(r2) + (noise2(x * 0.00028 + 3.1, z * 0.00028 + 7.7) - 0.5) * 760;
+  const rr = Math.sqrt(r2) + (noise2(x * 0.00028 + 3.1, z * 0.00028 + 7.7) - 0.5) * COAST_WARP;
   const m = 1 - (rr / R_MASK) * (rr / R_MASK);
   if (m <= 0) return Math.max(-20, -6 + m * 44); // underwater falloff to about -20
   biomeWeights(x, z);
@@ -422,7 +459,7 @@ function baseHeight(x, z) {
   if (mSh > 0.01) {
     const rx = x + (noise2(x * 0.00085 + 21.4, z * 0.00085 + 3.3) - 0.5) * 640;
     const rz = z + (noise2(x * 0.00085 + 7.9, z * 0.00085 + 15.2) - 0.5) * 640;
-    h += fbm(rx * 0.00135 + 4.7, rz * 0.00135 + 8.3, 3) * 40 * (1 - 0.5 * _wM) * mSh;
+    h += fbm(rx * 0.00135 + 4.7, rz * 0.00135 + 8.3, 3) * 40 * K_REL * (1 - 0.5 * _wM) * mSh;
     h += fbm(x * 0.0105 + 2.9, z * 0.0105 + 5.7, 2) * 7 * mSh;
     h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
     // per-biome micro-detail — wavelengths only the 5 m tiled mesh can show

@@ -4,8 +4,10 @@
 // all pure). Buffers are freshly allocated per job and posted back as
 // transferables, so the main thread receives them with zero copy.
 import { bakeTile, tileVertexCount } from './tilebake.js';
+import { setTerrainSeed } from './heightcore.js';
 
 self.onmessage = (e) => {
+  if (e.data.type === 'seed') { setTerrainSeed(e.data.seed); return; } // always the first message
   const { id, x0, z0, size, res, skirt } = e.data;
   const n = tileVertexCount(res) * 3;
   const positions = new Float32Array(n);

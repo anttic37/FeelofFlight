@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { heightAt } from './heightcore.js';
+import { heightAt, getTerrainSeed } from './heightcore.js';
 import { terrainColor } from './colorcore.js';
 import { bakeTile, buildTileIndex, tileVertexCount } from './tilebake.js';
 
@@ -94,6 +94,8 @@ export function createTerrain(scene) {
   let nextId = 1, built = 0, evicted = 0, trisLive = 0, dispatched = 0;
 
   const worker = new Worker(new URL('./terrainworker.js', import.meta.url), { type: 'module' });
+  // the worker has its OWN heightcore instance — seed it before any bake job
+  worker.postMessage({ type: 'seed', seed: getTerrainSeed() });
   worker.onmessage = (e) => {
     const job = inFlight.get(e.data.id);
     inFlight.delete(e.data.id);

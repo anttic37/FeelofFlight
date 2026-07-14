@@ -9,6 +9,7 @@ import { createFX } from './fx.js';
 import { SoundFX } from './sound.js';
 import { Input } from './input.js';
 import { HUD } from './hud.js';
+import { setTerrainSeed } from './heightcore.js';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -21,6 +22,13 @@ document.body.appendChild(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.5, 12000);
+
+// a NEW island every launch: seed the terrain before anything samples it.
+// ?seed=N pins an island you liked (?seed=0 is the classic hand-tuned one).
+const seedParam = new URLSearchParams(location.search).get('seed');
+const terrainSeed = seedParam !== null ? (Number(seedParam) >>> 0) : (Date.now() >>> 0);
+setTerrainSeed(terrainSeed);
+console.log(`[flighfeel] island seed ${terrainSeed} — revisit with ?seed=${terrainSeed}`);
 
 const world = createWorld(scene);
 const plane = buildPlane();
@@ -89,7 +97,7 @@ window.addEventListener('resize', () => {
 // debug / test hook — enough surface to step & render headlessly in tests
 window.__ff = {
   phys, input, chase, reset, fx, trails, hud, sound, scene, camera, renderer, plane, world,
-  heightAt, surfaceAt, RUNWAYS,
+  heightAt, surfaceAt, RUNWAYS, seed: terrainSeed,
   step(dt) {
     input.update(dt);
     const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake };
