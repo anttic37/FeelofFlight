@@ -15,6 +15,7 @@ export class Input {
     this.onGear = null;
     this.onFlaps = null;
     this.onCamera = null;
+    this.onView = null;
     this.onRunwaySpawn = null;
     this._gpGearHeld = false;
 
@@ -28,6 +29,7 @@ export class Input {
       if (e.code === 'KeyG' && this.onGear) this.onGear();
       if (e.code === 'KeyF' && this.onFlaps) this.onFlaps();
       if (e.code === 'KeyC' && this.onCamera) this.onCamera();
+      if (e.code === 'KeyV' && this.onView) this.onView();
       if (e.code === 'KeyT' && this.onRunwaySpawn) this.onRunwaySpawn();
     });
     window.addEventListener('keyup', e => this.keys.delete(e.code));

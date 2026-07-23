@@ -17,6 +17,16 @@ const TIGHTNESS = [
   { name: 'FLOATY', k: 6, damp: 0.8, look: 0.9, speedLag: 2.6 },
 ];
 
+// V cycles rigid onboard views between the chase cam: cockpit (pilot's head
+// behind the windscreen) and wing (mounted just outboard of the right tip,
+// looking forward along the wing — shows the flex, ailerons and ground rush).
+// Offsets are body-frame (fwd = -Z), applied with the plane's quaternion.
+const VIEWS = [
+  { name: 'CHASE' },
+  { name: 'COCKPIT', off: { x: 0, y: 1.18, z: -0.42 }, look: { x: 0, y: 0.9, z: -60 }, fov: 72 },
+  { name: 'WING', off: { x: 6.2, y: 1.05, z: 1.7 }, look: { x: 1.2, y: 0.4, z: -30 }, fov: 66 },
+];
+
 export class ChaseCam {
   constructor(camera, heightAt) {
     this.camera = camera;
@@ -30,6 +40,7 @@ export class ChaseCam {
     this.accLagSm = 0; // smoothed speed-change lag (accel back, decel closer)
     this._prevSpeed = 0;
     this.mode = 1;     // TIGHTNESS index, default NORMAL
+    this.view = 0;     // VIEWS index: 0 chase, 1 cockpit, 2 wing
 
     // mouse orbit + zoom
     this.orbitYaw = 0;
@@ -66,6 +77,12 @@ export class ChaseCam {
     return TIGHTNESS[this.mode].name;
   }
 
+  cycleView(phys) {
+    this.view = (this.view + 1) % VIEWS.length;
+    if (this.view === 0 && phys) this.snap(phys); // spring restarts from behind the plane
+    return VIEWS[this.view].name;
+  }
+
   snap(phys) {
     const t = this._t;
     const fwd = t.fwd.set(0, 0, -1).applyQuaternion(phys.quat);
@@ -83,6 +100,23 @@ export class ChaseCam {
     this.time += dt;
     const fwd = t.fwd.set(0, 0, -1).applyQuaternion(phys.quat);
     const planeUp = t.up.set(0, 1, 0).applyQuaternion(phys.quat);
+
+    // rigid onboard views (V): bolted to the airframe — no spring, no orbit,
+    // just a touch of buffet so speed and stall still reach the eye
+    if (this.view !== 0) {
+      const v = VIEWS[this.view];
+      const amp = Math.pow(phys.speed / 115, 2) * 0.09 + (phys.stalled ? 0.22 : 0)
+        + (phys.flapBuffet ?? 0) * 0.12 + (phys.overspeed ?? 0) * 0.15;
+      this.camera.position.set(v.off.x, v.off.y, v.off.z).applyQuaternion(phys.quat).add(phys.pos)
+        .addScaledVector(planeUp, fbm1(this.time * 7.1, 7) * amp);
+      t.lt.set(v.look.x, v.look.y, v.look.z).applyQuaternion(phys.quat).add(phys.pos);
+      this.fov += (v.fov - this.fov) * Math.min(1, dt * 5);
+      this.camera.fov = this.fov;
+      this.camera.updateProjectionMatrix();
+      this.camera.up.copy(planeUp);
+      this.camera.lookAt(t.lt);
+      return; // cycleView snaps the spring when we come back to CHASE
+    }
 
     // camera up: mostly world in level flight so banking reads on screen, but as
     // the nose leaves level (loops, verticals) blend toward the plane's own up —

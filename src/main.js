@@ -68,6 +68,7 @@ input.onMute = () => hud.msg(sound.toggleMute() ? 'MUTED' : 'SOUND ON', 1200);
 input.onGear = () => phys.toggleGear();
 input.onFlaps = () => { if (phys.setFlaps) phys.setFlaps(((phys.flapSetting || 0) + 1) % 3); };
 input.onCamera = () => hud.msg(`CAMERA ${chase.cycleTightness()}`, 1200);
+input.onView = () => hud.msg(`VIEW ${chase.cycleView(phys)}`, 1200);
 let runwayCycle = -1;
 input.onRunwaySpawn = () => {
   runwayCycle = (runwayCycle + 1) % RUNWAYS.length;
