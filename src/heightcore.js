@@ -12,11 +12,21 @@ import { fbm as fbm_, noise2 as noise2_ } from './noise.js';
 let SX = 0, SZ = 0, SEED = 0;
 let K_MTN = 1, K_MESA = 1, K_DUNE = 1, K_HILL = 1, K_FOR = 1, K_REL = 1, COAST_WARP = 760;
 let K_SWELL = 0; // island-wide broad swells (~2.4 km) — 0 on the classic island
+// island SILHOUETTE: direction-dependent radius scale built from 1-3 angular
+// lobes — elongated, egg/comma, tri-lobed and bay-bitten outlines per seed.
+// SH_ON false (classic) keeps the plain circular mask, bit for bit.
+let SH_ON = false, SH_A1 = 0, SH_P1 = 0, SH_A2 = 0, SH_P2 = 0, SH_A3 = 0, SH_P3 = 0;
+let SH_R2OUT = 75690000; // beyond-the-shelf early-out radius², shape-aware
+function shapeS(theta) {
+  const s = 1 + SH_A1 * Math.sin(theta + SH_P1) + SH_A2 * Math.sin(2 * theta + SH_P2) + SH_A3 * Math.sin(3 * theta + SH_P3);
+  return s < 0.6 ? 0.6 : s > 1.42 ? 1.42 : s;
+}
 function h01(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
 export function setTerrainSeed(seed) {
   SEED = seed >>> 0;
   if (SEED === 0) {
     SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; K_SWELL = 0; COAST_WARP = 760;
+    SH_ON = false; SH_R2OUT = 75690000; // classic circular mask, r 8700 early-out
     restoreClassicLayout(); // hand-tuned anchors, runways, canyon, tribs
   } else {
     SX = (h01(SEED * 0.013 + 11.7) - 0.5) * 30000;
@@ -29,6 +39,11 @@ export function setTerrainSeed(seed) {
     K_REL  = 0.80 + 1.20 * h01(SEED * 0.041 + 9.4);
     K_SWELL = 0.50 + 1.60 * h01(SEED * 0.047 + 12.1); // broad rolling uplands, +-17..70 m
     COAST_WARP = 700 + 500 * h01(SEED * 0.043 + 3.6); // bays/peninsulas vary, Coast strip stays dry
+    SH_ON = true; // seeded silhouette: comma / elongated / tri-lobed outlines
+    SH_A1 = 0.26 * h01(SEED * 0.053 + 4.9); SH_P1 = Math.PI * 2 * h01(SEED * 0.059 + 7.7);
+    SH_A2 = 0.30 * h01(SEED * 0.061 + 1.4); SH_P2 = Math.PI * 2 * h01(SEED * 0.067 + 9.8);
+    SH_A3 = 0.18 * h01(SEED * 0.071 + 3.2); SH_P3 = Math.PI * 2 * h01(SEED * 0.073 + 6.5);
+    SH_R2OUT = 124000000; // r ~11.1 km covers the widest lobe + coast warp
     generateLayout(); // move the mountains, canyon, biomes AND the strips
   }
   rebuildDerived();
@@ -443,7 +458,9 @@ function generateLayout() {
   const R1 = (k) => h01(SEED * 0.00097 + k * 7.13);
   const jit = (k, a) => (R1(k) - 0.5) * a;
   const TAU = Math.PI * 2;
-  const setP = (o, a, r) => { o.x = Math.sin(a) * r; o.z = Math.cos(a) * r; };
+  // radii scale with the silhouette so features keep their distance to THEIR
+  // stretch of shore — a squeezed side pulls its biome and strip inward with it
+  const setP = (o, a, r) => { const s = shapeS(a); o.x = Math.sin(a) * r * s; o.z = Math.cos(a) * r * s; };
   const dAng = (u, v) => Math.abs(Math.atan2(Math.sin(u - v), Math.cos(u - v)));
 
   // biome compass: mountains / forest / desert / hills around a seeded rotation
@@ -472,7 +489,8 @@ function generateLayout() {
     const t = i / N;
     let a = aStart + (aCan - aStart) * t + (i > 0 && i < N ? jit(20 + i, 0.15) : 0);
     if (i >= 4 && i <= 7) a = aStraight;
-    CANYON_PATH.push({ x: Math.sin(a) * (1700 + 6400 * t), z: Math.cos(a) * (1700 + 6400 * t) });
+    const cs = shapeS(a); // estuary hits the mask at the same s on any silhouette
+    CANYON_PATH.push({ x: Math.sin(a) * (1700 + 6400 * t) * cs, z: Math.cos(a) * (1700 + 6400 * t) * cs });
   }
 
   // nudge a point clear of the gorge (strips need floor+wall+shoulder+pad room)
@@ -509,8 +527,8 @@ function generateLayout() {
     const r = RUNWAYS[themed[k][0]], cen = themed[k][1];
     r.x = cen.x + jit(40 + k, 1400); r.z = cen.z + jit(44 + k, 1400);
     r.heading = R1(48 + k) * TAU;
-    const rr = Math.hypot(r.x, r.z);
-    if (rr > 5100) { r.x *= 5100 / rr; r.z *= 5100 / rr; }
+    const rr = Math.hypot(r.x, r.z), rCap = 5100 * shapeS(Math.atan2(r.x, r.z));
+    if (rr > rCap) { r.x *= rCap / rr; r.z *= rCap / rr; }
     nudgeClear(r, 1150);
   }
 
@@ -614,9 +632,10 @@ export function biomeWeights(x, z) {
 
 function baseHeight(x, z) {
   const r2 = x * x + z * z;
-  if (r2 > 75690000) return -20; // beyond r 8700 the shelf has fully bottomed out
+  if (r2 > SH_R2OUT) return -20; // beyond the shelf everything has bottomed out
   const rr = Math.sqrt(r2) + (noise2(x * 0.00028 + 3.1, z * 0.00028 + 7.7) - 0.5) * COAST_WARP;
-  const m = 1 - (rr / R_MASK) * (rr / R_MASK);
+  const RM = SH_ON ? R_MASK * shapeS(Math.atan2(x, z)) : R_MASK;
+  const m = 1 - (rr / RM) * (rr / RM);
   if (m <= 0) return Math.max(-20, -6 + m * 44); // underwater falloff to about -20
   biomeWeights(x, z);
   let sum = 0.06, h = 0.06 * 16; // faint generic-lowland floor bridges region gaps
