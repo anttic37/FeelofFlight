@@ -11,21 +11,23 @@ import { fbm as fbm_, noise2 as noise2_ } from './noise.js';
 // this module (main thread AND the terrain worker).
 let SX = 0, SZ = 0, SEED = 0;
 let K_MTN = 1, K_MESA = 1, K_DUNE = 1, K_HILL = 1, K_FOR = 1, K_REL = 1, COAST_WARP = 760;
+let K_SWELL = 0; // island-wide broad swells (~2.4 km) — 0 on the classic island
 function h01(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
 export function setTerrainSeed(seed) {
   SEED = seed >>> 0;
   if (SEED === 0) {
-    SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; COAST_WARP = 760;
+    SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; K_SWELL = 0; COAST_WARP = 760;
     restoreClassicLayout(); // hand-tuned anchors, runways, canyon, tribs
   } else {
     SX = (h01(SEED * 0.013 + 11.7) - 0.5) * 30000;
     SZ = (h01(SEED * 0.017 + 23.1) - 0.5) * 30000;
-    K_MTN  = 0.80 + 0.65 * h01(SEED * 0.019 + 5.2);  // peaks ~550-1000
-    K_MESA = 0.70 + 0.90 * h01(SEED * 0.023 + 8.6);
+    K_MTN  = 0.70 + 1.05 * h01(SEED * 0.019 + 5.2);  // peaks ~480-1200
+    K_MESA = 0.60 + 1.30 * h01(SEED * 0.023 + 8.6);
     K_DUNE = 0.70 + 1.30 * h01(SEED * 0.029 + 2.9);
-    K_HILL = 0.80 + 0.60 * h01(SEED * 0.031 + 14.3);
-    K_FOR  = 0.80 + 0.60 * h01(SEED * 0.037 + 6.8);
-    K_REL  = 0.80 + 0.70 * h01(SEED * 0.041 + 9.4);
+    K_HILL = 0.70 + 1.10 * h01(SEED * 0.031 + 14.3);
+    K_FOR  = 0.70 + 1.00 * h01(SEED * 0.037 + 6.8);
+    K_REL  = 0.80 + 1.20 * h01(SEED * 0.041 + 9.4);
+    K_SWELL = 0.50 + 1.60 * h01(SEED * 0.047 + 12.1); // broad rolling uplands, +-17..70 m
     COAST_WARP = 700 + 500 * h01(SEED * 0.043 + 3.6); // bays/peninsulas vary, Coast strip stays dry
     generateLayout(); // move the mountains, canyon, biomes AND the strips
   }
@@ -632,6 +634,10 @@ function baseHeight(x, z) {
     const rx = x + (noise2(x * 0.00085 + 21.4, z * 0.00085 + 3.3) - 0.5) * 640;
     const rz = z + (noise2(x * 0.00085 + 7.9, z * 0.00085 + 15.2) - 0.5) * 640;
     h += fbm(rx * 0.00135 + 4.7, rz * 0.00135 + 8.3, 3) * 40 * K_REL * (1 - 0.5 * _wM) * mSh;
+    // seeded broad swells (~2.4 km wavelength): whole districts rise into
+    // uplands or sink toward the sea — can pool inland lakes in deep dips.
+    // Zero on the classic island; damped in the mountains (already tall).
+    if (K_SWELL > 0) h += fbm(x * 0.00042 + 31.9, z * 0.00042 + 18.4, 2) * 34 * K_SWELL * (1 - 0.55 * _wM) * mSh;
     h += fbm(x * 0.0105 + 2.9, z * 0.0105 + 5.7, 2) * 7 * mSh;
     h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
     // per-biome micro-detail — wavelengths only the 5 m tiled mesh can show
