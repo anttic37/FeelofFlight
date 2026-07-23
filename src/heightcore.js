@@ -17,16 +17,21 @@ let K_SWELL = 0; // island-wide broad swells (~2.4 km) — 0 on the classic isla
 // SH_ON false (classic) keeps the plain circular mask, bit for bit.
 let SH_ON = false, SH_A1 = 0, SH_P1 = 0, SH_A2 = 0, SH_P2 = 0, SH_A3 = 0, SH_P3 = 0;
 let SH_R2OUT = 75690000; // beyond-the-shelf early-out radius², shape-aware
+// seeded islands are scaled to 75% so the widest silhouette lobe + coast warp
+// stays well inside the baked far shell (+-7800) — land past the shell edge
+// has no ground mesh under it and shimmers. Heights do NOT scale: same peaks,
+// same swells, just a tighter island. Classic seed 0 keeps 7200 / scale 1.
+let RM_BASE = 7200, LSCALE = 1;
 function shapeS(theta) {
   const s = 1 + SH_A1 * Math.sin(theta + SH_P1) + SH_A2 * Math.sin(2 * theta + SH_P2) + SH_A3 * Math.sin(3 * theta + SH_P3);
-  return s < 0.6 ? 0.6 : s > 1.42 ? 1.42 : s;
+  return s < 0.6 ? 0.6 : s > 1.3 ? 1.3 : s;
 }
 function h01(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
 export function setTerrainSeed(seed) {
   SEED = seed >>> 0;
   if (SEED === 0) {
     SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; K_SWELL = 0; COAST_WARP = 760;
-    SH_ON = false; SH_R2OUT = 75690000; // classic circular mask, r 8700 early-out
+    SH_ON = false; SH_R2OUT = 75690000; RM_BASE = 7200; LSCALE = 1; // classic circular mask
     restoreClassicLayout(); // hand-tuned anchors, runways, canyon, tribs
   } else {
     SX = (h01(SEED * 0.013 + 11.7) - 0.5) * 30000;
@@ -37,13 +42,14 @@ export function setTerrainSeed(seed) {
     K_HILL = 0.70 + 1.10 * h01(SEED * 0.031 + 14.3);
     K_FOR  = 0.70 + 1.00 * h01(SEED * 0.037 + 6.8);
     K_REL  = 0.80 + 1.20 * h01(SEED * 0.041 + 9.4);
+    LSCALE = 0.75; RM_BASE = 7200 * LSCALE; // 5400 — tighter island, same heights
     K_SWELL = 0.50 + 1.60 * h01(SEED * 0.047 + 12.1); // broad rolling uplands, +-17..70 m
-    COAST_WARP = 700 + 500 * h01(SEED * 0.043 + 3.6); // bays/peninsulas vary, Coast strip stays dry
+    COAST_WARP = (700 + 500 * h01(SEED * 0.043 + 3.6)) * LSCALE; // ragged shore, scaled with the island
     SH_ON = true; // seeded silhouette: comma / elongated / tri-lobed outlines
     SH_A1 = 0.26 * h01(SEED * 0.053 + 4.9); SH_P1 = Math.PI * 2 * h01(SEED * 0.059 + 7.7);
     SH_A2 = 0.30 * h01(SEED * 0.061 + 1.4); SH_P2 = Math.PI * 2 * h01(SEED * 0.067 + 9.8);
     SH_A3 = 0.18 * h01(SEED * 0.071 + 3.2); SH_P3 = Math.PI * 2 * h01(SEED * 0.073 + 6.5);
-    SH_R2OUT = 124000000; // r ~11.1 km covers the widest lobe + coast warp
+    SH_R2OUT = 61000000; // r ~7.8 km: widest lobe (5400*1.3) + warp stays inside the shell
     generateLayout(); // move the mountains, canyon, biomes AND the strips
   }
   rebuildDerived();
@@ -458,9 +464,9 @@ function generateLayout() {
   const R1 = (k) => h01(SEED * 0.00097 + k * 7.13);
   const jit = (k, a) => (R1(k) - 0.5) * a;
   const TAU = Math.PI * 2;
-  // radii scale with the silhouette so features keep their distance to THEIR
-  // stretch of shore — a squeezed side pulls its biome and strip inward with it
-  const setP = (o, a, r) => { const s = shapeS(a); o.x = Math.sin(a) * r * s; o.z = Math.cos(a) * r * s; };
+  // radii scale with the silhouette AND the island scale so features keep
+  // their distance to THEIR stretch of shore on any size or shape
+  const setP = (o, a, r) => { const s = shapeS(a) * LSCALE; o.x = Math.sin(a) * r * s; o.z = Math.cos(a) * r * s; };
   const dAng = (u, v) => Math.abs(Math.atan2(Math.sin(u - v), Math.cos(u - v)));
 
   // biome compass: mountains / forest / desert / hills around a seeded rotation
@@ -473,8 +479,9 @@ function generateLayout() {
   setP(DESERT_C, aD, 3900 + jit(8, 800));
   setP(HILLS_C, aH, 3800 + jit(9, 800));
   const rdir = aM + Math.PI / 2 + jit(10, 0.6); // ridge runs tangentially through the peak
-  MTN_A.x = PEAK.x - Math.sin(rdir) * 2300; MTN_A.z = PEAK.z - Math.cos(rdir) * 2300;
-  MTN_B.x = PEAK.x + Math.sin(rdir) * 2300; MTN_B.z = PEAK.z + Math.cos(rdir) * 2300;
+  const rHalf = 2300 * LSCALE;
+  MTN_A.x = PEAK.x - Math.sin(rdir) * rHalf; MTN_A.z = PEAK.z - Math.cos(rdir) * rHalf;
+  MTN_B.x = PEAK.x + Math.sin(rdir) * rHalf; MTN_B.z = PEAK.z + Math.cos(rdir) * rHalf;
 
   // canyon: foothills -> sea, exiting 100-160 deg around from the mountains.
   // Segments 4..7 share one angle => an exactly straight run for the strip,
@@ -489,7 +496,7 @@ function generateLayout() {
     const t = i / N;
     let a = aStart + (aCan - aStart) * t + (i > 0 && i < N ? jit(20 + i, 0.15) : 0);
     if (i >= 4 && i <= 7) a = aStraight;
-    const cs = shapeS(a); // estuary hits the mask at the same s on any silhouette
+    const cs = shapeS(a) * LSCALE; // estuary hits the mask at the same s on any silhouette or scale
     CANYON_PATH.push({ x: Math.sin(a) * (1700 + 6400 * t) * cs, z: Math.cos(a) * (1700 + 6400 * t) * cs });
   }
 
@@ -525,9 +532,9 @@ function generateLayout() {
   const themed = [[1, DESERT_C], [2, FOREST_C], [5, HILLS_C]];
   for (let k = 0; k < 3; k++) {
     const r = RUNWAYS[themed[k][0]], cen = themed[k][1];
-    r.x = cen.x + jit(40 + k, 1400); r.z = cen.z + jit(44 + k, 1400);
+    r.x = cen.x + jit(40 + k, 1400 * LSCALE); r.z = cen.z + jit(44 + k, 1400 * LSCALE);
     r.heading = R1(48 + k) * TAU;
-    const rr = Math.hypot(r.x, r.z), rCap = 5100 * shapeS(Math.atan2(r.x, r.z));
+    const rr = Math.hypot(r.x, r.z), rCap = 5100 * shapeS(Math.atan2(r.x, r.z)) * LSCALE;
     if (rr > rCap) { r.x *= rCap / rr; r.z *= rCap / rr; }
     nudgeClear(r, 1150);
   }
@@ -621,20 +628,20 @@ function mtnH(x, z, w) { // ridged fbm range + explicit summit bump at PEAK
 
 // noise-warped region weights around the biome anchors (module scratch, no alloc)
 export let _wH = 0, _wD = 0, _wF = 0, _wM = 0;
-export function biomeWeights(x, z) {
-  const wx = x + (noise2(x * 0.00034 + 9.1, z * 0.00034 + 4.4) - 0.5) * 2300;
-  const wz = z + (noise2(x * 0.00034 + 1.7, z * 0.00034 + 8.2) - 0.5) * 2300;
-  _wH = 1 - smooth(1500, 4300, Math.hypot(wx - HILLS_C.x, wz - HILLS_C.z));
-  _wD = 1 - smooth(1700, 4300, Math.hypot(wx - DESERT_C.x, wz - DESERT_C.z));
-  _wF = 1 - smooth(1600, 4200, Math.hypot(wx - FOREST_C.x, wz - FOREST_C.z));
-  _wM = 1 - smooth(650, 4200, ridgeDist(wx, wz)); // long tail: foothills roll out into the plains
+export function biomeWeights(x, z) { // region radii scale with the island (LSCALE 1 on classic)
+  const wx = x + (noise2(x * 0.00034 + 9.1, z * 0.00034 + 4.4) - 0.5) * 2300 * LSCALE;
+  const wz = z + (noise2(x * 0.00034 + 1.7, z * 0.00034 + 8.2) - 0.5) * 2300 * LSCALE;
+  _wH = 1 - smooth(1500 * LSCALE, 4300 * LSCALE, Math.hypot(wx - HILLS_C.x, wz - HILLS_C.z));
+  _wD = 1 - smooth(1700 * LSCALE, 4300 * LSCALE, Math.hypot(wx - DESERT_C.x, wz - DESERT_C.z));
+  _wF = 1 - smooth(1600 * LSCALE, 4200 * LSCALE, Math.hypot(wx - FOREST_C.x, wz - FOREST_C.z));
+  _wM = 1 - smooth(650 * LSCALE, 4200 * LSCALE, ridgeDist(wx, wz)); // long tail: foothills roll into the plains
 }
 
 function baseHeight(x, z) {
   const r2 = x * x + z * z;
   if (r2 > SH_R2OUT) return -20; // beyond the shelf everything has bottomed out
   const rr = Math.sqrt(r2) + (noise2(x * 0.00028 + 3.1, z * 0.00028 + 7.7) - 0.5) * COAST_WARP;
-  const RM = SH_ON ? R_MASK * shapeS(Math.atan2(x, z)) : R_MASK;
+  const RM = SH_ON ? RM_BASE * shapeS(Math.atan2(x, z)) : RM_BASE;
   const m = 1 - (rr / RM) * (rr / RM);
   if (m <= 0) return Math.max(-20, -6 + m * 44); // underwater falloff to about -20
   biomeWeights(x, z);
