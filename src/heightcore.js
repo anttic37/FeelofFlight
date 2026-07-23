@@ -16,17 +16,20 @@ export function setTerrainSeed(seed) {
   SEED = seed >>> 0;
   if (SEED === 0) {
     SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; COAST_WARP = 760;
-    return;
+    restoreClassicLayout(); // hand-tuned anchors, runways, canyon, tribs
+  } else {
+    SX = (h01(SEED * 0.013 + 11.7) - 0.5) * 30000;
+    SZ = (h01(SEED * 0.017 + 23.1) - 0.5) * 30000;
+    K_MTN  = 0.80 + 0.65 * h01(SEED * 0.019 + 5.2);  // peaks ~550-1000
+    K_MESA = 0.70 + 0.90 * h01(SEED * 0.023 + 8.6);
+    K_DUNE = 0.70 + 1.30 * h01(SEED * 0.029 + 2.9);
+    K_HILL = 0.80 + 0.60 * h01(SEED * 0.031 + 14.3);
+    K_FOR  = 0.80 + 0.60 * h01(SEED * 0.037 + 6.8);
+    K_REL  = 0.80 + 0.70 * h01(SEED * 0.041 + 9.4);
+    COAST_WARP = 700 + 500 * h01(SEED * 0.043 + 3.6); // bays/peninsulas vary, Coast strip stays dry
+    generateLayout(); // move the mountains, canyon, biomes AND the strips
   }
-  SX = (h01(SEED * 0.013 + 11.7) - 0.5) * 30000;
-  SZ = (h01(SEED * 0.017 + 23.1) - 0.5) * 30000;
-  K_MTN  = 0.80 + 0.65 * h01(SEED * 0.019 + 5.2);  // peaks ~550-1000
-  K_MESA = 0.70 + 0.90 * h01(SEED * 0.023 + 8.6);
-  K_DUNE = 0.70 + 1.30 * h01(SEED * 0.029 + 2.9);
-  K_HILL = 0.80 + 0.60 * h01(SEED * 0.031 + 14.3);
-  K_FOR  = 0.80 + 0.60 * h01(SEED * 0.037 + 6.8);
-  K_REL  = 0.80 + 0.70 * h01(SEED * 0.041 + 9.4);
-  COAST_WARP = 700 + 500 * h01(SEED * 0.043 + 3.6); // bays/peninsulas vary, Coast strip stays dry
+  rebuildDerived();
 }
 export function getTerrainSeed() { return SEED; }
 // seeded noise: same functions, shifted domain. Exported so colorcore paints
@@ -82,11 +85,14 @@ export const RUNWAYS = [
   { name: 'Summit', x: 350,   z: -2350, heading: -1.64,   length: 340, width: 20, elev: 465, m: 70, pad: 300 },
   { name: 'Hills',  x: 1600,  z: 3850,  heading: 2.30,    length: 400, width: 24, elev: 104, m: 80, pad: 280 },
 ];
-for (const r of RUNWAYS) {
-  r._c = Math.cos(r.heading); r._s = Math.sin(r.heading);
-  const reach = Math.hypot(r.length, r.width) / 2 + r.m + 2;
-  r._r2 = reach * reach; // coarse circle reject for the hot per-sample loops
+function computeRunwayDerived() {
+  for (const r of RUNWAYS) {
+    r._c = Math.cos(r.heading); r._s = Math.sin(r.heading);
+    const reach = Math.hypot(r.length, r.width) / 2 + r.m + 2;
+    r._r2 = reach * reach; // coarse circle reject for the hot per-sample loops
+  }
 }
+computeRunwayDerived();
 
 // blend weight: 1 on the strip, smoothstep down to 0 at r.m outside the rect
 function stripWeight(r, x, z) {
@@ -147,8 +153,12 @@ export function smooth(a, b, t) {
 }
 
 // ---- mountain ridge segment MTN_A -> MTN_B ----
-const _rgL = Math.hypot(MTN_B.x - MTN_A.x, MTN_B.z - MTN_A.z);
-const _rgux = (MTN_B.x - MTN_A.x) / _rgL, _rguz = (MTN_B.z - MTN_A.z) / _rgL;
+let _rgL = 1, _rgux = 1, _rguz = 0;
+function computeRidge() {
+  _rgL = Math.hypot(MTN_B.x - MTN_A.x, MTN_B.z - MTN_A.z);
+  _rgux = (MTN_B.x - MTN_A.x) / _rgL; _rguz = (MTN_B.z - MTN_A.z) / _rgL;
+}
+computeRidge();
 function ridgeDist(x, z) {
   let dx = x - MTN_A.x, dz = z - MTN_A.z;
   let t = dx * _rgux + dz * _rguz;
@@ -159,19 +169,25 @@ function ridgeDist(x, z) {
 
 // ---- canyon path (smooth polyline distance) ----
 const CSEG = [];
-let _acc = 0;
-for (let i = 0; i < CANYON_PATH.length - 1; i++) {
-  const a = CANYON_PATH[i], b = CANYON_PATH[i + 1];
-  const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
-  CSEG.push({ ax: a.x, az: a.z, ux: dx / len, uz: dz / len, len, s0: _acc });
-  _acc += len;
-}
-const CANYON_LEN = _acc;
+let CANYON_LEN = 1;
 let CB_X0 = 1e9, CB_X1 = -1e9, CB_Z0 = 1e9, CB_Z1 = -1e9;
-for (const p of CANYON_PATH) {
-  CB_X0 = Math.min(CB_X0, p.x - 1000); CB_X1 = Math.max(CB_X1, p.x + 1000);
-  CB_Z0 = Math.min(CB_Z0, p.z - 1000); CB_Z1 = Math.max(CB_Z1, p.z + 1000);
+function computeCanyonSegs() {
+  CSEG.length = 0;
+  let acc = 0;
+  for (let i = 0; i < CANYON_PATH.length - 1; i++) {
+    const a = CANYON_PATH[i], b = CANYON_PATH[i + 1];
+    const dx = b.x - a.x, dz = b.z - a.z, len = Math.hypot(dx, dz);
+    CSEG.push({ ax: a.x, az: a.z, ux: dx / len, uz: dz / len, len, s0: acc });
+    acc += len;
+  }
+  CANYON_LEN = acc;
+  CB_X0 = 1e9; CB_X1 = -1e9; CB_Z0 = 1e9; CB_Z1 = -1e9;
+  for (const p of CANYON_PATH) {
+    CB_X0 = Math.min(CB_X0, p.x - 1000); CB_X1 = Math.max(CB_X1, p.x + 1000);
+    CB_Z0 = Math.min(CB_Z0, p.z - 1000); CB_Z1 = Math.max(CB_Z1, p.z + 1000);
+  }
 }
+computeCanyonSegs();
 
 // module scratch: distance to path, param 0..1 along it, signed lateral offset
 export let _cd = 0, _cs = 0, _cx = 0;
@@ -257,10 +273,12 @@ function carveCanyon(x, z, h) {
 
 // ---- tributary gullies: short 2-bench side cuts notching the gorge shoulders,
 // merged with min() so they fade out wherever the biome is already lower ----
-export const TRIBS = [
+const CLASSIC_TRIB_DEFS = [
   { pts: [{ x: 1780, z: 1780 }, { x: 2210, z: 1460 }, { x: 2620, z: 1130 }], joinFl: 85 },
   { pts: [{ x: 5150, z: 4760 }, { x: 4760, z: 4960 }, { x: 4380, z: 5180 }], joinFl: 59 },
-].map((tb) => {
+];
+export const TRIBS = [];
+function buildTrib(tb) {
   const segs = [];
   let acc = 0;
   for (let i = 0; i < tb.pts.length - 1; i++) {
@@ -275,7 +293,12 @@ export const TRIBS = [
     z0 = Math.min(z0, p.z - 420); z1 = Math.max(z1, p.z + 420);
   }
   return { segs, len: acc, joinFl: tb.joinFl, x0, x1, z0, z1 };
-});
+}
+function computeTribs(defs) {
+  TRIBS.length = 0;
+  for (const d of defs) TRIBS.push(buildTrib(d));
+}
+computeTribs(CLASSIC_TRIB_DEFS);
 
 export let _td = 0, _ts = 0; // module scratch: distance to tributary, param along it
 export function tribLocate(tb, x, z) {
@@ -317,11 +340,16 @@ function carveTribs(x, z, h) {
 
 // ---- per-strip terrain platforms: pull the base terrain to strip elevation over
 // a rect larger than the flattening margin, so grading never fights the biome ----
-const PLATFORMS = RUNWAYS.map((r) => {
-  const hl = r.length / 2 + 70, hw = r.width / 2 + 55;
-  const reach = Math.hypot(hl, hw) + r.pad;
-  return { x: r.x, z: r.z, c: r._c, s: r._s, elev: r.elev, hl, hw, pad: r.pad, r2: reach * reach };
-});
+const PLATFORMS = [];
+function computePlatforms() {
+  PLATFORMS.length = 0;
+  for (const r of RUNWAYS) {
+    const hl = r.length / 2 + 70, hw = r.width / 2 + 55;
+    const reach = Math.hypot(hl, hw) + r.pad;
+    PLATFORMS.push({ x: r.x, z: r.z, c: r._c, s: r._s, elev: r.elev, hl, hw, pad: r.pad, r2: reach * reach });
+  }
+}
+computePlatforms();
 function applyPlatforms(x, z, h) {
   for (let i = 0; i < PLATFORMS.length; i++) {
     const p = PLATFORMS[i];
@@ -344,16 +372,20 @@ function applyPlatforms(x, z, h) {
 // ---- approach corridors: soft height cap (~6.5% obstacle ramp) off both ends of
 // every strip, so no biome feature can wander into short final ----
 const CORRIDORS = [];
-for (const r of RUNWAYS) {
-  const ax = -r._s, az = -r._c;
-  for (const e of [-1, 1]) {
-    CORRIDORS.push({
-      ox: r.x + e * ax * r.length / 2, oz: r.z + e * az * r.length / 2,
-      ux: e * ax, uz: e * az, len: r.name === 'Coast' ? 1500 : 1400,
-      hw: r.width * 3.5 + 60, base: r.elev + 4,
-    });
+function computeCorridors() {
+  CORRIDORS.length = 0;
+  for (const r of RUNWAYS) {
+    const ax = -r._s, az = -r._c;
+    for (const e of [-1, 1]) {
+      CORRIDORS.push({
+        ox: r.x + e * ax * r.length / 2, oz: r.z + e * az * r.length / 2,
+        ux: e * ax, uz: e * az, len: r.name === 'Coast' ? 1500 : 1400,
+        hw: r.width * 3.5 + 60, base: r.elev + 4,
+      });
+    }
   }
 }
+computeCorridors();
 function applyCorridors(x, z, h) {
   for (let i = 0; i < CORRIDORS.length; i++) {
     const c = CORRIDORS[i];
@@ -377,6 +409,146 @@ export function nearCorridor(x, z) { // vegetation keep-out over the first stret
     if (Math.abs(dx * c.uz - dz * c.ux) < c.hw + 12) return true;
   }
   return false;
+}
+
+// ---- seeded island layout ----
+// For seed != 0 the whole LAYOUT is generated, not just the noise: the biome
+// compass spins to a seeded rotation, the ridge+peak move with the mountain
+// sector, the canyon carves a fresh meander from the foothills to the sea, and
+// all six strips are re-placed by theme rules (Coast on the shore with final
+// over water, Canyon centered on the path's straight run, Summit on the flank
+// below the peak, the rest near their biome centers, all nudged clear of the
+// gorge). Everything derives from SEED alone so the worker regenerates the
+// identical layout from its own setTerrainSeed call.
+const CLASSIC = {
+  anchors: [HILLS_C, DESERT_C, FOREST_C, MTN_A, MTN_B, PEAK].map(p => ({ x: p.x, z: p.z })),
+  runways: RUNWAYS.map(r => ({ x: r.x, z: r.z, heading: r.heading, elev: r.elev })),
+  canyon: CANYON_PATH.map(p => ({ x: p.x, z: p.z })),
+};
+function restoreClassicLayout() {
+  [HILLS_C, DESERT_C, FOREST_C, MTN_A, MTN_B, PEAK].forEach((p, i) => {
+    p.x = CLASSIC.anchors[i].x; p.z = CLASSIC.anchors[i].z;
+  });
+  RUNWAYS.forEach((r, i) => {
+    const c = CLASSIC.runways[i];
+    r.x = c.x; r.z = c.z; r.heading = c.heading; r.elev = c.elev;
+  });
+  CANYON_PATH.length = 0;
+  for (const p of CLASSIC.canyon) CANYON_PATH.push({ x: p.x, z: p.z });
+  computeTribs(CLASSIC_TRIB_DEFS);
+}
+function generateLayout() {
+  const R1 = (k) => h01(SEED * 0.00097 + k * 7.13);
+  const jit = (k, a) => (R1(k) - 0.5) * a;
+  const TAU = Math.PI * 2;
+  const setP = (o, a, r) => { o.x = Math.sin(a) * r; o.z = Math.cos(a) * r; };
+  const dAng = (u, v) => Math.abs(Math.atan2(Math.sin(u - v), Math.cos(u - v)));
+
+  // biome compass: mountains / forest / desert / hills around a seeded rotation
+  const aM = R1(1) * TAU;
+  const aF = aM + TAU * 0.25 + jit(2, 0.5);
+  const aD = aM + TAU * 0.50 + jit(3, 0.5);
+  const aH = aM + TAU * 0.75 + jit(4, 0.5);
+  setP(PEAK, aM + jit(5, 0.12), 2750 + jit(6, 600));
+  setP(FOREST_C, aF, 3900 + jit(7, 800));
+  setP(DESERT_C, aD, 3900 + jit(8, 800));
+  setP(HILLS_C, aH, 3800 + jit(9, 800));
+  const rdir = aM + Math.PI / 2 + jit(10, 0.6); // ridge runs tangentially through the peak
+  MTN_A.x = PEAK.x - Math.sin(rdir) * 2300; MTN_A.z = PEAK.z - Math.cos(rdir) * 2300;
+  MTN_B.x = PEAK.x + Math.sin(rdir) * 2300; MTN_B.z = PEAK.z + Math.cos(rdir) * 2300;
+
+  // canyon: foothills -> sea, exiting 100-160 deg around from the mountains.
+  // Segments 4..7 share one angle => an exactly straight run for the strip,
+  // landing its midpoint near s 0.55 where cFl holds the 72 m floor.
+  const sgn = R1(11) < 0.5 ? 1 : -1;
+  const aCan = aM + sgn * Math.PI * (0.55 + R1(12) * 0.34);
+  const aStart = aM + (aCan - aM) * 0.28;
+  const N = 10;
+  CANYON_PATH.length = 0;
+  const aStraight = aStart + (aCan - aStart) * 0.58;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    let a = aStart + (aCan - aStart) * t + (i > 0 && i < N ? jit(20 + i, 0.15) : 0);
+    if (i >= 4 && i <= 7) a = aStraight;
+    CANYON_PATH.push({ x: Math.sin(a) * (1700 + 6400 * t), z: Math.cos(a) * (1700 + 6400 * t) });
+  }
+
+  // nudge a point clear of the gorge (strips need floor+wall+shoulder+pad room)
+  function nudgeClear(o, margin) {
+    for (let iter = 0; iter < 12; iter++) {
+      let best = 1e18, nx = 0, nz = 0;
+      for (let i = 0; i < CANYON_PATH.length - 1; i++) {
+        const a = CANYON_PATH[i], b = CANYON_PATH[i + 1];
+        const dx = b.x - a.x, dz = b.z - a.z, L2 = dx * dx + dz * dz;
+        let t = ((o.x - a.x) * dx + (o.z - a.z) * dz) / L2;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        const cx = a.x + dx * t, cz = a.z + dz * t;
+        const d2 = (o.x - cx) * (o.x - cx) + (o.z - cz) * (o.z - cz);
+        if (d2 < best) { best = d2; nx = cx; nz = cz; }
+      }
+      const d = Math.sqrt(best);
+      if (d >= margin) return;
+      const ux = d > 1 ? (o.x - nx) / d : 1, uz = d > 1 ? (o.z - nz) / d : 0;
+      o.x += ux * (margin - d + 50); o.z += uz * (margin - d + 50);
+    }
+  }
+
+  // Coast: shoreline, radial heading => final approach over open water. Pick
+  // the first candidate angle clear of the canyon mouth and the mountains.
+  const cands = [aH + 0.8 + jit(30, 0.3), aH - 0.8 + jit(31, 0.3), aD + 0.8 + jit(32, 0.3), aF - 0.8 + jit(33, 0.3)];
+  let aC = cands[0];
+  for (const c of cands) if (dAng(c, aCan) > 0.55 && dAng(c, aM) > 0.9) { aC = c; break; }
+  setP(RUNWAYS[0], aC, 6050);
+  RUNWAYS[0].heading = Math.atan2(RUNWAYS[0].x, RUNWAYS[0].z) + jit(34, 0.15);
+
+  // Desert / Forest / Hills strips near their biome centers, clear of the gorge
+  const themed = [[1, DESERT_C], [2, FOREST_C], [5, HILLS_C]];
+  for (let k = 0; k < 3; k++) {
+    const r = RUNWAYS[themed[k][0]], cen = themed[k][1];
+    r.x = cen.x + jit(40 + k, 1400); r.z = cen.z + jit(44 + k, 1400);
+    r.heading = R1(48 + k) * TAU;
+    const rr = Math.hypot(r.x, r.z);
+    if (rr > 5100) { r.x *= 5100 / rr; r.z *= 5100 / rr; }
+    nudgeClear(r, 1150);
+  }
+
+  // Summit: on the flank below the peak, axis across the slope; elevation
+  // follows the seed's mountain height
+  const aIn = Math.atan2(-PEAK.x, -PEAK.z);
+  RUNWAYS[4].x = PEAK.x + Math.sin(aIn) * 810; RUNWAYS[4].z = PEAK.z + Math.cos(aIn) * 810;
+  RUNWAYS[4].heading = aIn + Math.PI / 2 + jit(52, 0.2);
+  RUNWAYS[4].elev = Math.round(465 * K_MTN);
+  nudgeClear(RUNWAYS[4], 1150);
+
+  // Canyon strip: dead-center on the straight run, aligned with it
+  const p5 = CANYON_PATH[5], p6 = CANYON_PATH[6];
+  RUNWAYS[3].x = (p5.x + p6.x) / 2; RUNWAYS[3].z = (p5.z + p6.z) / 2;
+  const cux = p6.x - p5.x, cuz = p6.z - p5.z, cuL = Math.hypot(cux, cuz);
+  RUNWAYS[3].heading = Math.atan2(-cux / cuL, -cuz / cuL);
+  RUNWAYS[3].elev = 72; // cFl holds the floor at 72 across the strip zone
+
+  // tributary gullies join upstream (wp 2) and near the mouth (wp 8), angled
+  // off the local path direction; join floor tracks cFl at the junction
+  const tribDefs = [];
+  for (let k = 0; k < 2; k++) {
+    const j = k === 0 ? 2 : 8;
+    const J = CANYON_PATH[j], Jp = CANYON_PATH[j - 1];
+    const segd = Math.atan2(J.x - Jp.x, J.z - Jp.z);
+    const side = R1(60 + k) < 0.5 ? 1 : -1;
+    const ta = segd + side * (1.35 + jit(62 + k, 0.5));
+    const p1 = { x: J.x + Math.sin(ta) * 440, z: J.z + Math.cos(ta) * 440 };
+    const ta2 = ta + jit(64 + k, 0.6);
+    const p2 = { x: p1.x + Math.sin(ta2) * 440, z: p1.z + Math.cos(ta2) * 440 };
+    tribDefs.push({ pts: [p2, p1, { x: J.x, z: J.z }], joinFl: cFl(j / N) - 8 });
+  }
+  computeTribs(tribDefs);
+}
+function rebuildDerived() {
+  computeRunwayDerived();
+  computeRidge();
+  computeCanyonSegs();
+  computePlatforms();
+  computeCorridors();
 }
 
 // ---- shared feature masks (height field AND vertex colors read these, so the
@@ -477,7 +649,10 @@ function baseHeight(x, z) {
     if (_wF > 0.02) h += fbm(x * 0.017 + 4.1, z * 0.017 + 12.6, 2) * 3.4 * _wF * mSh; // hummocky woods floor
     if (_wH > 0.02) h += fbm(x * 0.012 + 9.7, z * 0.012 + 0.6, 2) * 2.6 * _wH * mSh;  // grassy micro-rolls
   }
-  if (canyonLocate(x, z)) h = carveCanyon(x, z, h);
+  if (canyonLocate(x, z)) { // gorge fades out with the island mask, so any
+    const hc = carveCanyon(x, z, h); // seed's estuary meets the sea without a step
+    h = hc + (h - hc) * (1 - smooth(0.02, 0.10, m));
+  }
   h = carveTribs(x, z, h);
   h = applyPlatforms(x, z, h);
   return applyCorridors(x, z, h);

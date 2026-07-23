@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { fbm1 } from './noise.js';
+import { RUNWAYS } from './heightcore.js';
 
 // Arcade-sim rigid body: thrust, drag, lift(AoA), gravity + torques from control
 // surfaces, aerodynamic stability and damping. Body axes: forward -Z, up +Y, right +X.
@@ -9,7 +10,8 @@ import { fbm1 } from './noise.js';
 const G = 9.81;
 const RHO = 1.225;
 
-const SPAWN_POS = new THREE.Vector3(250, 120, 7600); // 1.3 km final over water to the Coast strip
+// air spawn: ~1.55 km final over water to the Coast strip (RUNWAYS[0]),
+// computed at reset time because the seeded layout moves the strip
 const SPAWN_SPEED = 55;
 
 const GEAR_TIME = 1.6;      // s to extend/retract
@@ -103,11 +105,13 @@ export class FlightModel {
   }
 
   reset() {
-    this.pos.copy(SPAWN_POS);
-    this.quat.setFromEuler(new THREE.Euler(0.05, 0, 0)); // slight nose-up, heading -Z
+    const r0 = RUNWAYS[0]; // Coast strip: spawn 1.55 km out on final, over water
+    const fx = -Math.sin(r0.heading), fz = -Math.cos(r0.heading); // strip forward axis
+    this.pos.set(r0.x - fx * 1550, Math.max(120, r0.elev + 108), r0.z - fz * 1550);
+    this.quat.setFromEuler(new THREE.Euler(0.05, r0.heading, 0)); // slight nose-up, down the axis
     // spawn at SPAWN_SPEED of AIRSPEED — drift with the air mass so the tuned
     // final-approach feel is identical whatever the wind is doing right now
-    this.vel.set(this.wind.x, 0, -SPAWN_SPEED + this.wind.z);
+    this.vel.set(this.wind.x + fx * SPAWN_SPEED, 0, this.wind.z + fz * SPAWN_SPEED);
     this.angVel.set(0, 0, 0);
     this.throttle = 0.65;
     this.crashed = false;
