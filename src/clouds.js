@@ -1,11 +1,15 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { noise2 } from './noise.js';
+import { heightAt } from './heightcore.js';
 
 // Puffy cumulus: each cloud is 5-9 overlapping smooth-shaded ellipsoid puffs
 // merged into one geometry (one draw call per cloud, ~80 clouds). Lambert with
 // smooth normals + emissive keeps undersides bright — no dark faceted faces.
 // Drift +X with wraparound over a 20 km box centered on the island.
+// TERRAIN-AWARE: seeded islands peak anywhere from ~480 to ~1200 m, so each
+// cloud eases up to stay >=150 m over the ridge it is drifting across instead
+// of trusting a fixed band tuned for the classic 650 m island.
 
 const COUNT = 80;
 const BOX = 20000;
@@ -53,25 +57,35 @@ diffuseColor.a *= mix(1.0, 0.35, fres);
     mesh.renderOrder = 2;
     const a = noise2(i * 3.7, 1.1) * Math.PI * 4;
     const r = 300 + noise2(i * 1.3, 8.8) * 9200;
-    // 260-700 m: around and above the 650 m peaks; the ~500 m ones sit near the summit strip
-    const baseY = 260 + noise2(i * 2.9, 4.2) * 440;
+    // 300-860 m preferred band; the ride-over-terrain clamp below lifts any
+    // cloud whose drift lane crosses higher ground than that
+    const baseY = 300 + noise2(i * 2.9, 4.2) * 560;
     mesh.position.set(Math.cos(a) * r, baseY, Math.sin(a) * r);
     mesh.rotation.y = noise2(i * 6.1, 2.2) * Math.PI * 2;
     scene.add(mesh);
     clouds.push({
       mesh, baseY, x0: mesh.position.x,
+      y: Math.max(baseY, heightAt(mesh.position.x, mesh.position.z) + 150),
       speed: 3.2 + noise2(i * 9.7, 3.3) * 1.6,
       bobF: 0.06 + noise2(i * 5.5, 1.7) * 0.05,
       bobP: noise2(i * 8.3, 6.1) * Math.PI * 2,
     });
   }
 
+  let lastT = 0;
   function update(time, planePos) {
+    const dt = Math.min(0.1, Math.max(0, time - lastT));
+    lastT = time;
+    const k = Math.min(1, dt * 0.6); // slow vertical ease — clouds, not elevators
     for (let i = 0; i < clouds.length; i++) {
       const c = clouds[i];
       const x = c.x0 + time * c.speed + HALF;
-      c.mesh.position.x = x - Math.floor(x / BOX) * BOX - HALF;
-      c.mesh.position.y = c.baseY + Math.sin(time * c.bobF + c.bobP) * 2.5;
+      const wx = x - Math.floor(x / BOX) * BOX - HALF;
+      c.mesh.position.x = wx;
+      // ride >=150 m above whatever ridge is under the drift lane right now
+      const want = Math.max(c.baseY, heightAt(wx, c.mesh.position.z) + 150);
+      c.y += (want - c.y) * k;
+      c.mesh.position.y = c.y + Math.sin(time * c.bobF + c.bobP) * 2.5;
     }
   }
 
