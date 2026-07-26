@@ -12,10 +12,13 @@ export function createWater(scene, heightAt) {
   const uTime = { value: 0 };
 
   // far ocean: plain dark blue horizon fill just below the detailed sheet
-  const far = new THREE.Mesh(
-    new THREE.PlaneGeometry(80000, 80000),
-    new THREE.MeshStandardMaterial({ color: 0x1a5580, roughness: 0.5, metalness: 0.1 })
-  );
+  // material params AND color space mirror the sheet exactly: the sheet's
+  // shader writes its open-sea color as raw LINEAR values, so the far fill
+  // must be set with setRGB (linear working space) — a hex constructor would
+  // be sRGB-converted and the sheet's square edge shows as a shaded wedge.
+  const farMat = new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.15 });
+  farMat.color.setRGB(0.075, 0.28, 0.46);
+  const far = new THREE.Mesh(new THREE.PlaneGeometry(80000, 80000), farMat);
   far.rotation.x = -Math.PI / 2;
   // well below the deepest wave trough (0.15 lift - 0.68 amplitude = -0.53):
   // at -0.25 the troughs touched it exactly and the whole ocean z-flickered
@@ -55,18 +58,23 @@ uniform float uTime;
 varying float vShoreDepth;
 varying vec2 vWPos;`)
       .replace('#include <color_fragment>', `#include <color_fragment>
-diffuseColor.rgb = mix(vec3(0.13, 0.55, 0.52), diffuseColor.rgb, smoothstep(0.0, 6.0, vShoreDepth));
-float foamBand = 1.0 - smoothstep(0.0, 2.2, vShoreDepth);
+// three-stage depth palette: turquoise shallows -> lagoon blue -> open sea
+diffuseColor.rgb = mix(vec3(0.16, 0.56, 0.53), vec3(0.10, 0.42, 0.58), smoothstep(0.0, 3.0, vShoreDepth));
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.075, 0.28, 0.46), smoothstep(3.0, 14.0, vShoreDepth));
+float foamBand = 1.0 - smoothstep(0.0, 1.3, vShoreDepth);
 float stripes = sin(uTime * 1.7 - vShoreDepth * 4.2 + sin(vWPos.x * 0.23) * 1.9 + sin(vWPos.y * 0.19) * 1.9);
-float foam = foamBand * foamBand * smoothstep(0.1, 0.9, stripes);
-foam = max(foam, (1.0 - smoothstep(0.0, 0.5, vShoreDepth)) * 0.9);
-diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.96, 0.98, 1.0), clamp(foam, 0.0, 1.0));`)
-      // per-pixel ripple normals carry the small-scale motion (alias-free)
+float foam = foamBand * foamBand * smoothstep(0.25, 0.95, stripes) * 0.7;
+foam = max(foam, (1.0 - smoothstep(0.0, 0.45, vShoreDepth)) * 0.85);
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.94, 0.97, 1.0), clamp(foam, 0.0, 1.0));`)
+      // per-pixel ripple normals carry the small-scale motion. Amplitude fades
+      // with view distance — at range the ripple frequencies alias against the
+      // pixel grid into a moire mesh, so far water goes calm instead.
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-normal = normalize(normal + vec3(
-  sin(vWPos.x * 0.35 + uTime * 1.6) * 0.09 + sin(vWPos.x * 0.11 - uTime * 0.7) * 0.05,
+float rippleAtt = 1.0 - smoothstep(250.0, 2200.0, length(vViewPosition)) * 0.88;
+normal = normalize(normal + rippleAtt * vec3(
+  sin(vWPos.x * 0.35 + uTime * 1.6) * 0.07 + sin(vWPos.x * 0.11 - uTime * 0.7) * 0.04,
   0.0,
-  sin(vWPos.y * 0.31 - uTime * 1.3) * 0.09 + sin((vWPos.x + vWPos.y) * 0.09 + uTime * 0.5) * 0.05));`);
+  sin(vWPos.y * 0.31 - uTime * 1.3) * 0.07 + sin((vWPos.x + vWPos.y) * 0.09 + uTime * 0.5) * 0.04));`);
   };
 
   const water = new THREE.Mesh(geo, mat);

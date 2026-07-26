@@ -76,9 +76,23 @@ export function createTerrain(scene) {
   // ONE material shared by the shell and every tile (never disposed on evict)
   const material = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1 });
 
+  // LOD sink is applied PER VERTEX, faded out below 12 m: sinking a whole
+  // mesh moved its WATERLINE sideways by tens of meters (beach slopes are
+  // ~1:20), so ring boundaries stepped along the coast. Poke-through only
+  // happens on steep ground, which is always well above 12 m — the beach
+  // keeps its exact shoreline at every LOD.
+  function sinkAboveShore(positions, bias) {
+    for (let i = 1; i < positions.length; i += 3) {
+      const y = positions[i];
+      const t = y <= 2 ? 0 : y >= 12 ? 1 : (y - 2) / 10;
+      positions[i] = y + bias * t * t * (3 - 2 * t);
+    }
+  }
+
   // (a) far shell — synchronous, coarse, sunk below every tile bias
-  const shell = new THREE.Mesh(bakeIslandGeometry(SHELL_SEGS), material);
-  shell.position.y = SHELL_Y;
+  const shellGeo = bakeIslandGeometry(SHELL_SEGS);
+  sinkAboveShore(shellGeo.attributes.position.array, SHELL_Y);
+  const shell = new THREE.Mesh(shellGeo, material);
   shell.receiveShadow = true;
   scene.add(shell);
 
@@ -123,6 +137,7 @@ export function createTerrain(scene) {
   function tileKey(lod, ix, iz) { return lod + ':' + ix + ':' + iz; }
 
   function addTile(key, ring, ix, iz, positions, colors) {
+    if (ring.bias !== 0) sinkAboveShore(positions, ring.bias);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -135,7 +150,6 @@ export function createTerrain(scene) {
       new THREE.Vector3(cx, heightAt(cx, cz), cz),
       Math.hypot(ring.tile * Math.SQRT2 / 2, 400 + ring.skirt));
     const mesh = new THREE.Mesh(geo, material);
-    mesh.position.y = ring.bias; // coarser rings sink so fine tiles always win
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
     mesh.receiveShadow = true;
