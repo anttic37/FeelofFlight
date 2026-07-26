@@ -4,7 +4,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import {
   heightAt, surfaceAt, runwayInfluence, nearCorridor,
   canyonLocate, _cd, _cs, cWf, cWr, TRIBS, tribLocate, _td,
-  pathPoint, _ppx, _ppz, _ppux, _ppuz,
+  pathPoint, _ppx, _ppz, _ppux, _ppuz, CANYON_PATH,
   HILLS_C, DESERT_C, FOREST_C, MTN_A, MTN_B,
 } from './heightcore.js';
 import { createTerrain } from './terrain.js';
@@ -199,9 +199,10 @@ export function createWorld(scene) {
   const MAXR = 900;
   const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), whiteFlat(), MAXR);
   let nR = 0, rt = 0;
+  const hasGorge = CANYON_PATH.length > 1; // v6 islands only carve one on some archetypes
   while (nR < MAXR && rt < MAXR * 22) {
     rt++;
-    const pick = rt % 10;
+    const pick = hasGorge ? rt % 10 : 4 + (rt % 6); // no gorge: split between scree + shoreline
     let x, z, red = false;
     if (pick < 4) { // canyon (low-discrepancy param along the path)
       const sN = 0.06 + ((rt * 0.618034) % 1) * 0.86;

@@ -9,7 +9,7 @@ import { createFX } from './fx.js';
 import { SoundFX } from './sound.js';
 import { Input } from './input.js';
 import { HUD } from './hud.js';
-import { setTerrainSeed } from './heightcore.js';
+import { setTerrainSeed, islandInfo } from './heightcore.js';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -28,7 +28,8 @@ const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerH
 const seedParam = new URLSearchParams(location.search).get('seed');
 const terrainSeed = seedParam !== null ? (Number(seedParam) >>> 0) : (Date.now() >>> 0);
 setTerrainSeed(terrainSeed);
-console.log(`[flighfeel] island seed ${terrainSeed} — revisit with ?seed=${terrainSeed}`);
+const isle = islandInfo();
+console.log(`[flighfeel] island seed ${terrainSeed} (${isle.archetype}, ${isle.strips} strips) — revisit with ?seed=${terrainSeed}`);
 
 const world = createWorld(scene);
 const plane = buildPlane();
