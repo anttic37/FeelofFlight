@@ -20,13 +20,18 @@ import { bakeTile, buildTileIndex, tileVertexCount } from './tilebake.js';
 // Physics/camera/HUD never touch any of this — they stay on analytic
 // heightAt/surfaceAt, so collision cannot pop or wait on streaming.
 
+// bias/skirt sizing: a ring's linear interpolation can miss the true surface
+// by ~spacing * slope. v7 mountains reach ~60% grades, so LOD1 (15 m spacing)
+// needs ~3 m of sink and LOD2 (40 m) ~8 m, or the coarser mesh pokes through
+// the finer one on steep faces and reads as a second, serrated terrain layer.
+// Sinks are render-only (physics is analytic) and sub-pixel at ring distance.
 const RINGS = [
-  { lod: 0, tile: 480,  res: 96, radius: 1100, skirt: 3,  bias: 0 },
-  { lod: 1, tile: 960,  res: 64, radius: 3000, skirt: 7,  bias: -0.9 },
-  { lod: 2, tile: 1920, res: 48, radius: 5200, skirt: 16, bias: -1.8 },
+  { lod: 0, tile: 480,  res: 96, radius: 1100, skirt: 6,  bias: 0 },
+  { lod: 1, tile: 960,  res: 64, radius: 3000, skirt: 14, bias: -3 },
+  { lod: 2, tile: 1920, res: 48, radius: 5200, skirt: 30, bias: -8 },
 ];
 const EVICT_PAD = 300;        // hysteresis: build at radius, evict at radius+300
-const SHELL_Y = -2.5;
+const SHELL_Y = -10;
 const SHELL_SEGS = 250;
 const TELEPORT_D2 = 1500 * 1500; // jump larger than this = teleport, not flight
 const LOOKAHEAD_FRAMES = 90;  // priority aim point ~1.5 s ahead at 60 Hz
