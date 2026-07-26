@@ -462,91 +462,18 @@ function restoreClassicLayout() {
   for (const p of CLASSIC.canyon) CANYON_PATH.push({ x: p.x, z: p.z });
   computeTribs(CLASSIC_TRIB_DEFS);
 }
-// ---- v6: feature-grammar islands ----
-// A seeded island is COMPOSED, not scaled: an archetype picks 2-5 big smooth
-// landforms from the library below, arranges them, then 4-8 strips are
-// DISCOVERED by suitability search on the raw terrain (so platforms barely
-// grade). Jaggedness is by permission only: ridged noise exists solely on
-// mountain crests; plains, valley floors and plateau tops stay calm.
-const FEATURES = []; // {t:'ridge'|'volcano'|'plateau'|'hills'|'dunes'|'lake', ...}
-const REGIONS = [];  // paint/veg zones: {t:0 mtn|1 desert|2 forest|3 hills, x, z, rIn, rOut}
+// ---- v7: layered-noise terrain — the recipe (nearly) every game uses ----
+// No hand-placed landforms. Elevation = domain-warped fBm pushed through a
+// redistribution curve (gentle lowland common, uplands rare), plus ridged-fBm
+// MOUNTAINS confined to seeded range regions of a low-frequency mask, with a
+// soft height ceiling. Detail exists at every scale because the octaves carry
+// it — nothing can read as stamped, terraced or flat. Lakes are found (calm
+// low ground), not invented. Strips are discovered on the result.
+const LAKES = []; // {x, z, rx, rz, c, s, d} soft elliptical depressions
+let MTN_AMP = 0;  // per-seed ridge crest budget
 let ARCH = 0;
-const ARCH_NAMES = ['ALPINE', 'VOLCANO', 'MESA', 'PASTORAL', 'ESCARPMENT'];
+const ARCH_NAMES = ['ROLLING', 'HIGHLAND', 'MOUNTAIN'];
 export function islandInfo() { return { archetype: ARCH_NAMES[ARCH], strips: RUNWAYS.length }; }
-
-function applyFeature(f, x, z, h, mSh) {
-  if (f.t === 'ridge') {
-    let dx = x - f.ax, dz = z - f.az;
-    let t = dx * f.ux + dz * f.uz;
-    t = t < 0 ? 0 : t > f.len ? f.len : t;
-    const d = Math.hypot(dx - f.ux * t, dz - f.uz * t);
-    const span = f.w * 2.6;
-    if (d >= span) return h;
-    let g = 1 - d / span;
-    g = g * g * (3 - 2 * g); // soft foothills, no noise
-    const tn = t / f.len;
-    const ends = smooth(0, 0.16, tn) * (1 - smooth(0.84, 1, tn));
-    const amp = f.h * (0.62 + 0.38 * noise2(tn * 3.1 + f.p, 4.4)) * ends; // 2-3 summits along the spine
-    let hf = amp * g;
-    const cr = smooth(0.5, 0.85, hf / f.h); // crest-only ridging — THE one jagged place
-    if (cr > 0) {
-      const rv = 1 - Math.abs(fbm(x * 0.0035 + f.p, z * 0.0035 + 2.2, 3));
-      hf += rv * rv * f.h * 0.17 * cr;
-    }
-    return h + hf * mSh;
-  }
-  if (f.t === 'volcano') {
-    const d = Math.hypot(x - f.x, z - f.z);
-    if (d >= f.r) return h;
-    let g = 1 - d / f.r;
-    g = g * g * (3 - 2 * g);
-    let hf = f.h * Math.pow(g, 1.45);
-    hf -= f.cd * (1 - smooth(f.cr * 0.35, f.cr * 1.25, d)); // crater bowl
-    const up = smooth(0.4, 0.75, hf / f.h); // gentle radial ribs on the upper cone
-    if (up > 0) hf += Math.abs(noise2(Math.atan2(z - f.z, x - f.x) * 5.5 + f.p, d * 0.003)) * f.h * 0.05 * up;
-    return h + hf * mSh;
-  }
-  if (f.t === 'plateau') {
-    const dx = x - f.x, dz = z - f.z;
-    const u = dx * f.c - dz * f.s, v = dx * f.s + dz * f.c;
-    const e = Math.hypot(u / f.rx, v / f.rz);
-    if (e >= 1.24) return h;
-    const topH = f.h * (0.97 + fbm(x * 0.0011 + f.p, z * 0.0011 + 3.9, 2) * 0.06);
-    let w;
-    if (e < 0.8) w = 1; // flat tableland
-    else { // benched escarpment: terraced cliffs down to the lowland
-      const tt = Math.min(1, (e - 0.8) / 0.42);
-      w = 1 - (0.7 * terrace(tt) + 0.3 * tt);
-    }
-    return h + topH * w * mSh;
-  }
-  if (f.t === 'hills') {
-    const d = Math.hypot(x - f.x, z - f.z);
-    if (d >= f.r) return h;
-    const g = 1 - smooth(f.r * 0.45, f.r, d);
-    const b = fbm(x * 0.00085 + f.p, z * 0.00085 + 6.2, 3) * 0.5 + 0.5;
-    let hf = Math.pow(b, 1.5) * f.amp * g; // billowed = rounded, never spiky
-    hf -= (1 - smooth(0.02, 0.09, Math.abs(fbm(x * 0.00046 + f.p + 8.8, z * 0.00046 + 3.1, 2)))) * f.amp * 0.14 * g;
-    return h + hf * mSh;
-  }
-  if (f.t === 'dunes') {
-    const d = Math.hypot(x - f.x, z - f.z);
-    if (d >= f.r) return h;
-    const g = 1 - smooth(f.r * 0.4, f.r, d);
-    const b = fbm(x * 0.0012 + f.p, z * 0.0012 + 4.4, 3) * 0.5 + 0.5;
-    let hf = (b * 26 + Math.pow(duneRidge(x, z), 1.7) * f.amp) * g;
-    return h + (hf - desertWash(x, z) * 3.5 * g) * mSh;
-  }
-  if (f.t === 'lake') {
-    const dx = x - f.x, dz = z - f.z;
-    const u = dx * f.c - dz * f.s, v = dx * f.s + dz * f.c;
-    const e = Math.hypot(u / f.rx, v / f.rz);
-    const w = 1 - smooth(0.55, 1.05, e);
-    if (w <= 0) return h;
-    return h + (Math.min(h, -f.d) - h) * w; // soft shores, floor below the water plane
-  }
-  return h;
-}
 
 function genTerrainHeight(x, z) {
   const r2 = x * x + z * z;
@@ -555,42 +482,42 @@ function genTerrainHeight(x, z) {
   const RM = RM_BASE * shapeS(Math.atan2(x, z));
   const m = 1 - (rr / RM) * (rr / RM);
   if (m <= 0) return Math.max(-20, -6 + m * 44);
-  const mSh = smooth(0.03, 0.22, m);
-  // v6.1 ROLLING GROUND — the default is never flat: billowed domain-warped
-  // swells (~1.5 km, 38-75 m per seed) with soft valley floors between them.
-  // Smooth by construction; big features still supply the drama on top.
-  let h = 8 + 12 * m;
-  const rwx = x + (noise2(x * 0.0009 + 21.4, z * 0.0009 + 3.3) - 0.5) * 520;
-  const rwz = z + (noise2(x * 0.0009 + 7.9, z * 0.0009 + 15.2) - 0.5) * 520;
-  const sw = fbm(rwx * 0.00068 + 9.3, rwz * 0.00068 + 2.6, 3) * 0.5 + 0.5;
-  h += sw * sw * K_ROLL * 1.55 * mSh; // billowed: rounded crowns, wide hollows
-  h += fbm(x * 0.0044 + 1.7, z * 0.0044 + 8.1, 2) * 2.6 * mSh;
-  h *= Math.min(1, Math.pow(m, 0.8) * 1.4);
-  h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
-  for (let i = 0; i < FEATURES.length; i++) h = applyFeature(FEATURES[i], x, z, h, mSh);
-  if (canyonLocate(x, z)) { // optional gorge (MESA archetype)
-    const hc = carveCanyon(x, z, h);
-    h = hc + (h - hc) * (1 - smooth(0.02, 0.10, m));
+  // base elevation: warp -> 6-octave fBm -> redistribution curve.
+  // The linear term keeps lowlands alive (~rolling 15-45 m), the power term
+  // makes uplands rare and tall.
+  const wx = x + (noise2(x * 0.0002 + 31.4, z * 0.0002 + 8.8) - 0.5) * 1800;
+  const wz = z + (noise2(x * 0.0002 + 3.9, z * 0.0002 + 21.6) - 0.5) * 1800;
+  const e = fbm(wx * 0.00035 + 5.5, wz * 0.00035 + 1.5, 6) * 0.5 + 0.5;
+  let h = 4 + K_ROLL * 0.62 * e * 1.9 + 235 * K_REL * Math.pow(e, 2.6);
+  // mountains: ridged fBm, only inside the range regions, favoring high base
+  const rmk = smooth(0.55, 0.8, fbm(x * 0.00021 + 51.7, z * 0.00021 + 17.3, 2) * 0.5 + 0.5);
+  if (rmk > 0.01) {
+    const rv = 1 - Math.abs(fbm(x * 0.00085 + 9.1, z * 0.00085 + 4.7, 4));
+    h += rmk * Math.pow(rv, 1.9) * MTN_AMP * (0.55 + 0.45 * e);
   }
-  return carveTribs(x, z, h);
+  if (h > 900) h = 900 + (h - 900) * 0.6; // soft ceiling: tallest seeds ~1250
+  h *= Math.min(1, Math.pow(m, 0.8) * 1.4); // island mask
+  h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
+  for (let i = 0; i < LAKES.length; i++) {
+    const L = LAKES[i];
+    const dx = x - L.x, dz = z - L.z;
+    const eL = Math.hypot((dx * L.c - dz * L.s) / L.rx, (dx * L.s + dz * L.c) / L.rz);
+    const w = 1 - smooth(0.55, 1.05, eL);
+    if (w > 0) h += (Math.min(h, -L.d) - h) * w; // soft shores, floor below the water plane
+  }
+  return h;
 }
 function baseHeightGen(x, z) {
   return applyCorridors(x, z, applyPlatforms(x, z, genTerrainHeight(x, z)));
 }
 
-function biomeWeightsGen(x, z) { // paint/veg zones from the composed regions
-  const wx = x + (noise2(x * 0.0005 + 9.1, z * 0.0005 + 4.4) - 0.5) * 1400;
-  const wz = z + (noise2(x * 0.0005 + 1.7, z * 0.0005 + 8.2) - 0.5) * 1400;
-  _wH = 0.3; _wD = 0; _wF = 0; _wM = 0;
-  for (let i = 0; i < REGIONS.length; i++) {
-    const g = REGIONS[i];
-    const w = 1 - smooth(g.rIn, g.rOut, Math.hypot(wx - g.x, wz - g.z));
-    if (w <= 0) continue;
-    if (g.t === 0) { if (w > _wM) _wM = w; }
-    else if (g.t === 1) { if (w > _wD) _wD = w; }
-    else if (g.t === 2) { if (w > _wF) _wF = w; }
-    else if (w > _wH) _wH = w;
-  }
+function biomeWeightsGen(x, z) { // standard moisture-map biomes + the range mask
+  const rmk = smooth(0.55, 0.8, fbm(x * 0.00021 + 51.7, z * 0.00021 + 17.3, 2) * 0.5 + 0.5);
+  const mo = fbm(x * 0.00028 + 77.7, z * 0.00028 + 33.1, 2) * 0.5 + 0.5; // moisture field
+  _wM = rmk;                                          // rock/snow where the ranges are
+  _wF = smooth(0.55, 0.72, mo) * (1 - rmk * 0.7);     // forests in the wet zones
+  _wD = (1 - smooth(0.3, 0.45, mo)) * (1 - rmk);      // deserts in the dry zones
+  _wH = 0.34;                                         // grass fills the rest
 }
 
 // name pools per site character; first unused name wins, then roman suffixes
@@ -617,217 +544,60 @@ function generateIsland() {
     const r = RM_BASE * shapeS(a) * rFrac;
     return { x: Math.sin(a) * r, z: Math.cos(a) * r };
   };
-  FEATURES.length = 0; REGIONS.length = 0;
-  CANYON_PATH.length = 0; computeTribs([]);
+  CANYON_PATH.length = 0; computeTribs([]); // v7 has no gorge (the classic island keeps its own)
   RUNWAYS.length = 0;
+  LAKES.length = 0;
 
-  ARCH = Math.floor(R1(90) * 4.999);
-  const a0 = R1(91) * TAU; // the island's main axis
-  const offshore = (k) => place(R1(k) * TAU, 2.2); // anchor parking spot: always sea
-
-  const addRidge = (cx, cz, dir, len, w, hgt) => {
-    const ax = cx - Math.sin(dir) * len / 2, az = cz - Math.cos(dir) * len / 2;
-    FEATURES.push({ t: 'ridge', ax, az, ux: Math.sin(dir), uz: Math.cos(dir), len, w, h: hgt, p: R1(FEATURES.length + 60) * 9 });
-    return { ax, az, bx: ax + Math.sin(dir) * len, bz: az + Math.cos(dir) * len };
-  };
-  const addRegion = (t, x, z, rIn, rOut) => REGIONS.push({ t, x, z, rIn, rOut });
-
-  if (ARCH === 0) { // ALPINE: one great spine, forest flank, valley lakes
-    const c = place(a0, 0.3), dir = a0 + Math.PI / 2 + jit(1, 0.6);
-    const H = (430 + 380 * R1(2)) * K_MTN + 130;
-    const seg = addRidge(c.x, c.z, dir, 3900 + R1(3) * 1100, 620 + R1(4) * 260, H);
-    MTN_A.x = seg.ax; MTN_A.z = seg.az; MTN_B.x = seg.bx; MTN_B.z = seg.bz;
-    PEAK.x = c.x; PEAK.z = c.z;
-    addRegion(0, c.x, c.z, 900, 2600);
-    if (R1(5) > 0.45) { // second, lower parallel ridge with a valley between
-      const off = 1750 + R1(6) * 500, na = a0 + (R1(7) > 0.5 ? 1 : -1) * Math.PI / 2;
-      const c2 = { x: c.x + Math.sin(na) * off, z: c.z + Math.cos(na) * off };
-      addRidge(c2.x, c2.z, dir + jit(8, 0.3), 2900 + R1(9) * 900, 480, H * 0.55);
-      addRegion(0, c2.x, c2.z, 700, 1900);
-      const vx = (c.x + c2.x) / 2, vz = (c.z + c2.z) / 2; // lake in the valley
-      FEATURES.push({ t: 'lake', x: vx, z: vz, rx: 520 + R1(10) * 380, rz: 300 + R1(11) * 220, c: Math.cos(dir), s: Math.sin(dir), d: 7 });
+  // ---- v7 probe: the terrain is pure noise, so LEARN it instead of placing it.
+  // One grid pass finds vegetation anchors, calm low ground for lakes, the
+  // highest summit, and how mountainous the island came out.
+  MTN_AMP = (380 + R1(92) * 340) * K_MTN; // ridge crest budget over the base field
+  let peakH = -1e9, px = 0, pz = 0;
+  let mtnCells = 0, landCells = 0;
+  let bestF = 0, fx = 0, fz = 0, bestD = 0, dx0 = 0, dz0 = 0, bestH = 0, hx0 = 0, hz0 = 0;
+  const lakeCand = [];
+  const step = RM_BASE * 0.052;
+  for (let gx = -13; gx <= 13; gx++) for (let gz = -13; gz <= 13; gz++) {
+    const x = gx * step + jit(500 + gx * 27 + gz, step * 0.5);
+    const z = gz * step + jit(560 + gx * 27 + gz, step * 0.5);
+    const h = genTerrainHeight(x, z);
+    if (h < 4) continue;
+    landCells++;
+    if (h > peakH) { peakH = h; px = x; pz = z; }
+    biomeWeightsGen(x, z);
+    if (_wM > 0.45) mtnCells++;
+    if (_wF > bestF && h > 15 && h < 240) { bestF = _wF; fx = x; fz = z; }
+    if (_wD > bestD && h > 10 && h < 160) { bestD = _wD; dx0 = x; dz0 = z; }
+    if (_wH > bestH && h > 12 && h < 120) { bestH = _wH; hx0 = x; hz0 = z; }
+    if (h > 10 && h < 42) { // lake candidates: low AND locally calm
+      let lo = h, hi = h;
+      for (const o of [[520, 0], [-520, 0], [0, 520], [0, -520]]) {
+        const hh = genTerrainHeight(x + o[0], z + o[1]);
+        if (hh < lo) lo = hh; if (hh > hi) hi = hh;
+      }
+      if (hi - lo < 24) lakeCand.push({ x, z });
     }
-    const fSide = a0 + Math.PI + jit(12, 0.9);
-    const fc = place(fSide, 0.5);
-    FEATURES.push({ t: 'hills', x: fc.x, z: fc.z, r: 2600, amp: 60 + R1(13) * 50, p: R1(14) * 9 });
-    addRegion(2, fc.x, fc.z, 1000, 2400); // forest
-    FOREST_C.x = fc.x; FOREST_C.z = fc.z;
-    const hc = place(a0 + Math.PI * 0.5, 0.55);
-    addRegion(3, hc.x, hc.z, 1200, 3000);
-    HILLS_C.x = hc.x; HILLS_C.z = hc.z;
-    const dpark = offshore(15); DESERT_C.x = dpark.x; DESERT_C.z = dpark.z;
-  } else if (ARCH === 1) { // VOLCANO: one cone rules, lagoon at the coast
-    const c = place(R1(1) * TAU, 0.1 + R1(2) * 0.12);
-    const R = 1800 + R1(3) * 650, H = (560 + 340 * R1(4)) * K_MTN + 80;
-    FEATURES.push({ t: 'volcano', x: c.x, z: c.z, r: R, h: H, cr: 250 + R1(5) * 130, cd: H * (0.22 + R1(6) * 0.12), p: R1(7) * 9 });
-    MTN_A.x = c.x - 120; MTN_A.z = c.z; MTN_B.x = c.x + 120; MTN_B.z = c.z;
-    PEAK.x = c.x; PEAK.z = c.z;
-    addRegion(0, c.x, c.z, R * 0.35, R * 1.05);
-    const lg = place(a0, 0.62); // lagoon
-    FEATURES.push({ t: 'lake', x: lg.x, z: lg.z, rx: 800 + R1(8) * 500, rz: 550 + R1(9) * 350, c: Math.cos(a0), s: Math.sin(a0), d: 9 });
-    for (let k = 0; k < 2; k++) { // forest belts around the lower slopes
-      const fa = a0 + Math.PI * (0.55 + k * 0.75) + jit(10 + k, 0.5);
-      const fc = place(fa, 0.42 + R1(12 + k) * 0.15);
-      FEATURES.push({ t: 'hills', x: fc.x, z: fc.z, r: 2100, amp: 45 + R1(14 + k) * 35, p: R1(16 + k) * 9 });
-      addRegion(2, fc.x, fc.z, 800, 2000);
-      if (k === 0) { FOREST_C.x = fc.x; FOREST_C.z = fc.z; }
-    }
-    const hc = place(a0 + Math.PI, 0.5);
-    addRegion(3, hc.x, hc.z, 1200, 3200);
-    HILLS_C.x = hc.x; HILLS_C.z = hc.z;
-    const dpark = offshore(20); DESERT_C.x = dpark.x; DESERT_C.z = dpark.z;
-  } else if (ARCH === 2) { // MESA: tablelands, a dune sea, and THE gorge
-    const nP = 2 + (R1(1) > 0.55 ? 1 : 0);
-    let tallest = 0, tx = 0, tz = 0;
-    for (let k = 0; k < nP; k++) {
-      const pa = a0 + k * (TAU / nP) + jit(2 + k, 0.7);
-      const pc = place(pa, 0.28 + R1(5 + k) * 0.22);
-      const rot = R1(8 + k) * TAU, hgt = (150 + R1(11 + k) * 190) * K_MESA;
-      FEATURES.push({ t: 'plateau', x: pc.x, z: pc.z, rx: 950 + R1(14 + k) * 750, rz: 700 + R1(17 + k) * 550,
-        c: Math.cos(rot), s: Math.sin(rot), h: hgt, p: R1(20 + k) * 9 });
-      if (hgt > tallest) { tallest = hgt; tx = pc.x; tz = pc.z; }
-    }
-    PEAK.x = tx; PEAK.z = tz;
-    MTN_A.x = tx - 500; MTN_A.z = tz; MTN_B.x = tx + 500; MTN_B.z = tz;
-    const dc = place(a0 + Math.PI + jit(23, 0.6), 0.5);
-    FEATURES.push({ t: 'dunes', x: dc.x, z: dc.z, r: 2500 + R1(24) * 900, amp: (26 + R1(25) * 26) * K_DUNE, p: R1(26) * 9 });
-    DESERT_C.x = dc.x; DESERT_C.z = dc.z;
-    addRegion(1, 0, 0, 3400, 5600); // desert palette over the whole island
-    addRegion(1, dc.x, dc.z, 1800, 3600);
-    const fpark = offshore(27); FOREST_C.x = fpark.x; FOREST_C.z = fpark.z;
-    const hpark = offshore(28); HILLS_C.x = hpark.x; HILLS_C.z = hpark.z;
-    // the gorge: foothills -> sea, straight run for the strip (segments 4..7)
-    const sgn = R1(30) < 0.5 ? 1 : -1;
-    const aCan = a0 + sgn * Math.PI * (0.55 + R1(31) * 0.34);
-    const aStart = a0 + (aCan - a0) * 0.28;
-    const NW = 10, aStraight = aStart + (aCan - aStart) * 0.58;
-    for (let i = 0; i <= NW; i++) {
-      const t = i / NW;
-      let a = aStart + (aCan - aStart) * t + (i > 0 && i < NW ? jit(32 + i, 0.15) : 0);
-      if (i >= 4 && i <= 7) a = aStraight;
-      const cs = shapeS(a) * LSCALE;
-      CANYON_PATH.push({ x: Math.sin(a) * (1700 + 6400 * t) * cs, z: Math.cos(a) * (1700 + 6400 * t) * cs });
-    }
-    computeCanyonSegs(); // canyonLocate live for strip search below
-    const tribDefs = [];
-    for (let k = 0; k < 2; k++) {
-      const j = k === 0 ? 2 : 8;
-      const J = CANYON_PATH[j], Jp = CANYON_PATH[j - 1];
-      const segd = Math.atan2(J.x - Jp.x, J.z - Jp.z);
-      const ta = segd + (R1(44 + k) < 0.5 ? 1 : -1) * (1.35 + jit(46 + k, 0.5));
-      const p1 = { x: J.x + Math.sin(ta) * 440, z: J.z + Math.cos(ta) * 440 };
-      const ta2 = ta + jit(48 + k, 0.6);
-      tribDefs.push({ pts: [{ x: p1.x + Math.sin(ta2) * 440, z: p1.z + Math.cos(ta2) * 440 }, p1, { x: J.x, z: J.z }], joinFl: cFl(j / NW) - 8 });
-    }
-    computeTribs(tribDefs);
-  } else if (ARCH === 3) { // PASTORAL: rolling green lowlands, lakes, groves
-    FEATURES.push({ t: 'hills', x: 0, z: 0, r: 4800, amp: (95 + R1(1) * 70) * K_HILL, p: R1(2) * 9 });
-    const rc = place(a0, 0.34);
-    addRidge(rc.x, rc.z, a0 + Math.PI / 2 + jit(3, 0.5), 2100 + R1(4) * 800, 430, 190 + R1(5) * 130);
-    MTN_A.x = rc.x - 900; MTN_A.z = rc.z; MTN_B.x = rc.x + 900; MTN_B.z = rc.z;
-    PEAK.x = rc.x; PEAK.z = rc.z;
-    for (let k = 0; k < 2; k++) {
-      const la = a0 + Math.PI * (0.5 + k * 0.6) + jit(6 + k, 0.6);
-      const lc = place(la, 0.3 + R1(8 + k) * 0.25);
-      FEATURES.push({ t: 'lake', x: lc.x, z: lc.z, rx: 480 + R1(10 + k) * 420, rz: 340 + R1(12 + k) * 260,
-        c: Math.cos(la), s: Math.sin(la), d: 6 + R1(14 + k) * 5 });
-    }
-    for (let k = 0; k < 2; k++) {
-      const fa = a0 + Math.PI * (0.3 + k * 1.05) + jit(16 + k, 0.5);
-      const fc = place(fa, 0.45 + R1(18 + k) * 0.15);
-      addRegion(2, fc.x, fc.z, 900, 2100);
-      if (k === 0) { FOREST_C.x = fc.x; FOREST_C.z = fc.z; }
-    }
-    HILLS_C.x = 0; HILLS_C.z = 0;
-    addRegion(3, 0, 0, 2600, 5200);
-    const dpark = offshore(22); DESERT_C.x = dpark.x; DESERT_C.z = dpark.z;
-  } else { // ESCARPMENT: half high tableland, one huge cliff line, low country below
-    const pc = place(a0, 0.3);
-    const rot = a0 + Math.PI / 2 + jit(1, 0.25);
-    const H = (230 + R1(2) * 190) * K_MESA + 60;
-    FEATURES.push({ t: 'plateau', x: pc.x, z: pc.z, rx: 2700 + R1(3) * 700, rz: 1850 + R1(4) * 550,
-      c: Math.cos(rot), s: Math.sin(rot), h: H, p: R1(5) * 9 });
-    const seg = addRidge(pc.x, pc.z, rot + jit(6, 0.3), 2400, 420, H * 0.85); // crown ridge on the tableland
-    MTN_A.x = seg.ax; MTN_A.z = seg.az; MTN_B.x = seg.bx; MTN_B.z = seg.bz;
-    PEAK.x = pc.x; PEAK.z = pc.z;
-    addRegion(0, pc.x, pc.z, 1100, 2800);
-    const low = place(a0 + Math.PI, 0.42);
-    FEATURES.push({ t: 'hills', x: low.x, z: low.z, r: 3000, amp: 55 + R1(7) * 45, p: R1(8) * 9 });
-    addRegion(2, low.x, low.z, 1000, 2400);
-    FOREST_C.x = low.x; FOREST_C.z = low.z;
-    FEATURES.push({ t: 'lake', x: low.x + jit(9, 1600), z: low.z + jit(10, 1600), rx: 560 + R1(11) * 380, rz: 400 + R1(12) * 260,
-      c: 1, s: 0, d: 7 });
-    const hc = place(a0 + Math.PI * 0.55, 0.5);
-    addRegion(3, hc.x, hc.z, 1400, 3400);
-    HILLS_C.x = hc.x; HILLS_C.z = hc.z;
-    const dpark = offshore(13); DESERT_C.x = dpark.x; DESERT_C.z = dpark.z;
   }
+  PEAK.x = px; PEAK.z = pz; // vegetation anchors follow the probed terrain
+  MTN_A.x = px - 700; MTN_A.z = pz; MTN_B.x = px + 700; MTN_B.z = pz;
+  FOREST_C.x = fx; FOREST_C.z = fz;
+  HILLS_C.x = hx0; HILLS_C.z = hz0;
+  if (bestD > 0.32) { DESERT_C.x = dx0; DESERT_C.z = dz0; }
+  else { const o = place(R1(97) * TAU, 2.2); DESERT_C.x = o.x; DESERT_C.z = o.z; } // wet island: cacti sampler finds only sea
+  const mtnCover = landCells ? mtnCells / landCells : 0;
+  ARCH = mtnCover > 0.2 ? 2 : mtnCover > 0.07 ? 1 : 0; // MOUNTAIN / HIGHLAND / ROLLING
 
-  // ---- v6.1 coverage: no empty sectors, no pancake patches ----
-  // rough 0..1 relief influence of a feature at a point (lakes don't count)
-  const featureW = (f, x, z) => {
-    if (f.t === 'lake') return 0;
-    if (f.t === 'ridge') {
-      let dx = x - f.ax, dz = z - f.az;
-      let t = dx * f.ux + dz * f.uz;
-      t = t < 0 ? 0 : t > f.len ? f.len : t;
-      const d = Math.hypot(dx - f.ux * t, dz - f.uz * t), span = f.w * 2.6;
-      return d < span ? 1 - d / span : 0;
-    }
-    if (f.t === 'plateau') {
-      const dx = x - f.x, dz = z - f.z;
-      const e = Math.hypot((dx * f.c - dz * f.s) / f.rx, (dx * f.s + dz * f.c) / f.rz);
-      return e < 1.24 ? 1 - e / 1.24 : 0;
-    }
-    const d = Math.hypot(x - f.x, z - f.z);
-    return d < f.r ? 1 - d / f.r : 0;
-  };
-  const filler = (x, z, k) => { // archetype-flavored gap features
-    if (ARCH === 2) {
-      if (R1(300 + k) > 0.5) {
-        const rot = R1(310 + k) * TAU;
-        FEATURES.push({ t: 'plateau', x, z, rx: 900 + R1(320 + k) * 500, rz: 700 + R1(330 + k) * 400,
-          c: Math.cos(rot), s: Math.sin(rot), h: 80 + R1(340 + k) * 90, p: R1(350 + k) * 9 });
-      } else FEATURES.push({ t: 'dunes', x, z, r: 1900, amp: (22 + R1(360 + k) * 18) * K_DUNE, p: R1(370 + k) * 9 });
-    } else if (ARCH === 0 || ARCH === 4) {
-      if (R1(300 + k) > 0.55) addRidge(x, z, R1(311 + k) * TAU, 1700 + R1(312 + k) * 700, 430, 210 + R1(313 + k) * 160);
-      else FEATURES.push({ t: 'hills', x, z, r: 2300, amp: 72 + R1(314 + k) * 50, p: R1(316 + k) * 9 });
-    } else {
-      FEATURES.push({ t: 'hills', x, z, r: 2300, amp: (72 + R1(315 + k) * 55) * (ARCH === 3 ? K_HILL : 1), p: R1(317 + k) * 9 });
-    }
-  };
-  // every compass sector must contain a feature
-  for (let k = 0; k < 6; k++) {
-    const aSec = a0 + 0.52 + k * TAU / 6 + jit(280 + k, 0.3);
-    const p = place(aSec, 0.3 + R1(290 + k) * 0.24);
-    let w = 0;
-    for (const f of FEATURES) { const v = featureW(f, p.x, p.z); if (v > w) w = v; }
-    if (w < 0.25) filler(p.x, p.z, k);
+  // 0-2 lakes where the ground was already low and calm
+  const nLakes = Math.floor(R1(98) * 2.999);
+  for (let k = 0; k < nLakes && lakeCand.length > 0; k++) {
+    const pick = lakeCand[Math.floor(R1(99 + k) * lakeCand.length) % lakeCand.length];
+    let ok = true;
+    for (const L of LAKES) if (Math.hypot(pick.x - L.x, pick.z - L.z) < 2300) ok = false;
+    if (!ok) continue;
+    const rot = R1(102 + k) * TAU;
+    LAKES.push({ x: pick.x, z: pick.z, rx: 430 + R1(104 + k) * 380, rz: 300 + R1(106 + k) * 260,
+      c: Math.cos(rot), s: Math.sin(rot), d: 6 + R1(108 + k) * 5 });
   }
-  // relief floor: hunt remaining flat patches (<25 m over 600 m) and bump them
-  const flats = [];
-  for (let gx = -4; gx <= 4; gx++) for (let gz = -4; gz <= 4; gz++) {
-    const x = gx * 1050 + jit(400 + gx * 9 + gz, 300), z = gz * 1050 + jit(440 + gx * 9 + gz, 300);
-    const h0 = genTerrainHeight(x, z);
-    if (h0 < 5) continue; // sea, shore, lakes
-    let lo = h0, hi = h0;
-    for (const [dx, dz] of [[600, 0], [-600, 0], [0, 600], [0, -600]]) {
-      const h = genTerrainHeight(x + dx, z + dz);
-      if (h < lo) lo = h; if (h > hi) hi = h;
-    }
-    if (hi - lo < 25) flats.push({ x, z, r: hi - lo });
-  }
-  flats.sort((a, b) => a.r - b.r);
-  let bumps = 0;
-  for (const p of flats) {
-    if (bumps >= 4) break;
-    let clear = true;
-    for (const f of FEATURES) if (f.t === 'hills' && Math.hypot(p.x - f.x, p.z - f.z) < 1600) { clear = false; break; }
-    if (!clear) continue;
-    FEATURES.push({ t: 'hills', x: p.x, z: p.z, r: 1600, amp: 52 + R1(480 + bumps) * 26, p: R1(490 + bumps) * 9 });
-    bumps++;
-  }
-
   // ---- strip discovery: 4-8 sites found on the RAW terrain ----
   const used = new Set();
   const N = 4 + Math.floor(R1(120) * 4.999);
@@ -870,16 +640,11 @@ function generateIsland() {
     pushStrip('Bay', Math.sin(a) * rad, Math.cos(a) * rad, Math.atan2(Math.sin(a) * rad, Math.cos(a) * rad), 12, 520, 26);
   }
 
-  // 2) archetype signature strips
-  if (ARCH === 2 && CANYON_PATH.length > 6) { // gorge floor
-    const p5 = CANYON_PATH[5], p6 = CANYON_PATH[6];
-    const ux = p6.x - p5.x, uz = p6.z - p5.z, uL = Math.hypot(ux, uz);
-    used.add('Gorge');
-    pushStrip('Gorge', (p5.x + p6.x) / 2, (p5.z + p6.z) / 2, Math.atan2(-ux / uL, -uz / uL), 72, 420, 24);
-  } else if (ARCH === 0 || ARCH === 1 || ARCH === 4) { // a high shelf near the summit
+  // 2) a high shelf near the summit, when the island grew real mountains
+  if (peakH > 380) {
     const aIn = Math.atan2(-PEAK.x, -PEAK.z);
-    const hx = PEAK.x + Math.sin(aIn) * (ARCH === 1 ? 1500 : 850);
-    const hz = PEAK.z + Math.cos(aIn) * (ARCH === 1 ? 1500 : 850);
+    const hx = PEAK.x + Math.sin(aIn) * 850;
+    const hz = PEAK.z + Math.cos(aIn) * 850;
     const hh = genTerrainHeight(hx, hz);
     if (hh > 40) pushStrip(pickName('high', used), hx, hz, aIn + Math.PI / 2 + jit(140, 0.2), Math.round(hh), 340, 20);
   }
