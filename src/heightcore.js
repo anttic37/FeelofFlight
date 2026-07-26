@@ -33,6 +33,7 @@ export function setTerrainSeed(seed) {
   SEED = seed >>> 0;
   if (SEED === 0) {
     SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; K_SWELL = 0; K_ROLL = 0; COAST_WARP = 760;
+    K_RANGE = 0.00021; K_THR = 0.55;
     SH_ON = false; SH_R2OUT = 75690000; RM_BASE = 7200; LSCALE = 1; GEN_ON = false; // classic island
     restoreClassicLayout(); // hand-tuned anchors, runways, canyon, tribs
   } else {
@@ -43,7 +44,9 @@ export function setTerrainSeed(seed) {
     K_DUNE = 0.70 + 1.30 * h01(SEED * 0.029 + 2.9);
     K_HILL = 0.70 + 1.10 * h01(SEED * 0.031 + 14.3);
     K_FOR  = 0.70 + 1.00 * h01(SEED * 0.037 + 6.8);
-    K_REL  = 0.80 + 1.20 * h01(SEED * 0.041 + 9.4);
+    K_REL  = 0.70 + 1.60 * h01(SEED * 0.041 + 9.4); // uplands 165-540 m before mountains
+    K_RANGE = 0.00024 + 0.00018 * h01(SEED * 0.089 + 15.8); // one great range ... 3-4 massifs
+    K_THR = 0.48 + 0.16 * h01(SEED * 0.097 + 21.2); // how much land the ranges claim
     LSCALE = 0.75; RM_BASE = 7200 * LSCALE; // 5400 — tighter island, same heights
     K_SWELL = 0.50 + 1.60 * h01(SEED * 0.047 + 12.1); // broad rolling uplands, +-17..70 m
     K_ROLL = 38 + 37 * h01(SEED * 0.083 + 6.6); // 38-75 m rolling ground under everything
@@ -471,6 +474,16 @@ function restoreClassicLayout() {
 // low ground), not invented. Strips are discovered on the result.
 const LAKES = []; // {x, z, rx, rz, c, s, d} soft elliptical depressions
 let MTN_AMP = 0;  // per-seed ridge crest budget
+// range-region shape: frequency sets HOW MANY separate massifs fit on the
+// island (low = one great range, high = 3-4 scattered ones); threshold sets
+// how much land they claim. A second mask family at 1.7x frequency adds
+// independent smaller massifs, so multi-mountain islands are common.
+let K_RANGE = 0.00021, K_THR = 0.55;
+function rangeMask(x, z) {
+  const r1 = smooth(K_THR, K_THR + 0.25, fbm(x * K_RANGE + 51.7, z * K_RANGE + 17.3, 2) * 0.5 + 0.5);
+  const r2 = smooth(0.58, 0.82, fbm(x * K_RANGE * 1.7 + 88.3, z * K_RANGE * 1.7 + 41.9, 2) * 0.5 + 0.5);
+  return Math.max(r1, r2 * 0.85);
+}
 let ARCH = 0;
 const ARCH_NAMES = ['ROLLING', 'HIGHLAND', 'MOUNTAIN'];
 export function islandInfo() { return { archetype: ARCH_NAMES[ARCH], strips: RUNWAYS.length }; }
@@ -490,12 +503,12 @@ function genTerrainHeight(x, z) {
   const e = fbm(wx * 0.00035 + 5.5, wz * 0.00035 + 1.5, 6) * 0.5 + 0.5;
   let h = 4 + K_ROLL * 0.62 * e * 1.9 + 235 * K_REL * Math.pow(e, 2.6);
   // mountains: ridged fBm, only inside the range regions, favoring high base
-  const rmk = smooth(0.55, 0.8, fbm(x * 0.00021 + 51.7, z * 0.00021 + 17.3, 2) * 0.5 + 0.5);
+  const rmk = rangeMask(x, z);
   if (rmk > 0.01) {
     const rv = 1 - Math.abs(fbm(x * 0.00085 + 9.1, z * 0.00085 + 4.7, 4));
     h += rmk * Math.pow(rv, 1.9) * MTN_AMP * (0.55 + 0.45 * e);
   }
-  if (h > 900) h = 900 + (h - 900) * 0.6; // soft ceiling: tallest seeds ~1250
+  if (h > 1000) h = 1000 + (h - 1000) * 0.65; // soft ceiling: tallest seeds ~1350
   h *= Math.min(1, Math.pow(m, 0.8) * 1.4); // island mask
   h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
   for (let i = 0; i < LAKES.length; i++) {
@@ -512,7 +525,7 @@ function baseHeightGen(x, z) {
 }
 
 function biomeWeightsGen(x, z) { // standard moisture-map biomes + the range mask
-  const rmk = smooth(0.55, 0.8, fbm(x * 0.00021 + 51.7, z * 0.00021 + 17.3, 2) * 0.5 + 0.5);
+  const rmk = rangeMask(x, z); // MUST match the geometry's mask or paint drifts
   const mo = fbm(x * 0.00028 + 77.7, z * 0.00028 + 33.1, 2) * 0.5 + 0.5; // moisture field
   _wM = rmk;                                          // rock/snow where the ranges are
   _wF = smooth(0.55, 0.72, mo) * (1 - rmk * 0.7);     // forests in the wet zones
@@ -551,7 +564,7 @@ function generateIsland() {
   // ---- v7 probe: the terrain is pure noise, so LEARN it instead of placing it.
   // One grid pass finds vegetation anchors, calm low ground for lakes, the
   // highest summit, and how mountainous the island came out.
-  MTN_AMP = (380 + R1(92) * 340) * K_MTN; // ridge crest budget over the base field
+  MTN_AMP = (340 + R1(92) * 520) * K_MTN; // ridge crest budget: meek 240 ... mighty 1500
   let peakH = -1e9, px = 0, pz = 0;
   let mtnCells = 0, landCells = 0;
   let bestF = 0, fx = 0, fz = 0, bestD = 0, dx0 = 0, dz0 = 0, bestH = 0, hx0 = 0, hz0 = 0;
