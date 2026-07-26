@@ -8,10 +8,10 @@ import { setTerrainSeed } from './heightcore.js';
 
 self.onmessage = (e) => {
   if (e.data.type === 'seed') { setTerrainSeed(e.data.seed); return; } // always the first message
-  const { id, x0, z0, size, res, skirt } = e.data;
+  const { id, x0, z0, size, res, skirt, minSpan } = e.data;
   const n = tileVertexCount(res) * 3;
   const positions = new Float32Array(n);
   const colors = new Float32Array(n);
-  bakeTile(x0, z0, size, res, skirt, positions, colors);
+  bakeTile(x0, z0, size, res, skirt, positions, colors, minSpan);
   self.postMessage({ id, positions, colors }, [positions.buffer, colors.buffer]);
 };

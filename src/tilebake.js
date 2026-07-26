@@ -33,8 +33,9 @@ function ringGridIndex(res, k) {
 
 const _col = [0, 0, 0]; // reused rgb out for terrainColor
 
-export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut) {
+export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan) {
   const cell = size / res;
+  const ms = minSpan || 0;
   // Grid: heights + colors. terrainColor's normalY (steep-face rock, scree)
   // comes from an ANALYTIC central difference of heightAt with spacing = one
   // cell, so the paint is seam-consistent across tiles, LODs and threads —
@@ -45,7 +46,19 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut) {
     for (let ix = 0; ix <= res; ix++, o += 3) {
       const x = x0 + ix * cell;
       const h = heightAt(x, z);
-      posOut[o] = x; posOut[o + 1] = h; posOut[o + 2] = z;
+      let hy = h;
+      if (ms > 0) {
+        // CONSERVATIVE LOWER ENVELOPE for coarser rings: a vertex takes the
+        // MIN of itself and 4 taps at half-spacing, so the coarse surface can
+        // never rise above terrain the finer rings actually show — the root
+        // cause of the serrated ring-overlap bands on steep slopes. Colors
+        // and paint normals still come from the exact center sample.
+        const h1 = heightAt(x + ms, z), h2 = heightAt(x - ms, z);
+        const h3 = heightAt(x, z + ms), h4 = heightAt(x, z - ms);
+        if (h1 < hy) hy = h1; if (h2 < hy) hy = h2;
+        if (h3 < hy) hy = h3; if (h4 < hy) hy = h4;
+      }
+      posOut[o] = x; posOut[o + 1] = hy; posOut[o + 2] = z;
       const gx = (heightAt(x + cell, z) - heightAt(x - cell, z)) / (2 * cell);
       const gz = (heightAt(x, z + cell) - heightAt(x, z - cell)) / (2 * cell);
       const ny = 1 / Math.sqrt(1 + gx * gx + gz * gz); // normalize(-gx, 1, -gz).y
@@ -53,12 +66,23 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut) {
       colOut[o] = _col[0]; colOut[o + 1] = _col[1]; colOut[o + 2] = _col[2];
     }
   }
-  // Skirt ring: perimeter duplicates dropped by skirtDepth, colors copied so
-  // the wall continues the rim's paint (no color seam at the fold).
+  // Skirt ring: perimeter duplicates dropped by skirtDepth and pushed outward
+  // 3x that — a GENTLE RAMP (~18°) bridging this tile down to the (enveloped,
+  // slightly lower) coarser ring behind it. Steep or vertical skirts flat-shade
+  // dark and read as serrated teeth / dashed slivers along ring boundaries;
+  // a near-terrain-slope ramp shades like the hillside it continues.
   const ring = 4 * res;
+  const out = skirtDepth * 3;
   for (let k = 0; k < ring; k++, o += 3) {
     const g = ringGridIndex(res, k) * 3;
-    posOut[o] = posOut[g]; posOut[o + 1] = posOut[g + 1] - skirtDepth; posOut[o + 2] = posOut[g + 2];
+    let ox = 0, oz = 0;
+    if (k < res) oz = -out;         // z-min edge faces -z
+    else if (k < 2 * res) ox = out; // x-max edge faces +x
+    else if (k < 3 * res) oz = out; // z-max edge faces +z
+    else ox = -out;                 // x-min edge faces -x
+    posOut[o] = posOut[g] + ox;
+    posOut[o + 1] = posOut[g + 1] - skirtDepth;
+    posOut[o + 2] = posOut[g + 2] + oz;
     colOut[o] = colOut[g]; colOut[o + 1] = colOut[g + 1]; colOut[o + 2] = colOut[g + 2];
   }
 }

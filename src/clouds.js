@@ -65,7 +65,7 @@ diffuseColor.a *= mix(1.0, 0.35, fres);
     scene.add(mesh);
     clouds.push({
       mesh, baseY, x0: mesh.position.x,
-      y: Math.max(baseY, heightAt(mesh.position.x, mesh.position.z) + 150),
+      y: Math.max(baseY, heightAt(mesh.position.x, mesh.position.z) + 200),
       speed: 3.2 + noise2(i * 9.7, 3.3) * 1.6,
       bobF: 0.06 + noise2(i * 5.5, 1.7) * 0.05,
       bobP: noise2(i * 8.3, 6.1) * Math.PI * 2,
@@ -76,14 +76,14 @@ diffuseColor.a *= mix(1.0, 0.35, fres);
   function update(time, planePos) {
     const dt = Math.min(0.1, Math.max(0, time - lastT));
     lastT = time;
-    const k = Math.min(1, dt * 0.6); // slow vertical ease — clouds, not elevators
+    const k = Math.min(1, dt * 1.4); // vertical ease — brisk enough to clear rising ridges
     for (let i = 0; i < clouds.length; i++) {
       const c = clouds[i];
       const x = c.x0 + time * c.speed + HALF;
       const wx = x - Math.floor(x / BOX) * BOX - HALF;
       c.mesh.position.x = wx;
-      // ride >=150 m above whatever ridge is under the drift lane right now
-      const want = Math.max(c.baseY, heightAt(wx, c.mesh.position.z) + 150);
+      // ride >=200 m above whatever ridge is under the drift lane right now
+      const want = Math.max(c.baseY, heightAt(wx, c.mesh.position.z) + 200);
       c.y += (want - c.y) * k;
       c.mesh.position.y = c.y + Math.sin(time * c.bobF + c.bobP) * 2.5;
     }

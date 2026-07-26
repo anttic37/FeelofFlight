@@ -20,18 +20,20 @@ import { bakeTile, buildTileIndex, tileVertexCount } from './tilebake.js';
 // Physics/camera/HUD never touch any of this — they stay on analytic
 // heightAt/surfaceAt, so collision cannot pop or wait on streaming.
 
-// bias/skirt sizing: a ring's linear interpolation can miss the true surface
-// by ~spacing * slope. v7 mountains reach ~60% grades, so LOD1 (15 m spacing)
-// needs ~3 m of sink and LOD2 (40 m) ~8 m, or the coarser mesh pokes through
-// the finer one on steep faces and reads as a second, serrated terrain layer.
-// Sinks are render-only (physics is analytic) and sub-pixel at ring distance.
+// Anti-overlap between rings is CONSTRUCTIVE, not tuned: coarser rings bake a
+// conservative lower envelope (minS = half-spacing min-taps in bakeTile) so
+// they cannot rise above what finer rings show; a small shore-faded bias
+// covers the residual concave overshoot between samples; per-ring
+// polygonOffset settles any remaining same-pixel depth ties in favor of the
+// finer ring. Sinks are render-only (physics is analytic).
 const RINGS = [
-  { lod: 0, tile: 480,  res: 96, radius: 1100, skirt: 6,  bias: 0 },
-  { lod: 1, tile: 960,  res: 64, radius: 3000, skirt: 14, bias: -3 },
-  { lod: 2, tile: 1920, res: 48, radius: 5200, skirt: 30, bias: -8 },
+  { lod: 0, tile: 480,  res: 96, radius: 1100, skirt: 5,  bias: 0,    minS: 0 },
+  { lod: 1, tile: 960,  res: 64, radius: 3000, skirt: 8,  bias: -0.5, minS: 7.5 },
+  { lod: 2, tile: 1920, res: 48, radius: 5200, skirt: 16, bias: -1,   minS: 20 },
 ];
 const EVICT_PAD = 300;        // hysteresis: build at radius, evict at radius+300
-const SHELL_Y = -10;
+const SHELL_Y = -4;
+const SHELL_MINS = 31;        // shell min-tap span: half of its 62 m spacing
 const SHELL_SEGS = 250;
 const TELEPORT_D2 = 1500 * 1500; // jump larger than this = teleport, not flight
 const LOOKAHEAD_FRAMES = 90;  // priority aim point ~1.5 s ahead at 60 Hz
@@ -41,11 +43,21 @@ const MAX_IN_FLIGHT = 2;
 // segment count so the dynamic far shell (250) and the A/B static path (500)
 // share one code path. Colors use the mesh's smooth vertex normals, exactly
 // like the original loop.
-function bakeIslandGeometry(segments) {
+function bakeIslandGeometry(segments, minSpan) {
   const geo = new THREE.PlaneGeometry(15600, 15600, segments, segments);
   geo.rotateX(-Math.PI / 2);
   const tPos = geo.attributes.position;
-  for (let i = 0; i < tPos.count; i++) tPos.setY(i, heightAt(tPos.getX(i), tPos.getZ(i)));
+  for (let i = 0; i < tPos.count; i++) {
+    const x = tPos.getX(i), z = tPos.getZ(i);
+    let h = heightAt(x, z);
+    if (minSpan) { // lower envelope, same rule as coarse tiles (see bakeTile)
+      const h1 = heightAt(x + minSpan, z), h2 = heightAt(x - minSpan, z);
+      const h3 = heightAt(x, z + minSpan), h4 = heightAt(x, z - minSpan);
+      if (h1 < h) h = h1; if (h2 < h) h = h2;
+      if (h3 < h) h = h3; if (h4 < h) h = h4;
+    }
+    tPos.setY(i, h);
+  }
   geo.computeVertexNormals();
   const tNorm = geo.attributes.normal;
   const tCol = new Float32Array(tPos.count * 3);
@@ -73,8 +85,17 @@ export function createTerrain(scene) {
   }
 
   // ---- dynamic mode ----
-  // ONE material shared by the shell and every tile (never disposed on evict)
-  const material = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1 });
+  // one material PER RING (never disposed on evict): identical looks, but
+  // coarser rings carry growing polygonOffset so any same-pixel depth tie
+  // resolves toward the finer ring — the depth-buffer half of anti-overlap
+  function ringMaterial(po) {
+    return new THREE.MeshStandardMaterial({
+      vertexColors: true, flatShading: true, roughness: 1,
+      polygonOffset: po > 0, polygonOffsetFactor: po, polygonOffsetUnits: po,
+    });
+  }
+  const materials = [ringMaterial(0), ringMaterial(1), ringMaterial(2)];
+  const shellMaterial = ringMaterial(3);
 
   // LOD sink is applied PER VERTEX, faded out below 12 m: sinking a whole
   // mesh moved its WATERLINE sideways by tens of meters (beach slopes are
@@ -89,10 +110,10 @@ export function createTerrain(scene) {
     }
   }
 
-  // (a) far shell — synchronous, coarse, sunk below every tile bias
-  const shellGeo = bakeIslandGeometry(SHELL_SEGS);
+  // (a) far shell — synchronous, envelope-baked, small shore-faded sink
+  const shellGeo = bakeIslandGeometry(SHELL_SEGS, SHELL_MINS);
   sinkAboveShore(shellGeo.attributes.position.array, SHELL_Y);
-  const shell = new THREE.Mesh(shellGeo, material);
+  const shell = new THREE.Mesh(shellGeo, shellMaterial);
   shell.receiveShadow = true;
   scene.add(shell);
 
@@ -149,7 +170,7 @@ export function createTerrain(scene) {
     geo.boundingSphere = new THREE.Sphere(
       new THREE.Vector3(cx, heightAt(cx, cz), cz),
       Math.hypot(ring.tile * Math.SQRT2 / 2, 400 + ring.skirt));
-    const mesh = new THREE.Mesh(geo, material);
+    const mesh = new THREE.Mesh(geo, materials[ring.lod]);
     mesh.matrixAutoUpdate = false;
     mesh.updateMatrix();
     mesh.receiveShadow = true;
@@ -165,7 +186,7 @@ export function createTerrain(scene) {
     if (tiles.has(key)) return;
     const n = tileVertexCount(ring.res) * 3;
     const positions = new Float32Array(n), colors = new Float32Array(n);
-    bakeTile(ix * ring.tile, iz * ring.tile, ring.tile, ring.res, ring.skirt, positions, colors);
+    bakeTile(ix * ring.tile, iz * ring.tile, ring.tile, ring.res, ring.skirt, positions, colors, ring.minS);
     addTile(key, ring, ix, iz, positions, colors);
     pending.delete(key); // if it was queued, the queue entry is now moot
   }
@@ -289,7 +310,7 @@ export function createTerrain(scene) {
       dispatched++;
       worker.postMessage({
         id, x0: best.ix * best.ring.tile, z0: best.iz * best.ring.tile,
-        size: best.ring.tile, res: best.ring.res, skirt: best.ring.skirt,
+        size: best.ring.tile, res: best.ring.res, skirt: best.ring.skirt, minSpan: best.ring.minS,
       });
     }
     // dead-worker fallback: keep the world streaming from the main thread,

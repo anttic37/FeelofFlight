@@ -535,13 +535,13 @@ function genTerrainHeight(x, z) {
   // rivers: winding channels along |fbm| zero-contours. In the lowlands the
   // floor reaches -3 so the water plane fills them (real waterways); higher
   // up they become dry ravines and fade out before the mountains.
-  if (RIV_W > 0 && h > 8 && h < 330) { // >8: stop short of the beach so broad
+  if (RIV_W > 0 && h > 8 && h < 220) { // >8: stop short of the beach so broad
     const rn = Math.abs(fbm(x * 0.00052 + 91.3, z * 0.00052 + 44.9, 4)); // coastal flats can't flood into lagoons
-    let riv = 1 - smooth(RIV_W * 0.35, RIV_W, rn);
-    if (riv > 0.01) {
-      riv = Math.pow(riv, 1.7); // sharpen: only the channel core reaches the floor
-      const floor = h < 45 ? -3 : h - (16 + h * 0.08);
-      h += (floor - h) * riv * (1 - smooth(170, 330, h));
+    let riv = 1 - smooth(RIV_W * 0.5, RIV_W * 2.4, rn); // WIDE banks: the whole
+    if (riv > 0.01) { // cross-section spans several coarse-LOD cells, so far
+      riv = riv * riv * (3 - 2 * riv); // rings render a valley, not a jagged slot
+      const floor = h < 45 ? -3 : h - (9 + h * 0.03);
+      h += (floor - h) * riv * (1 - smooth(90, 220, h)); // lowland feature only
     }
   }
   if (h > 1000) h = 1000 + (h - 1000) * 0.65; // soft ceiling: tallest seeds ~1350
