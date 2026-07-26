@@ -1,24 +1,25 @@
-﻿import { fbm as fbm_, noise2 as noise2_ } from './noise.js';
+import { fbm as fbm_, noise2 as noise2_ } from './noise.js';
 
 // ---- terrain seed: a NEW island every run ----
 // One seed reshapes the whole island: every noise field below samples a
 // seed-shifted domain, and per-seed "character" knobs scale biome amplitudes
 // (mountain height, mesa/dune size, hill/forest relief, coastline warp).
-// Anchors stay FIXED â€” runway positions, canyon path, biome centers â€” and
+// Anchors stay FIXED — runway positions, canyon path, biome centers — and
 // platforms/corridors/flattening run after everything, so every seed is
 // landable by construction. Seed 0 = the classic island (zero shift, knobs 1).
 // setTerrainSeed must run before any sampling, in EVERY thread that imports
 // this module (main thread AND the terrain worker).
 let SX = 0, SZ = 0, SEED = 0;
 let K_MTN = 1, K_MESA = 1, K_DUNE = 1, K_HILL = 1, K_FOR = 1, K_REL = 1, COAST_WARP = 760;
-let K_SWELL = 0; // island-wide broad swells (~2.4 km) â€” 0 on the classic island
+let K_SWELL = 0; // island-wide broad swells (~2.4 km) — 0 on the classic island
+let K_ROLL = 0;  // v6.1 rolling-ground amplitude — gen islands are NEVER flat
 // island SILHOUETTE: direction-dependent radius scale built from 1-3 angular
-// lobes â€” elongated, egg/comma, tri-lobed and bay-bitten outlines per seed.
+// lobes — elongated, egg/comma, tri-lobed and bay-bitten outlines per seed.
 // SH_ON false (classic) keeps the plain circular mask, bit for bit.
 let SH_ON = false, SH_A1 = 0, SH_P1 = 0, SH_A2 = 0, SH_P2 = 0, SH_A3 = 0, SH_P3 = 0;
-let SH_R2OUT = 75690000; // beyond-the-shelf early-out radiusÂ², shape-aware
+let SH_R2OUT = 75690000; // beyond-the-shelf early-out radius², shape-aware
 // seeded islands are scaled to 75% so the widest silhouette lobe + coast warp
-// stays well inside the baked far shell (+-7800) â€” land past the shell edge
+// stays well inside the baked far shell (+-7800) — land past the shell edge
 // has no ground mesh under it and shimmers. Heights do NOT scale: same peaks,
 // same swells, just a tighter island. Classic seed 0 keeps 7200 / scale 1.
 let RM_BASE = 7200, LSCALE = 1;
@@ -31,7 +32,7 @@ function h01(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s -
 export function setTerrainSeed(seed) {
   SEED = seed >>> 0;
   if (SEED === 0) {
-    SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; K_SWELL = 0; COAST_WARP = 760;
+    SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; K_SWELL = 0; K_ROLL = 0; COAST_WARP = 760;
     SH_ON = false; SH_R2OUT = 75690000; RM_BASE = 7200; LSCALE = 1; GEN_ON = false; // classic island
     restoreClassicLayout(); // hand-tuned anchors, runways, canyon, tribs
   } else {
@@ -43,8 +44,9 @@ export function setTerrainSeed(seed) {
     K_HILL = 0.70 + 1.10 * h01(SEED * 0.031 + 14.3);
     K_FOR  = 0.70 + 1.00 * h01(SEED * 0.037 + 6.8);
     K_REL  = 0.80 + 1.20 * h01(SEED * 0.041 + 9.4);
-    LSCALE = 0.75; RM_BASE = 7200 * LSCALE; // 5400 â€” tighter island, same heights
+    LSCALE = 0.75; RM_BASE = 7200 * LSCALE; // 5400 — tighter island, same heights
     K_SWELL = 0.50 + 1.60 * h01(SEED * 0.047 + 12.1); // broad rolling uplands, +-17..70 m
+    K_ROLL = 38 + 37 * h01(SEED * 0.083 + 6.6); // 38-75 m rolling ground under everything
     COAST_WARP = (700 + 500 * h01(SEED * 0.043 + 3.6)) * LSCALE; // ragged shore, scaled with the island
     SH_ON = true; // seeded silhouette: comma / elongated / tri-lobed outlines
     SH_A1 = 0.26 * h01(SEED * 0.053 + 4.9); SH_P1 = Math.PI * 2 * h01(SEED * 0.059 + 7.7);
@@ -63,14 +65,14 @@ export function seededNoise2(x, z) { return noise2_(x + SX, z + SZ); }
 const noise2 = seededNoise2;
 const fbm = (x, z, o) => fbm_(x + SX, z + SZ, o);
 
-// The pure analytic terrain core â€” heightAt(x,z) and everything under it, plus
+// The pure analytic terrain core — heightAt(x,z) and everything under it, plus
 // the runway anchors/flattening it depends on. Dependency-free (noise.js only,
 // no THREE), so it loads in a module Web Worker verbatim. heightAt is the
 // single source of truth for the ground: physics, camera, HUD, water, minimap
 // and every terrain tile bake all sample this one deterministic function.
 // runways.js and world.js re-export the public pieces, so consumer imports
 // are unchanged. Module-scratch scalars (_cd/_cs/.../_wH/...) keep the hot
-// path allocation-free â€” non-reentrant, but fine single-threaded; never share
+// path allocation-free — non-reentrant, but fine single-threaded; never share
 // one module instance across threads.
 
 // ---- runway anchors + strip flattening (from runways.js) ----
@@ -164,7 +166,7 @@ export function applyRunwayFlattening(x, z, baseH) {
 // Procedural island, radius ~7000 m: five noise-warped biome regions (south
 // hills, east desert, west forest, north+center mountains to ~650 m, and a
 // meandering stepped-wall canyon system running to the southeast sea), all
-// shaped AROUND the runway anchors above â€” per-strip terrain platforms and
+// shaped AROUND the runway anchors above — per-strip terrain platforms and
 // capped approach corridors guarantee every strip fits its theme by
 // construction, then applyRunwayFlattening does the final grading.
 // Island-wide domain-warped rolling relief + a small detail layer keep the
@@ -447,7 +449,7 @@ export function nearCorridor(x, z) { // vegetation keep-out over the first stret
 // identical layout from its own setTerrainSeed call.
 const CLASSIC = {
   anchors: [HILLS_C, DESERT_C, FOREST_C, MTN_A, MTN_B, PEAK].map(p => ({ x: p.x, z: p.z })),
-  runways: RUNWAYS.map(r => ({ ...r })), // full copies â€” seeded islands vary the strip COUNT
+  runways: RUNWAYS.map(r => ({ ...r })), // full copies — seeded islands vary the strip COUNT
   canyon: CANYON_PATH.map(p => ({ x: p.x, z: p.z })),
 };
 function restoreClassicLayout() {
@@ -486,7 +488,7 @@ function applyFeature(f, x, z, h, mSh) {
     const ends = smooth(0, 0.16, tn) * (1 - smooth(0.84, 1, tn));
     const amp = f.h * (0.62 + 0.38 * noise2(tn * 3.1 + f.p, 4.4)) * ends; // 2-3 summits along the spine
     let hf = amp * g;
-    const cr = smooth(0.5, 0.85, hf / f.h); // crest-only ridging â€” THE one jagged place
+    const cr = smooth(0.5, 0.85, hf / f.h); // crest-only ridging — THE one jagged place
     if (cr > 0) {
       const rv = 1 - Math.abs(fbm(x * 0.0035 + f.p, z * 0.0035 + 2.2, 3));
       hf += rv * rv * f.h * 0.17 * cr;
@@ -554,9 +556,15 @@ function genTerrainHeight(x, z) {
   const m = 1 - (rr / RM) * (rr / RM);
   if (m <= 0) return Math.max(-20, -6 + m * 44);
   const mSh = smooth(0.03, 0.22, m);
-  // calm coastal plain â€” big features supply ALL of the drama
-  let h = 6 + 10 * m + fbm(x * 0.00048 + 9.3, z * 0.00048 + 2.6, 2) * 14 * mSh;
-  h += fbm(x * 0.0044 + 1.7, z * 0.0044 + 8.1, 2) * 2.1 * mSh;
+  // v6.1 ROLLING GROUND — the default is never flat: billowed domain-warped
+  // swells (~1.5 km, 38-75 m per seed) with soft valley floors between them.
+  // Smooth by construction; big features still supply the drama on top.
+  let h = 8 + 12 * m;
+  const rwx = x + (noise2(x * 0.0009 + 21.4, z * 0.0009 + 3.3) - 0.5) * 520;
+  const rwz = z + (noise2(x * 0.0009 + 7.9, z * 0.0009 + 15.2) - 0.5) * 520;
+  const sw = fbm(rwx * 0.00068 + 9.3, rwz * 0.00068 + 2.6, 3) * 0.5 + 0.5;
+  h += sw * sw * K_ROLL * 1.55 * mSh; // billowed: rounded crowns, wide hollows
+  h += fbm(x * 0.0044 + 1.7, z * 0.0044 + 8.1, 2) * 2.6 * mSh;
   h *= Math.min(1, Math.pow(m, 0.8) * 1.4);
   h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
   for (let i = 0; i < FEATURES.length; i++) h = applyFeature(FEATURES[i], x, z, h, mSh);
@@ -755,6 +763,71 @@ function generateIsland() {
     const dpark = offshore(13); DESERT_C.x = dpark.x; DESERT_C.z = dpark.z;
   }
 
+  // ---- v6.1 coverage: no empty sectors, no pancake patches ----
+  // rough 0..1 relief influence of a feature at a point (lakes don't count)
+  const featureW = (f, x, z) => {
+    if (f.t === 'lake') return 0;
+    if (f.t === 'ridge') {
+      let dx = x - f.ax, dz = z - f.az;
+      let t = dx * f.ux + dz * f.uz;
+      t = t < 0 ? 0 : t > f.len ? f.len : t;
+      const d = Math.hypot(dx - f.ux * t, dz - f.uz * t), span = f.w * 2.6;
+      return d < span ? 1 - d / span : 0;
+    }
+    if (f.t === 'plateau') {
+      const dx = x - f.x, dz = z - f.z;
+      const e = Math.hypot((dx * f.c - dz * f.s) / f.rx, (dx * f.s + dz * f.c) / f.rz);
+      return e < 1.24 ? 1 - e / 1.24 : 0;
+    }
+    const d = Math.hypot(x - f.x, z - f.z);
+    return d < f.r ? 1 - d / f.r : 0;
+  };
+  const filler = (x, z, k) => { // archetype-flavored gap features
+    if (ARCH === 2) {
+      if (R1(300 + k) > 0.5) {
+        const rot = R1(310 + k) * TAU;
+        FEATURES.push({ t: 'plateau', x, z, rx: 900 + R1(320 + k) * 500, rz: 700 + R1(330 + k) * 400,
+          c: Math.cos(rot), s: Math.sin(rot), h: 80 + R1(340 + k) * 90, p: R1(350 + k) * 9 });
+      } else FEATURES.push({ t: 'dunes', x, z, r: 1900, amp: (22 + R1(360 + k) * 18) * K_DUNE, p: R1(370 + k) * 9 });
+    } else if (ARCH === 0 || ARCH === 4) {
+      if (R1(300 + k) > 0.55) addRidge(x, z, R1(311 + k) * TAU, 1700 + R1(312 + k) * 700, 430, 210 + R1(313 + k) * 160);
+      else FEATURES.push({ t: 'hills', x, z, r: 2300, amp: 72 + R1(314 + k) * 50, p: R1(316 + k) * 9 });
+    } else {
+      FEATURES.push({ t: 'hills', x, z, r: 2300, amp: (72 + R1(315 + k) * 55) * (ARCH === 3 ? K_HILL : 1), p: R1(317 + k) * 9 });
+    }
+  };
+  // every compass sector must contain a feature
+  for (let k = 0; k < 6; k++) {
+    const aSec = a0 + 0.52 + k * TAU / 6 + jit(280 + k, 0.3);
+    const p = place(aSec, 0.3 + R1(290 + k) * 0.24);
+    let w = 0;
+    for (const f of FEATURES) { const v = featureW(f, p.x, p.z); if (v > w) w = v; }
+    if (w < 0.25) filler(p.x, p.z, k);
+  }
+  // relief floor: hunt remaining flat patches (<25 m over 600 m) and bump them
+  const flats = [];
+  for (let gx = -4; gx <= 4; gx++) for (let gz = -4; gz <= 4; gz++) {
+    const x = gx * 1050 + jit(400 + gx * 9 + gz, 300), z = gz * 1050 + jit(440 + gx * 9 + gz, 300);
+    const h0 = genTerrainHeight(x, z);
+    if (h0 < 5) continue; // sea, shore, lakes
+    let lo = h0, hi = h0;
+    for (const [dx, dz] of [[600, 0], [-600, 0], [0, 600], [0, -600]]) {
+      const h = genTerrainHeight(x + dx, z + dz);
+      if (h < lo) lo = h; if (h > hi) hi = h;
+    }
+    if (hi - lo < 25) flats.push({ x, z, r: hi - lo });
+  }
+  flats.sort((a, b) => a.r - b.r);
+  let bumps = 0;
+  for (const p of flats) {
+    if (bumps >= 4) break;
+    let clear = true;
+    for (const f of FEATURES) if (f.t === 'hills' && Math.hypot(p.x - f.x, p.z - f.z) < 1600) { clear = false; break; }
+    if (!clear) continue;
+    FEATURES.push({ t: 'hills', x: p.x, z: p.z, r: 1600, amp: 52 + R1(480 + bumps) * 26, p: R1(490 + bumps) * 9 });
+    bumps++;
+  }
+
   // ---- strip discovery: 4-8 sites found on the RAW terrain ----
   const used = new Set();
   const N = 4 + Math.floor(R1(120) * 4.999);
@@ -777,7 +850,7 @@ function generateIsland() {
   };
   const pushStrip = (name, x, z, heading, elev, len, wid) => RUNWAYS.push({
     name, x, z, heading, length: len, width: wid, elev,
-    m: 70 + Math.round(R1(200 + RUNWAYS.length) * 20), pad: 240 + Math.round(R1(210 + RUNWAYS.length) * 80),
+    m: 70 + Math.round(R1(200 + RUNWAYS.length) * 20), pad: 300 + Math.round(R1(210 + RUNWAYS.length) * 100),
   });
 
   // 1) the coastal home strip (spawn final comes in over water toward it)
@@ -787,8 +860,8 @@ function generateIsland() {
     const x = Math.sin(a) * rad, z = Math.cos(a) * rad;
     const heading = Math.atan2(x, z) + jit(131 + k, 0.2);
     const hRaw = genTerrainHeight(x, z);
-    if (hRaw < 6 || hRaw > 38) continue;
-    if (!siteOK(x, z, heading, 560, 40)) continue;
+    if (hRaw < 6 || hRaw > 48) continue; // rolling ground raised the shore band
+    if (!siteOK(x, z, heading, 560, 48)) continue;
     pushStrip(pickName('coast', used), x, z, heading, Math.round(hRaw), 520 + Math.round(R1(132) * 120), 26);
     break;
   }
@@ -812,7 +885,7 @@ function generateIsland() {
   }
 
   // 3) fill the rest by suitability search (two passes, second is lenient)
-  for (const maxDev of [24, 46]) {
+  for (const maxDev of [30, 60]) { // rolling ground: platforms grade harder
     let tries = 0;
     while (RUNWAYS.length < N && tries < 160) {
       tries++;
@@ -924,12 +997,12 @@ function baseHeight(x, z) {
     const rz = z + (noise2(x * 0.00085 + 7.9, z * 0.00085 + 15.2) - 0.5) * 640;
     h += fbm(rx * 0.00135 + 4.7, rz * 0.00135 + 8.3, 3) * 40 * K_REL * (1 - 0.5 * _wM) * mSh;
     // seeded broad swells (~2.4 km wavelength): whole districts rise into
-    // uplands or sink toward the sea â€” can pool inland lakes in deep dips.
+    // uplands or sink toward the sea — can pool inland lakes in deep dips.
     // Zero on the classic island; damped in the mountains (already tall).
     if (K_SWELL > 0) h += fbm(x * 0.00042 + 31.9, z * 0.00042 + 18.4, 2) * 34 * K_SWELL * (1 - 0.55 * _wM) * mSh;
     h += fbm(x * 0.0105 + 2.9, z * 0.0105 + 5.7, 2) * 7 * mSh;
     h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
-    // per-biome micro-detail â€” wavelengths only the 5 m tiled mesh can show
+    // per-biome micro-detail — wavelengths only the 5 m tiled mesh can show
     // (the 31 m static grid aliased everything under ~60 m, so this layer was
     // pointless before dynamic terrain). Added BEFORE platforms/corridors/
     // flattening so strips and approaches stay graded by construction.
@@ -957,7 +1030,7 @@ export function heightAt(x, z) {
   return applyRunwayFlattening(x, z, GEN_ON ? baseHeightGen(x, z) : baseHeight(x, z));
 }
 
-// reused result object â€” callers copy fields, never retain the reference
+// reused result object — callers copy fields, never retain the reference
 const _surf = { h: 0, type: 'grass' };
 export function surfaceAt(x, z) {
   const h = heightAt(x, z);
