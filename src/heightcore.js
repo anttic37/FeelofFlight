@@ -33,7 +33,7 @@ export function setTerrainSeed(seed) {
   SEED = seed >>> 0;
   if (SEED === 0) {
     SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; K_SWELL = 0; K_ROLL = 0; COAST_WARP = 760;
-    K_RANGE = 0.00021; K_THR = 0.55;
+    K_RANGE = 0.00021; K_THR = 0.55; K_ERO = 0; RIV_W = 0;
     SH_ON = false; SH_R2OUT = 75690000; RM_BASE = 7200; LSCALE = 1; GEN_ON = false; // classic island
     restoreClassicLayout(); // hand-tuned anchors, runways, canyon, tribs
   } else {
@@ -47,6 +47,9 @@ export function setTerrainSeed(seed) {
     K_REL  = 0.70 + 1.60 * h01(SEED * 0.041 + 9.4); // uplands 165-540 m before mountains
     K_RANGE = 0.00024 + 0.00018 * h01(SEED * 0.089 + 15.8); // one great range ... 3-4 massifs
     K_THR = 0.48 + 0.16 * h01(SEED * 0.097 + 21.2); // how much land the ranges claim
+    K_ERO = 0.3 + 0.45 * h01(SEED * 0.101 + 7.4);   // gully-band strength
+    ERO_SOFT = 0.2 + 1.0 * h01(SEED * 0.103 + 18.6); // soft rounded ... sharp stepped
+    RIV_W = h01(SEED * 0.107 + 2.3) < 0.25 ? 0 : 0.008 + 0.016 * h01(SEED * 0.109 + 9.9); // some islands riverless
     LSCALE = 0.75; RM_BASE = 7200 * LSCALE; // 5400 — tighter island, same heights
     K_SWELL = 0.50 + 1.60 * h01(SEED * 0.047 + 12.1); // broad rolling uplands, +-17..70 m
     K_ROLL = 38 + 37 * h01(SEED * 0.083 + 6.6); // 38-75 m rolling ground under everything
@@ -479,6 +482,10 @@ let MTN_AMP = 0;  // per-seed ridge crest budget
 // how much land they claim. A second mask family at 1.7x frequency adds
 // independent smaller massifs, so multi-mountain islands are common.
 let K_RANGE = 0.00021, K_THR = 0.55;
+// erosion + rivers (after Simon Storl-Schulke's three.js infinite terrain:
+// terraced gully bands = smoothstepped PINGPONGED noise as a multiplier, and
+// rivers = channels along |fbm| zero-contours, cut below the water plane)
+let K_ERO = 0, ERO_SOFT = 0.6, RIV_W = 0; // 0 = off (classic island)
 function rangeMask(x, z) {
   const r1 = smooth(K_THR, K_THR + 0.25, fbm(x * K_RANGE + 51.7, z * K_RANGE + 17.3, 2) * 0.5 + 0.5);
   const r2 = smooth(0.58, 0.82, fbm(x * K_RANGE * 1.7 + 88.3, z * K_RANGE * 1.7 + 41.9, 2) * 0.5 + 0.5);
@@ -507,6 +514,29 @@ function genTerrainHeight(x, z) {
   if (rmk > 0.01) {
     const rv = 1 - Math.abs(fbm(x * 0.00085 + 9.1, z * 0.00085 + 4.7, 4));
     h += rmk * Math.pow(rv, 1.9) * MTN_AMP * (0.55 + 0.45 * e);
+  }
+  // erosion bands (Storl-Schulke): smoothstep -> biome-softness power ->
+  // pingpong triangle -> height-scaled multiplier. Carves terraced gullies
+  // and sediment ledges into slopes; the higher the ground, the harder it
+  // erodes; never cuts more than ~40% so ridgelines survive.
+  if (K_ERO > 0 && h > 30) {
+    const en = fbm(x * 0.0008 + 61.2, z * 0.0008 + 27.8, 3) * 0.5 + 0.5;
+    let ero = Math.pow(en * en * (3 - 2 * en), 1 + ERO_SOFT);
+    ero = 1 - Math.abs((ero * 2) % 2 - 1); // pingpong to a banded triangle wave
+    const eStr = K_ERO * Math.min(1, h / 300);
+    h *= 1 - eStr + eStr * (0.5 + 0.5 * ero);
+  }
+  // rivers: winding channels along |fbm| zero-contours. In the lowlands the
+  // floor reaches -3 so the water plane fills them (real waterways); higher
+  // up they become dry ravines and fade out before the mountains.
+  if (RIV_W > 0 && h > 8 && h < 330) { // >8: stop short of the beach so broad
+    const rn = Math.abs(fbm(x * 0.00052 + 91.3, z * 0.00052 + 44.9, 4)); // coastal flats can't flood into lagoons
+    let riv = 1 - smooth(RIV_W * 0.35, RIV_W, rn);
+    if (riv > 0.01) {
+      riv = Math.pow(riv, 1.7); // sharpen: only the channel core reaches the floor
+      const floor = h < 45 ? -3 : h - (16 + h * 0.08);
+      h += (floor - h) * riv * (1 - smooth(170, 330, h));
+    }
   }
   if (h > 1000) h = 1000 + (h - 1000) * 0.65; // soft ceiling: tallest seeds ~1350
   h *= Math.min(1, Math.pow(m, 0.8) * 1.4); // island mask
