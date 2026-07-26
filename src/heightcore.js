@@ -508,7 +508,13 @@ function genTerrainHeight(x, z) {
   const wx = x + (noise2(x * 0.0002 + 31.4, z * 0.0002 + 8.8) - 0.5) * 1800;
   const wz = z + (noise2(x * 0.0002 + 3.9, z * 0.0002 + 21.6) - 0.5) * 1800;
   const e = fbm(wx * 0.00035 + 5.5, wz * 0.00035 + 1.5, 6) * 0.5 + 0.5;
-  let h = 4 + K_ROLL * 0.62 * e * 1.9 + 235 * K_REL * Math.pow(e, 2.6);
+  // district multiplier: whole neighborhoods sit high or low (~5 km, x0.62-1.47)
+  const dist = 0.62 + 0.85 * (fbm(x * 0.00013 + 15.9, z * 0.00013 + 71.2, 2) * 0.5 + 0.5);
+  let h = 4 + K_ROLL * 0.62 * e * 2.4 + 260 * K_REL * Math.pow(e, 2.6) * dist;
+  // medium relief: hills riding on the base (~600 m wavelength, +-16..50 m)
+  h += fbm(x * 0.0016 + 40.4, z * 0.0016 + 12.7, 3) * (16 + 22 * (K_REL - 0.7)) * dist;
+  // close detail: the texture you read at low level (~160 m, grows with ground)
+  h += fbm(x * 0.006 + 3.2, z * 0.006 + 55.8, 2) * (3.5 + Math.min(6.5, h * 0.04));
   // mountains: ridged fBm, only inside the range regions, favoring high base
   const rmk = rangeMask(x, z);
   if (rmk > 0.01) {
