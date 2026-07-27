@@ -49,7 +49,7 @@ export function setTerrainSeed(seed) {
     K_THR = 0.48 + 0.16 * h01(SEED * 0.097 + 21.2); // how much land the ranges claim
     K_ERO = 0.3 + 0.45 * h01(SEED * 0.101 + 7.4);   // gully-band strength
     ERO_SOFT = 0.2 + 1.0 * h01(SEED * 0.103 + 18.6); // soft rounded ... sharp stepped
-    RIV_W = h01(SEED * 0.107 + 2.3) < 0.25 ? 0 : 0.008 + 0.016 * h01(SEED * 0.109 + 9.9); // some islands riverless
+    RIV_W = h01(SEED * 0.107 + 2.3) < 0.25 ? 0 : 0.012 + 0.014 * h01(SEED * 0.109 + 9.9); // some islands riverless
     LSCALE = 0.75; RM_BASE = 7200 * LSCALE; // 5400 — tighter island, same heights
     K_SWELL = 0.50 + 1.60 * h01(SEED * 0.047 + 12.1); // broad rolling uplands, +-17..70 m
     K_ROLL = 38 + 37 * h01(SEED * 0.083 + 6.6); // 38-75 m rolling ground under everything
@@ -522,8 +522,18 @@ function genTerrainHeight(x, z) {
   // mountains: ridged fBm, only inside the range regions, favoring high base
   const rmk = rangeMask(x, z);
   if (rmk > 0.01) {
-    const rv = 1 - Math.abs(fbm(x * 0.00085 + 9.1, z * 0.00085 + 4.7, 4));
-    h += rmk * Math.pow(rv, 1.9) * MTN_AMP * (0.55 + 0.45 * e);
+    // smoothed |fbm|: the raw abs has a C0 crease along its zero-contour, and
+    // at the mask FRINGE (rmk ~0.02) that crease still scales by MTN_AMP into
+    // a 3-7 m knife-edge wrinkle winding across the foothill grass — renders
+    // as a dashed dark hairline at every LOD. sqrt(f²+ε²) rounds the crest
+    // (~25 m radius); dividing by (1-ε) keeps full peaks at their height.
+    const rf = fbm(x * 0.00085 + 9.1, z * 0.00085 + 4.7, 4);
+    const rv = Math.max(0, (1 - Math.sqrt(rf * rf + 0.001225)) / 0.965); // sqrt>1 at |fbm|→1 would NaN the pow
+    // smooth(0.01,0.05,·) zeroes the term EXACTLY at the skip gate: the raw
+    // rmk>0.01 cutoff stepped the ground 0.5-3 m along the whole mask contour
+    // — a dashed hairline sweeping across the foothills (dashes = the step
+    // height oscillating with rv along the boundary).
+    h += rmk * smooth(0.01, 0.05, rmk) * Math.pow(rv, 1.9) * MTN_AMP * (0.55 + 0.45 * e);
   }
   // erosion bands (Storl-Schulke): smoothstep -> biome-softness power ->
   // pingpong triangle -> height-scaled multiplier. Carves terraced gullies
@@ -536,16 +546,28 @@ function genTerrainHeight(x, z) {
     const eStr = K_ERO * Math.min(1, h / 300);
     h *= 1 - eStr + eStr * (0.5 + 0.5 * ero);
   }
-  // rivers: winding channels along |fbm| zero-contours. In the lowlands the
-  // floor reaches -3 so the water plane fills them (real waterways); higher
-  // up they become dry ravines and fade out before the mountains.
+  // rivers: winding channels along |fbm| zero-contours. On low ground the
+  // floor dips to -2.2 so the water plane fills them (real waterways); higher
+  // up they become dry valleys and fade out before the mountains.
   if (RIV_W > 0 && h > 8 && h < 220) { // >8: stop short of the beach so broad
     const rn = Math.abs(fbm(x * 0.00052 + 91.3, z * 0.00052 + 44.9, 4)); // coastal flats can't flood into lagoons
-    let riv = 1 - smooth(RIV_W * 0.5, RIV_W * 2.4, rn); // WIDE banks: the whole
-    if (riv > 0.01) { // cross-section spans several coarse-LOD cells, so far
-      riv = riv * riv * (3 - 2 * riv); // rings render a valley, not a jagged slot
-      const floor = h < 45 ? -3 : h - (9 + h * 0.03);
-      h += (floor - h) * riv * (1 - smooth(90, 220, h)); // lowland feature only
+    // SLOPE-LIMITED valleys, not slots. Three rules, all continuous in h:
+    // (1) depth is capped (9 + 0.6h, max 24) — no more sea-level canyons
+    //     through 40 m hills (the old h<45 floor branch also JUMPED ~37 m at
+    //     that contour, drawing a cliff line across the island);
+    // (2) the bank edge WIDENS with depth (~2.3 m of span per metre of cut)
+    //     so wall slope stays ~25 deg — every LOD ring resolves it; narrower
+    //     profiles rendered as serrated whole-cell teeth along the rims;
+    // (3) water fill (floor < 0) only where the banks are lower than ~20 m.
+    if (rn < RIV_W * 8.5) {
+      const cut = Math.min(24, 9 + h * 0.6);
+      const floor = Math.max(-2.2, h - cut);
+      const depth = h - floor;
+      let riv = 1 - smooth(RIV_W * 1.4, RIV_W * (1.9 + depth * 0.27), rn);
+      if (riv > 0) {
+        riv = riv * riv * (3 - 2 * riv);
+        h += (floor - h) * riv * smooth(8, 13, h) * (1 - smooth(90, 220, h));
+      }
     }
   }
   if (h > 1000) h = 1000 + (h - 1000) * 0.65; // soft ceiling: tallest seeds ~1350
