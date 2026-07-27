@@ -53,16 +53,26 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan,
         // never rise above terrain the finer rings actually show — the root
         // cause of the serrated ring-overlap bands on steep slopes. Colors
         // and paint normals still come from the exact center sample.
-        // SHORE-FADED (zero below 2 m, full by 12 m): beaches are flat, so
-        // there is nothing to envelope — min-taps there just catch water-side
-        // samples and carve the coarse ring's shoreline into stair-steps.
+        // SHORE-FADED (zero below 2 m, full by 12 m) and SLOPE-GATED: poke-
+        // through only happens on steep ground, and on gentle shores the
+        // min-taps just catch the swash trough / berm base and carve V-teeth
+        // into the beach band (the half-faded 2-12 m zone was serrating every
+        // coarse-LOD coastline). The tap differences give the slope for free.
         let mn = h;
         const h1 = heightAt(x + ms, z), h2 = heightAt(x - ms, z);
         const h3 = heightAt(x, z + ms), h4 = heightAt(x, z - ms);
         if (h1 < mn) mn = h1; if (h2 < mn) mn = h2;
         if (h3 < mn) mn = h3; if (h4 < mn) mn = h4;
+        const grad = Math.hypot(h1 - h2, h3 - h4) / (2 * ms);
+        // slope threshold rises near the shore: the berm/swash faces are
+        // locally ~0.1-0.25 steep and re-armed the gate, carving the beach
+        // band anyway — under ~10 m only true cliff faces (>0.3) qualify
+        const hf = h >= 10 ? 1 : h <= 6 ? 0 : (h - 6) / 4;
+        const thLo = 0.30 - 0.23 * hf * hf * (3 - 2 * hf);
+        const sRaw = (grad - thLo) / 0.15;
+        const sw = sRaw <= 0 ? 0 : sRaw >= 1 ? 1 : sRaw * sRaw * (3 - 2 * sRaw);
         const t = h >= 12 ? 1 : (h - 2) / 10;
-        hy = h + (mn - h) * t * t * (3 - 2 * t);
+        hy = h + (mn - h) * t * t * (3 - 2 * t) * sw;
       }
       posOut[o] = x; posOut[o + 1] = hy; posOut[o + 2] = z;
       const gx = (heightAt(x + cell, z) - heightAt(x - cell, z)) / (2 * cell);

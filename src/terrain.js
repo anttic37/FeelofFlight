@@ -52,14 +52,19 @@ function bakeIslandGeometry(segments, minSpan) {
     const x = tPos.getX(i), z = tPos.getZ(i);
     const h = heightAt(x, z);
     let hy = h;
-    if (minSpan && h > 2) { // shore-faded lower envelope, same rule as bakeTile
+    if (minSpan && h > 2) { // shore-faded + slope-gated envelope, same rule as bakeTile
       let mn = h;
       const h1 = heightAt(x + minSpan, z), h2 = heightAt(x - minSpan, z);
       const h3 = heightAt(x, z + minSpan), h4 = heightAt(x, z - minSpan);
       if (h1 < mn) mn = h1; if (h2 < mn) mn = h2;
       if (h3 < mn) mn = h3; if (h4 < mn) mn = h4;
+      const grad = Math.hypot(h1 - h2, h3 - h4) / (2 * minSpan);
+      const hf = h >= 10 ? 1 : h <= 6 ? 0 : (h - 6) / 4;
+      const thLo = 0.30 - 0.23 * hf * hf * (3 - 2 * hf);
+      const sRaw = (grad - thLo) / 0.15;
+      const sw = sRaw <= 0 ? 0 : sRaw >= 1 ? 1 : sRaw * sRaw * (3 - 2 * sRaw);
       const t = h >= 12 ? 1 : (h - 2) / 10;
-      hy = h + (mn - h) * t * t * (3 - 2 * t);
+      hy = h + (mn - h) * t * t * (3 - 2 * t) * sw;
     }
     tPos.setY(i, hy);
   }
