@@ -429,7 +429,9 @@ function applyCorridors(x, z, h) {
     if (lat >= c.hw) continue;
     const cap = c.base + along * 0.065;
     if (h <= cap) continue;
-    h += (cap - h) * (1 - smooth(c.hw - 70, c.hw, lat)) * (1 - smooth(c.len - 500, c.len, along));
+    // wide lateral falloff: any trimming reads as a natural saddle, not a
+    // slot with walls (site selection already avoids big cuts — see siteOK)
+    h += (cap - h) * (1 - smooth(c.hw * 0.3, c.hw, lat)) * (1 - smooth(c.len - 500, c.len, along));
   }
   return h;
 }
@@ -671,6 +673,22 @@ function generateIsland() {
     name, x, z, heading, length: len, width: wid, elev,
     m: 70 + Math.round(R1(200 + RUNWAYS.length) * 20), pad: 300 + Math.round(R1(210 + RUNWAYS.length) * 100),
   });
+  // a runway end needs SPACE: terrain along both finals must stay under the
+  // 6.5% obstacle ramp (a small knick is tolerable, a hillside is not) — if it
+  // doesn't, the corridor cap would carve visible trenches through the hills,
+  // so such sites are rejected instead of graded
+  const approachOK = (x, z, heading, len, elev, tol) => {
+    for (const e of [-1, 1]) {
+      const fx = -Math.sin(heading) * e, fz = -Math.cos(heading) * e;
+      let bad = 0;
+      for (let d = 240; d <= 1200; d += 120) {
+        const hh = genTerrainHeight(x + fx * (len / 2 + d), z + fz * (len / 2 + d));
+        if (hh > elev + 4 + d * 0.065 + 12) bad++;
+      }
+      if (bad > tol) return false;
+    }
+    return true;
+  };
 
   // 1) the coastal home strip (spawn final comes in over water toward it)
   for (let k = 0; k < 60; k++) {
@@ -681,6 +699,7 @@ function generateIsland() {
     const hRaw = genTerrainHeight(x, z);
     if (hRaw < 6 || hRaw > 48) continue; // rolling ground raised the shore band
     if (!siteOK(x, z, heading, 560, 48)) continue;
+    if (!approachOK(x, z, heading, 560, hRaw, 1)) continue; // inland final must be clear too
     pushStrip(pickName('coast', used), x, z, heading, Math.round(hRaw), 520 + Math.round(R1(132) * 120), 26);
     break;
   }
@@ -689,13 +708,23 @@ function generateIsland() {
     pushStrip('Bay', Math.sin(a) * rad, Math.cos(a) * rad, Math.atan2(Math.sin(a) * rad, Math.cos(a) * rad), 12, 520, 26);
   }
 
-  // 2) a high shelf near the summit, when the island grew real mountains
+  // 2) a high shelf near the summit, when the island grew real mountains —
+  // walk candidate bearings around the peak and take the first whose finals
+  // are clear enough (looser tolerance: a shelf may trim a small shoulder);
+  // if every side is walled in, the island simply has no summit strip
   if (peakH > 380) {
     const aIn = Math.atan2(-PEAK.x, -PEAK.z);
-    const hx = PEAK.x + Math.sin(aIn) * 850;
-    const hz = PEAK.z + Math.cos(aIn) * 850;
-    const hh = genTerrainHeight(hx, hz);
-    if (hh > 40) pushStrip(pickName('high', used), hx, hz, aIn + Math.PI / 2 + jit(140, 0.2), Math.round(hh), 340, 20);
+    for (let k = 0; k < 8; k++) {
+      const b = aIn + k * 0.785 + jit(140 + k, 0.3);
+      const hx = PEAK.x + Math.sin(b) * 850;
+      const hz = PEAK.z + Math.cos(b) * 850;
+      const hh = genTerrainHeight(hx, hz);
+      if (hh < 40) continue;
+      const heading = b + Math.PI / 2 + jit(148 + k, 0.2);
+      if (!approachOK(hx, hz, heading, 340, hh, 3)) continue;
+      pushStrip(pickName('high', used), hx, hz, heading, Math.round(hh), 340, 20);
+      break;
+    }
   }
 
   // 3) fill the rest by suitability search (two passes, second is lenient)
@@ -711,6 +740,7 @@ function generateIsland() {
       if (!farFromStrips(p.x, p.z)) continue;
       if (!siteOK(p.x, p.z, heading, len, maxDev)) continue;
       const hRaw = genTerrainHeight(p.x, p.z);
+      if (!approachOK(p.x, p.z, heading, len, hRaw, 1)) continue; // both finals need space
       biomeWeightsGen(p.x, p.z);
       const pool = hRaw > 260 ? 'high' : _wD > 0.45 ? 'desert' : _wF > 0.45 ? 'forest' : 'open';
       pushStrip(pickName(pool, used), p.x, p.z, heading, Math.round(hRaw), len, 20 + Math.round(((R1(154) + tries * 0.29) % 1) * 10));
