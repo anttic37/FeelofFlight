@@ -551,6 +551,10 @@ function genTerrainHeight(x, z) {
   if (h > 1000) h = 1000 + (h - 1000) * 0.65; // soft ceiling: tallest seeds ~1350
   h *= Math.min(1, Math.pow(m, 0.8) * 1.4); // island mask
   h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
+  // swash step: steepen the last half-meter into the sea — on a near-flat
+  // beach the 5 m flat-shaded facets crossing y=0 zigzag the waterline by
+  // meters; a steeper contact slope shrinks that below visible size
+  h -= 1.4 * (1 - smooth(-0.2, 0.9, h));
   for (let i = 0; i < LAKES.length; i++) {
     const L = LAKES[i];
     const dx = x - L.x, dz = z - L.z;
