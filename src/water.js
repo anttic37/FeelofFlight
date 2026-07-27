@@ -56,25 +56,44 @@ transformed.y += wDamp * (0.15
       .replace('#include <common>', `#include <common>
 uniform float uTime;
 varying float vShoreDepth;
-varying vec2 vWPos;`)
+varying vec2 vWPos;
+// cheap value noise for the water surface — unlike sine products it never
+// forms a repeating lattice, which killed the old ripple shading
+float wnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = fract(sin(dot(i, vec2(127.1, 311.7))) * 43758.5453);
+  float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
+  float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+  float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 // three-stage depth palette: turquoise shallows -> lagoon blue -> open sea
 diffuseColor.rgb = mix(vec3(0.16, 0.56, 0.53), vec3(0.10, 0.42, 0.58), smoothstep(0.0, 3.0, vShoreDepth));
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.075, 0.28, 0.46), smoothstep(3.0, 14.0, vShoreDepth));
+// slow drifting brightness patches — real seas are never one flat tint
+float pat = wnoise(vWPos * 0.0052 + vec2(uTime * 0.011, -uTime * 0.008));
+pat += wnoise(vWPos * 0.0016 + vec2(-uTime * 0.006, uTime * 0.004));
+diffuseColor.rgb *= 0.93 + 0.07 * pat;
 float foamBand = 1.0 - smoothstep(0.0, 1.3, vShoreDepth);
 float stripes = sin(uTime * 1.7 - vShoreDepth * 4.2 + sin(vWPos.x * 0.23) * 1.9 + sin(vWPos.y * 0.19) * 1.9);
 float foam = foamBand * foamBand * smoothstep(0.25, 0.95, stripes) * 0.7;
 foam = max(foam, (1.0 - smoothstep(0.0, 0.45, vShoreDepth)) * 0.85);
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.94, 0.97, 1.0), clamp(foam, 0.0, 1.0));`)
-      // per-pixel ripple normals carry the small-scale motion. Amplitude fades
-      // with view distance — at range the ripple frequencies alias against the
-      // pixel grid into a moire mesh, so far water goes calm instead.
+      // per-pixel ripple normals from TWO independently scrolling noise fields
+      // (the procedural version of dual scrolling normal maps — the standard
+      // real-time water technique). Noise gradients never form a lattice, so
+      // the old sine-product moire cannot occur; amplitude still fades with
+      // view distance so far water reads calm.
       .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
-float rippleAtt = 1.0 - smoothstep(250.0, 2200.0, length(vViewPosition)) * 0.88;
-normal = normalize(normal + rippleAtt * vec3(
-  sin(vWPos.x * 0.35 + uTime * 1.6) * 0.07 + sin(vWPos.x * 0.11 - uTime * 0.7) * 0.04,
-  0.0,
-  sin(vWPos.y * 0.31 - uTime * 1.3) * 0.07 + sin((vWPos.x + vWPos.y) * 0.09 + uTime * 0.5) * 0.04));`);
+float rippleAtt = 1.0 - smoothstep(300.0, 2600.0, length(vViewPosition)) * 0.8;
+vec2 q1 = vWPos * 0.043 + vec2(uTime * 0.062, uTime * 0.037);
+vec2 q2 = vWPos * 0.0128 + vec2(-uTime * 0.021, uTime * 0.0146);
+float n1 = wnoise(q1), n2 = wnoise(q2);
+float nx = (wnoise(q1 + vec2(0.13, 0.0)) - n1) * 0.55 + (wnoise(q2 + vec2(0.11, 0.0)) - n2) * 0.85;
+float nz = (wnoise(q1 + vec2(0.0, 0.13)) - n1) * 0.55 + (wnoise(q2 + vec2(0.0, 0.11)) - n2) * 0.85;
+normal = normalize(normal + rippleAtt * vec3(nx, 0.0, nz));`);
   };
 
   const water = new THREE.Mesh(geo, mat);

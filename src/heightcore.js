@@ -515,8 +515,10 @@ function genTerrainHeight(x, z) {
   let h = 4 + K_ROLL * 0.62 * e * 2.4 + 260 * K_REL * Math.pow(e, 2.6) * dist;
   // medium relief: hills riding on the base (~600 m wavelength, +-16..50 m)
   h += fbm(x * 0.0016 + 40.4, z * 0.0016 + 12.7, 3) * (16 + 22 * (K_REL - 0.7)) * dist;
-  // close detail: the texture you read at low level (~160 m, grows with ground)
-  h += fbm(x * 0.006 + 3.2, z * 0.006 + 55.8, 2) * (3.5 + Math.min(6.5, h * 0.04));
+  // close detail: the texture you read at low level (~160 m, grows with ground).
+  // Faded out below ~9 m so it can't wiggle the waterline into sawtooth —
+  // beaches and the shoreline contour stay smooth curves.
+  h += fbm(x * 0.006 + 3.2, z * 0.006 + 55.8, 2) * (3.5 + Math.min(6.5, h * 0.04)) * smooth(1.5, 9, h);
   // mountains: ridged fBm, only inside the range regions, favoring high base
   const rmk = rangeMask(x, z);
   if (rmk > 0.01) {
