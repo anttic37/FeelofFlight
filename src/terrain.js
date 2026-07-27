@@ -167,6 +167,10 @@ export function createTerrain(scene) {
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geo.setIndex(new THREE.BufferAttribute(tileIndex(ring.res), 1));
+    // shadow RECEIVING needs a normal attribute (shadowmap_vertex reads it);
+    // flatShading ignores it for lighting, so the faceted look is unchanged.
+    // Without this the plane's shadow silently vanishes on streamed tiles.
+    geo.computeVertexNormals();
     const cx = (ix + 0.5) * ring.tile, cz = (iz + 0.5) * ring.tile;
     // analytic bounding sphere: tile bounds + center height +-400 m guess —
     // cheap, safe (island peaks ~650, features never move 400 m off their
