@@ -6,6 +6,7 @@ import { FlightModel } from './physics.js';
 import { ChaseCam } from './camera.js';
 import { WingTrails } from './trails.js';
 import { createFX } from './fx.js';
+import { createWreckage } from './wreckage.js';
 import { SoundFX } from './sound.js';
 import { Input } from './input.js';
 import { HUD } from './hud.js';
@@ -40,6 +41,7 @@ const input = new Input();
 const chase = new ChaseCam(camera, heightAt);
 const trails = new WingTrails(scene, plane.tipL, plane.tipR);
 const fx = createFX(scene);
+const wreckage = createWreckage(scene, surfaceAt, heightAt);
 const sound = new SoundFX();
 const hud = new HUD();
 
@@ -56,6 +58,7 @@ function updateWingFlex(dt) {
 }
 
 function reset(message) {
+  wreckage.restore(plane); // reattach any sheared-off parts before flying again
   phys.reset();
   input.throttle = 0.65;
   syncPlaneToPhysics();
@@ -72,6 +75,7 @@ input.onCamera = () => hud.msg(`CAMERA ${chase.cycleTightness()}`, 1200);
 input.onView = () => hud.msg(`VIEW ${chase.cycleView(phys)}`, 1200);
 let runwayCycle = -1;
 input.onRunwaySpawn = () => {
+  wreckage.restore(plane);
   runwayCycle = (runwayCycle + 1) % RUNWAYS.length;
   const r = RUNWAYS[runwayCycle];
   // threshold at the +Z end, facing down the strip (yaw 0 faces -Z)
@@ -98,16 +102,21 @@ window.addEventListener('resize', () => {
 
 // debug / test hook — enough surface to step & render headlessly in tests
 window.__ff = {
-  phys, input, chase, reset, fx, trails, hud, sound, scene, camera, renderer, plane, world,
+  phys, input, chase, reset, fx, trails, hud, sound, scene, camera, renderer, plane, world, wreckage,
   heightAt, surfaceAt, RUNWAYS, seed: terrainSeed,
   step(dt) {
     input.update(dt);
     const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake };
     if (!phys.crashed) phys.update(dt, controls);
-    else { if (!phys._wreck) phys.startWreck(); phys.wreckUpdate(dt); phys.justWreckHit = 0; }
+    else {
+      if (!phys._wreck) { const sev = phys.vel.length(); phys.startWreck(); wreckage.breakUp(plane, phys, sev); }
+      phys.wreckUpdate(dt);
+      phys.justWreckHit = 0;
+    }
     syncPlaneToPhysics();
     updateWingFlex(dt);
     updatePlaneVisual(plane, input, phys, dt);
+    if (wreckage.active) wreckage.update(dt);
     chase.update(dt, phys);
     trails.update(dt, phys);
     fx.update(dt, phys);
@@ -151,7 +160,9 @@ renderer.setAnimationLoop(() => {
   if (phys.crashed && !phys._wreck) {
     // impact moment: the airframe becomes a tumbling wreck — no auto-reset,
     // the crash plays out where it happened (R / T to fly again)
+    const severity = phys.vel.length(); // before startWreck damps it
     phys.startWreck();
+    wreckage.breakUp(plane, phys, severity);
     input.throttle = 0; // engine dies with the airframe
     sound.crash();
     hud.flash();
@@ -174,6 +185,14 @@ renderer.setAnimationLoop(() => {
   syncPlaneToPhysics();
   updateWingFlex(dt);
   updatePlaneVisual(plane, input, phys, dt);
+  if (wreckage.active) {
+    // after updatePlaneVisual: debris poses must win over control-surface writes
+    wreckage.update(dt);
+    for (const h of wreckage.hits) {
+      sound.touchdown(Math.min(3, h.mag));
+      fx.touchdown(h.pos, h.type, h.mag);
+    }
+  }
   chase.update(dt, phys);
   trails.update(dt, phys);
   fx.update(dt, phys);
