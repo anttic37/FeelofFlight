@@ -129,6 +129,7 @@ export class FlightModel {
     this.justFlapsMoved = false;
     this.flapBuffet = 0;
     this.overG = 0; this.stress = 0; this.overspeed = 0;
+    this._wreck = false; this.justWreckHit = 0; this.wreckSettled = false;
   }
 
   resetTo({ x, z, y, yaw, speed, grounded, gearDown }) {
@@ -159,6 +160,63 @@ export class FlightModel {
     this.justFlapsMoved = false;
     this.flapBuffet = 0;
     this.overG = 0; this.stress = 0; this.overspeed = 0;
+    this._wreck = false; this.justWreckHit = 0; this.wreckSettled = false;
+  }
+
+  // ---- wreck: after a crash the airframe becomes a tumbling rigid body ----
+  // It bounces, skids and settles where it fell instead of freezing/teleporting.
+  // R / T reset as usual. Deterministic: the tumble kick is seeded by location.
+  startWreck() {
+    if (this._wreck) return;
+    this._wreck = true;
+    const s = this.vel.length();
+    const r1 = fbm1(this.pos.x * 0.137 + this.pos.z * 0.071, 3.3);
+    const r2 = fbm1(this.pos.z * 0.113 - this.pos.x * 0.059, 7.7);
+    this.angVel.set(r1 * (2.5 + s * 0.06), r2 * (1.5 + s * 0.04), (r1 - r2) * (2.5 + s * 0.06));
+    this.vel.multiplyScalar(0.7); // the airframe soaks the first hit
+    this.justWreckHit = Math.min(9, 2 + s * 0.07);
+  }
+
+  wreckUpdate(dt) {
+    const t = this._tmp;
+    this.vel.y -= G * dt;
+    this.vel.multiplyScalar(Math.max(0, 1 - dt * 0.2)); // battered-airframe drag
+    this.pos.addScaledVector(this.vel, dt);
+    const w = this.angVel;
+    const wMag = w.length();
+    if (wMag > 1e-6) {
+      const axis = t.v.copy(w).divideScalar(wMag);
+      this.quat.multiply(t.q.setFromAxisAngle(axis, Math.min(wMag, 6) * dt)).normalize();
+    }
+    const surf = this.surfaceAt(this.pos.x, this.pos.z);
+    const water = surf.type === 'water';
+    const gy = (water ? -0.5 : Math.max(surf.h, 0)) + 0.9;
+    if (this.pos.y <= gy) {
+      this.pos.y = gy;
+      this.grounded = true;
+      this.onRunwaySurface = surf.type === 'runway';
+      if (water) { // splashdown: heavy drag, no bounce, settle afloat
+        if (this.vel.y < -2) this.justWreckHit = Math.min(8, -this.vel.y * 0.9);
+        this.vel.y = 0;
+        this.vel.multiplyScalar(Math.max(0, 1 - dt * 2.6));
+        w.multiplyScalar(Math.max(0, 1 - dt * 3));
+      } else {
+        if (this.vel.y < -1.5) this.justWreckHit = Math.min(8, -this.vel.y * 0.8);
+        this.vel.y = Math.abs(this.vel.y) * 0.3; // bounce with heavy loss
+        this.vel.x *= Math.max(0, 1 - dt * 2.4);  // skid friction
+        this.vel.z *= Math.max(0, 1 - dt * 2.4);
+        w.multiplyScalar(Math.max(0, 1 - dt * 2.2));
+      }
+    } else {
+      this.grounded = false;
+      w.multiplyScalar(Math.max(0, 1 - dt * 0.35));
+    }
+    this.speed = this.vel.length();
+    this.airspeed = this.speed;
+    this.gLoad = 1;
+    this.stalled = false;
+    this.overspeed = 0;
+    this.wreckSettled = this.pos.y <= gy + 0.05 && this.speed < 0.7 && wMag < 0.4;
   }
 
   toggleGear() {

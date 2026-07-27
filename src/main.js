@@ -104,6 +104,7 @@ window.__ff = {
     input.update(dt);
     const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake };
     if (!phys.crashed) phys.update(dt, controls);
+    else { if (!phys._wreck) phys.startWreck(); phys.wreckUpdate(dt); phys.justWreckHit = 0; }
     syncPlaneToPhysics();
     updateWingFlex(dt);
     updatePlaneVisual(plane, input, phys, dt);
@@ -147,11 +148,26 @@ renderer.setAnimationLoop(() => {
     fx.touchdown(phys.pos, phys.onRunwaySurface ? 'runway' : 'grass', sink);
     hud.msg(sink < 1.8 ? 'BUTTER.' : 'TOUCHDOWN', 1800);
   }
-  if (phys.crashed) {
+  if (phys.crashed && !phys._wreck) {
+    // impact moment: the airframe becomes a tumbling wreck — no auto-reset,
+    // the crash plays out where it happened (R / T to fly again)
+    phys.startWreck();
+    input.throttle = 0; // engine dies with the airframe
     sound.crash();
     hud.flash();
     const reason = typeof phys.crashed === 'string' ? phys.crashed.toUpperCase() : '';
-    reset(reason ? `CRASHED — ${reason}` : 'CRASHED');
+    hud.msg(reason ? `CRASHED — ${reason} · R TO RESTART` : 'CRASHED · R TO RESTART', 8000);
+    const sc = surfaceAt(phys.pos.x, phys.pos.z);
+    fx.touchdown(phys.pos, sc.type === 'water' ? 'water' : sc.type === 'runway' ? 'runway' : 'grass', 9);
+  } else if (phys.crashed) {
+    phys.wreckUpdate(dt);
+    if (phys.justWreckHit) {
+      const thud = phys.justWreckHit;
+      phys.justWreckHit = 0;
+      sound.touchdown(Math.min(6, thud));
+      const sc = surfaceAt(phys.pos.x, phys.pos.z);
+      fx.touchdown(phys.pos, sc.type === 'water' ? 'water' : sc.type === 'runway' ? 'runway' : 'grass', thud);
+    }
   }
 
   sound.setBrake(input.brake);
