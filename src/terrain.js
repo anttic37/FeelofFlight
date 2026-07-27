@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { heightAt, getTerrainSeed } from './heightcore.js';
 import { terrainColor } from './colorcore.js';
 import { bakeTile, buildTileIndex, tileVertexCount } from './tilebake.js';
+import { injectGroundFX } from './groundfx.js';
 
 // The terrain engine. Two modes, selected by URL param:
 //   ?terrain=static — EXACTLY the pre-dynamic path: one PlaneGeometry
@@ -76,9 +77,11 @@ function bakeIslandGeometry(segments, minSpan) {
 
 export function createTerrain(scene) {
   if (new URLSearchParams(location.search).get('terrain') === 'static') {
-    // A/B fallback: today's static path, bit for bit
-    const terrain = new THREE.Mesh(bakeIslandGeometry(500),
-      new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1 }));
+    // A/B fallback: today's static path, bit for bit (geometry — the ground
+    // detail shader layer applies here too so both modes look the same)
+    const staticMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1 });
+    injectGroundFX(staticMat);
+    const terrain = new THREE.Mesh(bakeIslandGeometry(500), staticMat);
     terrain.receiveShadow = true;
     scene.add(terrain);
     return {
@@ -93,10 +96,12 @@ export function createTerrain(scene) {
   // coarser rings carry growing polygonOffset so any same-pixel depth tie
   // resolves toward the finer ring — the depth-buffer half of anti-overlap
   function ringMaterial(po) {
-    return new THREE.MeshStandardMaterial({
+    const mat = new THREE.MeshStandardMaterial({
       vertexColors: true, flatShading: true, roughness: 1,
       polygonOffset: po > 0, polygonOffsetFactor: po, polygonOffsetUnits: po,
     });
+    injectGroundFX(mat);
+    return mat;
   }
   const materials = [ringMaterial(0), ringMaterial(1), ringMaterial(2)];
   const shellMaterial = ringMaterial(3);

@@ -8,6 +8,7 @@ import {
   HILLS_C, DESERT_C, FOREST_C, MTN_A, MTN_B,
 } from './heightcore.js';
 import { createTerrain } from './terrain.js';
+import { uGroundTime } from './groundfx.js';
 import { createRunways } from './runways.js';
 import { createWater } from './water.js';
 import { createClouds } from './clouds.js';
@@ -250,6 +251,9 @@ export function createWorld(scene) {
 
   // keep the sun (and its shadow box) and sky centered on the plane
   function update(planePos, time = 0) {
+    // raw time, no wrap: value noise isn't periodic, so a wrap would visibly
+    // reshuffle the cloud shadows; drift offsets stay float32-tiny for hours
+    uGroundTime.value = time;
     sun.position.copy(planePos).addScaledVector(sunDir, 420);
     sun.target.position.copy(planePos);
     sky.position.set(planePos.x, 0, planePos.z);

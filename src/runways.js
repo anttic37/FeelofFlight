@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { noise2 } from './noise.js';
 import { RUNWAYS, heightAt } from './heightcore.js';
+import { injectGroundFX } from './groundfx.js';
 
 // Runway meshes, markings, lights, windsocks + the hangar. The strips, the
 // shared feature anchors and the flattening math live in heightcore.js (pure,
@@ -44,9 +45,11 @@ export function createRunways(scene) {
     tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
     tex.colorSpace = THREE.SRGBColorSpace;
     tex.repeat.set(r.width / 10, r.length / 10);
+    const stripMat = new THREE.MeshStandardMaterial({ map: tex, roughness: 1, flatShading: true });
+    injectGroundFX(stripMat, { detail: false }); // cloud shadows cross the asphalt too
     const strip = new THREE.Mesh(
       new THREE.PlaneGeometry(r.width, r.length, 1, 10).rotateX(-Math.PI / 2),
-      new THREE.MeshStandardMaterial({ map: tex, roughness: 1, flatShading: true })
+      stripMat
     );
     strip.position.y = 0.08;
     strip.receiveShadow = true;
