@@ -149,7 +149,7 @@ export function createTerrain(scene) {
     const job = inFlight.get(e.data.id);
     inFlight.delete(e.data.id);
     if (job) {
-      finished.push({ job, positions: e.data.positions, colors: e.data.colors });
+      finished.push({ job, positions: e.data.positions, colors: e.data.colors, normals: e.data.normals });
       finishedKeys.add(job.key);
     }
   };
@@ -166,7 +166,7 @@ export function createTerrain(scene) {
 
   function tileKey(lod, ix, iz) { return lod + ':' + ix + ':' + iz; }
 
-  function addTile(key, ring, ix, iz, positions, colors) {
+  function addTile(key, ring, ix, iz, positions, colors, normals) {
     if (ring.bias !== 0) sinkAboveShore(positions, ring.bias);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
@@ -175,7 +175,10 @@ export function createTerrain(scene) {
     // shadow RECEIVING needs a normal attribute (shadowmap_vertex reads it);
     // flatShading ignores it for lighting, so the faceted look is unchanged.
     // Without this the plane's shadow silently vanishes on streamed tiles.
-    geo.computeVertexNormals();
+    // Normals come analytically from bakeTile (free there, seam-consistent);
+    // the compute fallback covers a stale worker that omits them.
+    if (normals) geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+    else geo.computeVertexNormals();
     const cx = (ix + 0.5) * ring.tile, cz = (iz + 0.5) * ring.tile;
     // analytic bounding sphere: tile bounds + center height +-400 m guess —
     // cheap, safe (island peaks ~650, features never move 400 m off their
@@ -198,9 +201,9 @@ export function createTerrain(scene) {
     const key = tileKey(ring.lod, ix, iz);
     if (tiles.has(key)) return;
     const n = tileVertexCount(ring.res) * 3;
-    const positions = new Float32Array(n), colors = new Float32Array(n);
-    bakeTile(ix * ring.tile, iz * ring.tile, ring.tile, ring.res, ring.skirt, positions, colors, ring.minS);
-    addTile(key, ring, ix, iz, positions, colors);
+    const positions = new Float32Array(n), colors = new Float32Array(n), normals = new Float32Array(n);
+    bakeTile(ix * ring.tile, iz * ring.tile, ring.tile, ring.res, ring.skirt, positions, colors, ring.minS, normals);
+    addTile(key, ring, ix, iz, positions, colors, normals);
     pending.delete(key); // if it was queued, the queue entry is now moot
   }
 
@@ -298,13 +301,13 @@ export function createTerrain(scene) {
     // apply at most ONE finished bake per update — keeps the per-frame cost of
     // geometry creation + GPU upload bounded (the hitch budget)
     while (finished.length) {
-      const { job, positions, colors } = finished.shift();
+      const { job, positions, colors, normals } = finished.shift();
       finishedKeys.delete(job.key);
       if (tiles.has(job.key)) continue; // teleport guard built it sync meanwhile
       const dx = job.cx - px, dz = job.cz - pz;
       const rr = job.ring.radius + EVICT_PAD;
       if (dx * dx + dz * dz > rr * rr) continue; // flown away — drop, don't upload
-      addTile(job.key, job.ring, job.ix, job.iz, positions, colors);
+      addTile(job.key, job.ring, job.ix, job.iz, positions, colors, normals);
       break;
     }
 

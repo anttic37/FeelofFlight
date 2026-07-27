@@ -224,7 +224,9 @@ export function createWorld(scene) {
     }
     const h = heightAt(x, z);
     if (pick < 4) { if (h < -1) continue; }
-    else if (pick < 7) { if (h < 40 || h > 620 || slopeAt(x, z) < 0.3) continue; }
+    // scree stops at the paint snowline (same jitter as colorcore): dark grey
+    // dodecahedra above it read as pepper specks all over the white caps
+    else if (pick < 7) { if (h < 40 || h > 406 + (noise2(x * 0.006 + 3.7, z * 0.006) - 0.5) * 76 || slopeAt(x, z) < 0.3) continue; }
     else if (h < -1.5 || h > 4.5) continue;
     if (runwayInfluence(x, z) > 0.02 || nearCorridor(x, z)) continue;
     const s = red ? 1.1 + noise2(x * 0.9 + 3, z * 0.9) * 2.5 : 0.6 + noise2(x * 0.9 + 3, z * 0.9) * 1.9;

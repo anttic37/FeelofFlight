@@ -12,6 +12,7 @@ self.onmessage = (e) => {
   const n = tileVertexCount(res) * 3;
   const positions = new Float32Array(n);
   const colors = new Float32Array(n);
-  bakeTile(x0, z0, size, res, skirt, positions, colors, minSpan);
-  self.postMessage({ id, positions, colors }, [positions.buffer, colors.buffer]);
+  const normals = new Float32Array(n);
+  bakeTile(x0, z0, size, res, skirt, positions, colors, minSpan, normals);
+  self.postMessage({ id, positions, colors, normals }, [positions.buffer, colors.buffer, normals.buffer]);
 };

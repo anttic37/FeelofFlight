@@ -33,7 +33,7 @@ function ringGridIndex(res, k) {
 
 const _col = [0, 0, 0]; // reused rgb out for terrainColor
 
-export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan) {
+export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan, nrmOut) {
   const cell = size / res;
   const ms = minSpan || 0;
   // Grid: heights + colors. terrainColor's normalY (steep-face rock, scree)
@@ -70,6 +70,13 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan)
       const ny = 1 / Math.sqrt(1 + gx * gx + gz * gz); // normalize(-gx, 1, -gz).y
       terrainColor(x, z, h, ny, _col);
       colOut[o] = _col[0]; colOut[o + 1] = _col[1]; colOut[o + 2] = _col[2];
+      if (nrmOut) {
+        // analytic vertex normal, free here (gx/gz/ny already computed). Only
+        // the shadow-receive path reads it (flatShading lights by derivative
+        // face normals), and analytic beats computeVertexNormals: no per-tile
+        // edge seams, no main-thread pass at apply time.
+        nrmOut[o] = -gx * ny; nrmOut[o + 1] = ny; nrmOut[o + 2] = -gz * ny;
+      }
     }
   }
   // Skirt ring: perimeter duplicates dropped by skirtDepth and pushed outward
@@ -90,6 +97,7 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan)
     posOut[o + 1] = posOut[g + 1] - skirtDepth;
     posOut[o + 2] = posOut[g + 2] + oz;
     colOut[o] = colOut[g]; colOut[o + 1] = colOut[g + 1]; colOut[o + 2] = colOut[g + 2];
+    if (nrmOut) { nrmOut[o] = nrmOut[g]; nrmOut[o + 1] = nrmOut[g + 1]; nrmOut[o + 2] = nrmOut[g + 2]; }
   }
 }
 

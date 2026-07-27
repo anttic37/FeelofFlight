@@ -193,7 +193,9 @@ export class FlightModel {
     const gy = (water ? -0.5 : Math.max(surf.h, 0)) + 0.9;
     if (this.pos.y <= gy) {
       this.pos.y = gy;
-      this.grounded = true;
+      // floating is not rolling: grounded=true on water made fx throw brown
+      // skid dust off the sea while the wreck slid to a stop
+      this.grounded = !water;
       this.onRunwaySurface = surf.type === 'runway';
       if (water) { // splashdown: heavy drag, no bounce, settle afloat
         if (this.vel.y < -2) this.justWreckHit = Math.min(8, -this.vel.y * 0.9);
