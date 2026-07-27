@@ -47,16 +47,22 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan)
       const x = x0 + ix * cell;
       const h = heightAt(x, z);
       let hy = h;
-      if (ms > 0) {
+      if (ms > 0 && h > 2) {
         // CONSERVATIVE LOWER ENVELOPE for coarser rings: a vertex takes the
         // MIN of itself and 4 taps at half-spacing, so the coarse surface can
         // never rise above terrain the finer rings actually show — the root
         // cause of the serrated ring-overlap bands on steep slopes. Colors
         // and paint normals still come from the exact center sample.
+        // SHORE-FADED (zero below 2 m, full by 12 m): beaches are flat, so
+        // there is nothing to envelope — min-taps there just catch water-side
+        // samples and carve the coarse ring's shoreline into stair-steps.
+        let mn = h;
         const h1 = heightAt(x + ms, z), h2 = heightAt(x - ms, z);
         const h3 = heightAt(x, z + ms), h4 = heightAt(x, z - ms);
-        if (h1 < hy) hy = h1; if (h2 < hy) hy = h2;
-        if (h3 < hy) hy = h3; if (h4 < hy) hy = h4;
+        if (h1 < mn) mn = h1; if (h2 < mn) mn = h2;
+        if (h3 < mn) mn = h3; if (h4 < mn) mn = h4;
+        const t = h >= 12 ? 1 : (h - 2) / 10;
+        hy = h + (mn - h) * t * t * (3 - 2 * t);
       }
       posOut[o] = x; posOut[o + 1] = hy; posOut[o + 2] = z;
       const gx = (heightAt(x + cell, z) - heightAt(x - cell, z)) / (2 * cell);

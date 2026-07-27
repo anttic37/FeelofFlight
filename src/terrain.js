@@ -49,14 +49,18 @@ function bakeIslandGeometry(segments, minSpan) {
   const tPos = geo.attributes.position;
   for (let i = 0; i < tPos.count; i++) {
     const x = tPos.getX(i), z = tPos.getZ(i);
-    let h = heightAt(x, z);
-    if (minSpan) { // lower envelope, same rule as coarse tiles (see bakeTile)
+    const h = heightAt(x, z);
+    let hy = h;
+    if (minSpan && h > 2) { // shore-faded lower envelope, same rule as bakeTile
+      let mn = h;
       const h1 = heightAt(x + minSpan, z), h2 = heightAt(x - minSpan, z);
       const h3 = heightAt(x, z + minSpan), h4 = heightAt(x, z - minSpan);
-      if (h1 < h) h = h1; if (h2 < h) h = h2;
-      if (h3 < h) h = h3; if (h4 < h) h = h4;
+      if (h1 < mn) mn = h1; if (h2 < mn) mn = h2;
+      if (h3 < mn) mn = h3; if (h4 < mn) mn = h4;
+      const t = h >= 12 ? 1 : (h - 2) / 10;
+      hy = h + (mn - h) * t * t * (3 - 2 * t);
     }
-    tPos.setY(i, h);
+    tPos.setY(i, hy);
   }
   geo.computeVertexNormals();
   const tNorm = geo.attributes.normal;
