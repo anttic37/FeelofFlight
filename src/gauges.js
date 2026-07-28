@@ -11,10 +11,14 @@
 // Arc markings are the airframe's real numbers (physics.js): 1 g stall 98 km/h,
 // full-flap stall 86, caution 389, Vne 414.
 
-const R = 50;      // dial radius, css px
+const R = 50;      // dial radius, design units
 const CELL = 116;  // horizontal pitch between dials
 const HGT = 128;   // dial + caption strip below it
 const DPR = 2;
+// Everything below is authored in design units and the whole context is scaled
+// by SCALE, so ticks, fonts, needles and boxes all grow together — resizing R
+// alone would leave the text and needle widths behind.
+const SCALE = 1.26;
 
 const A0 = 135, SWEEP = 270;   // standard sweep: 7:30 clockwise to 4:30
 const D2R = Math.PI / 180;
@@ -111,10 +115,11 @@ function digital(g, cx, cy, text, color = INK) {
 export class Gauges {
   constructor(canvas) {
     this.W = CELL * N;
-    canvas.width = this.W * DPR; canvas.height = HGT * DPR;
-    canvas.style.width = this.W + 'px'; canvas.style.height = HGT + 'px';
+    canvas.width = Math.round(this.W * SCALE * DPR); canvas.height = Math.round(HGT * SCALE * DPR);
+    canvas.style.width = Math.round(this.W * SCALE) + 'px';
+    canvas.style.height = Math.round(HGT * SCALE) + 'px';
     this.g = canvas.getContext('2d');
-    this.g.scale(DPR, DPR);
+    this.g.scale(DPR * SCALE, DPR * SCALE);
     this.cx = [];
     for (let i = 0; i < N; i++) this.cx.push(CELL * i + CELL / 2);
     this.cy = R + 4;
@@ -123,9 +128,9 @@ export class Gauges {
 
   _bakeFaces() {
     const c = document.createElement('canvas');
-    c.width = this.W * DPR; c.height = HGT * DPR;
+    c.width = Math.round(this.W * SCALE * DPR); c.height = Math.round(HGT * SCALE * DPR);
     const g = c.getContext('2d');
-    g.scale(DPR, DPR);
+    g.scale(DPR * SCALE, DPR * SCALE);
     const cy = this.cy;
 
     for (let i = 0; i < N; i++) bezel(g, this.cx[i], cy);

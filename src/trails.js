@@ -6,7 +6,7 @@ import * as THREE from 'three';
 // cross(viewDir, segDir) using the built-in cameraPosition uniform; segment
 // directions are computed CPU-side into a 'dir' attribute every frame.
 
-const N = 70;
+const N = 118; // history points, one per frame — the ribbon's length in time
 
 const VERT = `
 attribute float side;
@@ -19,8 +19,10 @@ void main() {
   vec3 perp = cross(cameraPosition - wp, dir);
   float pl = length(perp);
   perp = pl > 1e-4 ? perp / pl : vec3(0.0, 1.0, 0.0);
-  wp += perp * (side * 0.5 * mix(0.28, 0.04, age));
-  vAlpha = intensity * pow(1.0 - age, 1.5);
+  wp += perp * (side * 0.5 * mix(0.30, 0.05, age));
+  // gentler falloff (was 1.5): with a longer ribbon a steep curve faded the
+  // tail out early and gave back the length the extra history points bought
+  vAlpha = intensity * pow(1.0 - age, 1.15);
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }`;
 
@@ -133,16 +135,18 @@ export class WingTrails {
   }
 
   update(dt, phys) {
+    // thresholds sit low on purpose: the vortices should show up in an ordinary
+    // turn, not only in a hard pull (was 2.1 g / 0.22 rad, which needed a yank)
     let target = 0;
-    if (phys.speed > 30) {
+    if (phys.speed > 22) {
       target = Math.max(
-        Math.min(1, (Math.abs(phys.gLoad) - 2.1) / 1.4),
-        phys.stalled ? 0.8 : 0,
-        Math.min(1, (Math.abs(phys.aoa) - 0.22) / 0.12) * 0.7,
+        Math.min(1, (Math.abs(phys.gLoad) - 1.45) / 1.5),
+        phys.stalled ? 0.85 : 0,
+        Math.min(1, (Math.abs(phys.aoa) - 0.15) / 0.12) * 0.8,
       );
       target = Math.max(0, target);
     }
-    this.smoothed += (target - this.smoothed) * Math.min(1, dt * 6);
+    this.smoothed += (target - this.smoothed) * Math.min(1, dt * 7);
     this.l.push(this.tipL.getWorldPosition(this._p), this.smoothed);
     this.r.push(this.tipR.getWorldPosition(this._p), this.smoothed);
   }
