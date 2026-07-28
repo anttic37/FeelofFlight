@@ -262,7 +262,7 @@ export function createWorld(scene) {
     sun.target.position.copy(planePos);
     sky.position.set(planePos.x, 0, planePos.z);
     terrain.update(planePos);
-    scatter.update(planePos);
+    scatter.update(planePos, time);
     runways.update(time);
     water.update(time);
     clouds.update(time, planePos);
