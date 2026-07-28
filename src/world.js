@@ -31,7 +31,9 @@ export function createWorld(scene) {
   scene.fog = new THREE.Fog(new THREE.Color(0xbcd8ee), 1500, 6500);
 
   // sky dome: gradient, horizon haze and the sun's halo, evaluated per pixel.
-  // Radius 8500 > fog.far so nothing in the world ever pokes through it.
+  // Radius 8500 > fog.far so nothing in the world ever pokes through it. It does
+  // NOT write depth — see createSkyMaterial, which explains why that matters to
+  // the clouds.
   const sky = new THREE.Mesh(new THREE.SphereGeometry(8500, 24, 16), createSkyMaterial());
   scene.add(sky);
 

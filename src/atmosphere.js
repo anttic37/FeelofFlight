@@ -95,7 +95,16 @@ export function createSkyMaterial() {
   return new THREE.ShaderMaterial({
     side: THREE.BackSide,
     fog: false,
-    depthWrite: true,
+    // MUST NOT write depth. The dome is a radius-8500 sphere that rides the
+    // plane, and the volumetric clouds are composited in post against the scene
+    // depth buffer — so anything the raymarch finds beyond the dome's shell
+    // counts as hidden behind it and is thrown away. That capped the whole sky
+    // at 8.5 km, and because the dome is only 24x16 segments the cut followed
+    // its flat facets: clouds came out sliced into boxes and pyramids with
+    // straight edges. Harmless while the clouds were sprites living near the
+    // plane; fatal once they became a raymarched field reaching the horizon.
+    // depthTest stays on, so terrain still draws over the dome as before.
+    depthWrite: false,
     uniforms: {
       uZenith: { value: SKY.zenith },
       uHorizon: { value: SKY.horizon },
