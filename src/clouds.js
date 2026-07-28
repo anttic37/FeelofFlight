@@ -20,27 +20,52 @@ const COUNT = 72;
 const BOX = 20000;
 const HALF = BOX / 2;
 
-// w/d = half extents, h = build height, y = base altitude band.
-// base = flat-bottom puffs, lobes = billowing stacks grown on top of them
-// (how many puffs each stack ends up with follows from h — see the crown loop).
+// HOW REAL CUMULUS DECIDE WHERE AND HOW BIG TO BE — three rules, all visible:
+//
+// 1. THEY SHARE A FLAT BASE. Convective cloud bases sit at the lifting
+//    condensation level, set by the air mass's temperature and dew point, so
+//    every cumulus in that air mass condenses at the same ALTITUDE — a parcel
+//    rising from a valley and one from a hilltop both stop at the same level.
+//    That is why a real cumulus field looks sliced flat underneath, and why
+//    hills tall enough simply end up wearing their cloud. Scattering bases over
+//    a per-class altitude band, as this did, is the tell-tale sign of clouds
+//    placed by hand.
+//
+// 2. THEY FORM OVER LAND. Cumulus are the visible tops of thermals, and
+//    thermals come off ground the sun has heated. Over open sea there is no
+//    such heating, so the sky is largely clear and what little forms is small
+//    and flat. Over an island you get the classic ring of cloud that marks the
+//    land from far out to sea — free navigation, and it is what really happens.
+//
+// 3. SMALL ONES VASTLY OUTNUMBER BIG ONES. Cumulus sizes follow a power law,
+//    not a uniform spread: a sky is mostly scraps and puffs with a few giants.
+//    Sampling uniformly inside each class produced a suspicious sameness.
+//
+// Layer clouds are NOT convective — stratocumulus rafts and stratus streaks
+// form by gentle lifting of a whole slab of air, so they keep their own high
+// levels and ignore the thermal rules above.
+//
+// w/d = half extents, h = build height, y = base band (layer clouds only).
 // squash flattens every puff in the cloud (sheets, not balls); crown scales the
 // per-level taper, so a value above 1 WIDENS a stack as it climbs = anvil.
+// conv = convective: shares the LCL and needs land under it to grow.
+const LCL = 620;          // cloud base above ground level, metres
 const CLASSES = [
   // shred: torn scraps, the smallest thing in the sky
-  { p: 0.13, w: [26, 58],   d: [22, 48],   h: [16, 34],   y: [640, 1500],  base: [2, 4],   lobes: [1, 2], squash: 0.6 },
+  { p: 0.15, w: [18, 62],   d: [15, 52],   h: [12, 38],   conv: 1, base: [2, 4],   lobes: [1, 2], squash: 0.6 },
   // fair-weather puff: small and rounded — kept low so its crown is one or two
   // fat bumps; taller made these read as a stack of coins at distance
-  { p: 0.23, w: [60, 115],  d: [50, 95],   h: [50, 85],   y: [560, 1120],  base: [5, 8],   lobes: [2, 3] },
+  { p: 0.23, w: [48, 135],  d: [40, 110],  h: [40, 95],   conv: 1, base: [5, 8],   lobes: [2, 3] },
   // heap cumulus: the workhorse — wide flat base, fat crown
-  { p: 0.23, w: [135, 240], d: [105, 175], h: [130, 230], y: [480, 980],   base: [6, 9],   lobes: [3, 5] },
+  { p: 0.22, w: [110, 290], d: [90, 215],  h: [105, 265], conv: 1, base: [6, 9],   lobes: [3, 5] },
   // congestus tower: one or two fat stacks climbing out of a broad base
-  { p: 0.12, w: [175, 290], d: [145, 240], h: [270, 430], y: [430, 720],   base: [5, 8],   lobes: [1, 2] },
+  { p: 0.11, w: [150, 330], d: [125, 270], h: [230, 470], conv: 1, base: [5, 8],   lobes: [1, 2] },
   // anvil: the big one — climbs high and spreads out at the top
-  { p: 0.05, w: [215, 340], d: [180, 285], h: [430, 640], y: [400, 660],   base: [7, 10],  lobes: [1, 2], crown: 1.17 },
+  { p: 0.05, w: [190, 400], d: [160, 330], h: [380, 700], conv: 1, base: [7, 10],  lobes: [1, 2], crown: 1.17 },
   // stratocumulus raft: long, low-relief bank spanning half a kilometre
-  { p: 0.16, w: [320, 580], d: [175, 310], h: [85, 145],  y: [700, 1320],  base: [10, 15], lobes: [4, 6] },
+  { p: 0.16, w: [280, 660], d: [150, 350], h: [70, 165],  y: [700, 1320],  base: [10, 15], lobes: [4, 6] },
   // stratus streak: a thin sheet drawn out by the wind, high and flat
-  { p: 0.08, w: [430, 820], d: [85, 165],  h: [38, 62],   y: [1150, 1950], base: [12, 18], lobes: [2, 4], squash: 0.42 },
+  { p: 0.08, w: [380, 900], d: [70, 185],  h: [30, 70],   y: [1150, 1950], base: [12, 18], lobes: [2, 4], squash: 0.42 },
 ];
 
 // Uniform deterministic stream. The raw hash, NOT noise2: value noise
@@ -52,6 +77,11 @@ function rnd(i, k) {
 }
 const span = (i, k, r) => r[0] + (r[1] - r[0]) * rnd(i, k);
 const spanI = (i, k, r) => r[0] + Math.floor(rnd(i, k) * (r[1] - r[0] + 0.999));
+// power-law draw: pow(u, 2) crowds the result toward the small end of the
+// range, which is how cumulus sizes actually distribute — a sky of scraps and
+// puffs with the occasional giant, instead of everything landing mid-sized
+const spanP = (i, k, r) => { const u = rnd(i, k); return r[0] + (r[1] - r[0]) * u * u; };
+const smooth01 = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 export function createClouds(scene) {
   // indexed icospheres (detail >=1 => smooth sphere normals; uv dropped so the
@@ -136,7 +166,32 @@ float vn3(vec3 p) {
       if (pick < CLASSES[c].p) { cls = CLASSES[c]; break; }
       pick -= CLASSES[c].p;
     }
-    const W = span(i, 1, cls.w), D = span(i, 2, cls.d), H = span(i, 3, cls.h);
+    // POSITION FIRST — the ground under a convective cloud decides how big it
+    // gets, so it has to be known before the geometry is sized.
+    let a = rnd(i, 6) * Math.PI * 2;
+    let r = 300 + rnd(i, 7) * 9200;
+    let cxp = Math.cos(a) * r, czp = Math.sin(a) * r;
+    let ground = heightAt(cxp, czp);
+    if (cls.conv) {
+      // thermals need heated land: hunt a few times for ground before settling.
+      // Failing that the cloud stays put as a small flat marine puff, which is
+      // exactly what forms over open water.
+      for (let tryN = 0; tryN < 5 && ground < 3; tryN++) {
+        a = rnd(i, 40 + tryN) * Math.PI * 2;
+        r = 300 + rnd(i, 60 + tryN) * 5600; // hunt in over the island, not the ocean
+        cxp = Math.cos(a) * r; czp = Math.sin(a) * r;
+        ground = heightAt(cxp, czp);
+      }
+    }
+    // thermal strength: nothing over water, more over high sun-baked ground
+    const land = smooth01(0, 45, ground);
+    const th = cls.conv ? 0.12 + 0.88 * land * (0.72 + 0.28 * smooth01(0, 420, ground)) : 1;
+
+    const W = spanP(i, 1, cls.w) * (0.55 + 0.45 * th);
+    const D = spanP(i, 2, cls.d) * (0.55 + 0.45 * th);
+    // vertical development is the part thermals really drive: a marine puff is
+    // a pancake, the same cloud over a hot hillside towers
+    const H = spanP(i, 3, cls.h) * (0.3 + 0.7 * th);
     const squash = cls.squash || 1, crown = cls.crown || 1;
     // constant across this cloud, different for every cloud: shifts the erosion
     // noise so two clouds never tear along the same pattern
@@ -221,10 +276,15 @@ float vn3(vec3 p) {
     puffTotal += parts.length;
     const mesh = new THREE.Mesh(mergeGeometries(parts), mat);
     mesh.renderOrder = 2;
-    const a = rnd(i, 6) * Math.PI * 2;
-    const r = 300 + rnd(i, 7) * 9200;
-    const baseY = span(i, 8, cls.y);
-    mesh.position.set(Math.cos(a) * r, baseY, Math.sin(a) * r);
+    // Convective bases sit at one shared ALTITUDE, not one shared height above
+    // the ground. A parcel rising from a valley and one rising from a hilltop
+    // both condense where the air mass reaches its dew point, so the whole
+    // field bottoms out on the same level — which is exactly why a real cumulus
+    // sky looks like it was sliced flat underneath. (Tying the base to the
+    // terrain instead gave a 500 m spread and lost the effect entirely.)
+    // Hills that reach this level simply end up wearing their cloud.
+    const baseY = cls.conv ? LCL + (rnd(i, 8) - 0.5) * 80 : span(i, 8, cls.y);
+    mesh.position.set(cxp, baseY, czp);
     mesh.rotation.y = rnd(i, 9) * Math.PI * 2;
     scene.add(mesh);
     clouds.push({

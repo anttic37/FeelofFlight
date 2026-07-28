@@ -10,6 +10,7 @@ import {
 import { createTerrain } from './terrain.js';
 import { uGroundTime } from './groundfx.js';
 import { createScatter } from './scatter.js';
+import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
 import { createRunways } from './runways.js';
 import { createWater } from './water.js';
 import { createClouds } from './clouds.js';
@@ -64,6 +65,48 @@ export function createWorld(scene) {
   sunSpr.position.copy(sunDir).multiplyScalar(7800);
   sunSpr.scale.set(2200, 2200, 1);
   sky.add(sunSpr);
+
+  // LENS FLARE. three's Lensflare hangs ghosts along the line from the light
+  // through screen centre and fades them by its own occlusion test, so it
+  // disappears correctly the moment a ridge crosses the sun.
+  // Textures are drawn here rather than loaded: everything else in this project
+  // is procedural, and a flare is just soft radial gradients anyway.
+  const flareTex = (stops, size = 128) => {
+    const c = document.createElement('canvas');
+    c.width = c.height = size;
+    const g = c.getContext('2d');
+    const gr = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+    for (const [at, col] of stops) gr.addColorStop(at, col);
+    g.fillStyle = gr;
+    g.fillRect(0, 0, size, size);
+    const t = new THREE.CanvasTexture(c);
+    t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  const glowTex = flareTex([
+    [0, 'rgba(255,250,235,0.95)'], [0.22, 'rgba(255,238,196,0.42)'],
+    [0.55, 'rgba(255,226,170,0.10)'], [1, 'rgba(255,220,160,0)'],
+  ], 256);
+  // ghosts: soft discs with a brighter rim, the classic iris reflection
+  const ghostTex = flareTex([
+    [0, 'rgba(255,255,255,0.05)'], [0.62, 'rgba(255,255,255,0.16)'],
+    [0.86, 'rgba(255,255,255,0.30)'], [0.97, 'rgba(255,255,255,0.06)'],
+    [1, 'rgba(255,255,255,0)'],
+  ], 64);
+  const flare = new Lensflare();
+  flare.addElement(new LensflareElement(glowTex, 520, 0, new THREE.Color(0xfff2d6)));
+  flare.addElement(new LensflareElement(ghostTex, 34, 0.32, new THREE.Color(0x9fd0ff)));
+  flare.addElement(new LensflareElement(ghostTex, 58, 0.52, new THREE.Color(0xffd6a8)));
+  flare.addElement(new LensflareElement(ghostTex, 26, 0.68, new THREE.Color(0xc8ffd8)));
+  flare.addElement(new LensflareElement(ghostTex, 78, 0.86, new THREE.Color(0xffc0a0)));
+  flare.addElement(new LensflareElement(ghostTex, 44, 1.0, new THREE.Color(0xa8c8ff)));
+  // parented to the sky (which rides the plane) rather than to the directional
+  // light: the light sits only 420 m away and can end up buried inside a
+  // mountain, which would occlude the flare for no reason
+  const flareAnchor = new THREE.Object3D();
+  flareAnchor.position.copy(sunDir).multiplyScalar(7600);
+  flareAnchor.add(flare);
+  sky.add(flareAnchor);
 
   // lights
   const hemi = new THREE.HemisphereLight(0xbad7f0, 0x5e6a4f, 0.85);
