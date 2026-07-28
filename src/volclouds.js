@@ -97,6 +97,22 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   aerial.sunDirection.copy(clouds.sunDirection);
   stbnTargets.push(aerial);
 
+  // EXPOSURE BRIDGE — this is what makes the whole thing usable.
+  // The library emits physical luminance and its own examples run the renderer
+  // at an exposure near 10; this scene is hand-authored for 1.15. Raising the
+  // global exposure is a dead end, because it lifts the terrain too and the
+  // island blows out to white. But these two constants scale the atmosphere's
+  // sun and sky radiance ONLY, and nothing in our scene is lit by them — our
+  // materials use their own lights. So the clouds can be brought up to meet the
+  // terrain instead of dragging the terrain up to meet them.
+  // 8 is the balance point: below it distant clouds stay pink-grey, above it
+  // the aerial inscatter scales too and the landscape starts hazing over.
+  const LUMINANCE_BOOST = 8;
+  for (const key of ['SUN_SPECTRAL_RADIANCE_TO_LUMINANCE', 'SKY_SPECTRAL_RADIANCE_TO_LUMINANCE']) {
+    const u = aerial.uniforms.get(key);
+    if (u) u.value.multiplyScalar(LUMINANCE_BOOST);
+  }
+
   // THE LINK. CloudsEffect renders the cloud buffer and announces it by
   // dispatching change events carrying atmosphereOverlay / atmosphereShadow;
   // AerialPerspectiveEffect is what actually composites them. Nothing connects
