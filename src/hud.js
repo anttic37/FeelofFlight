@@ -1,13 +1,15 @@
 import * as THREE from 'three';
 import { heightAt } from './world.js';
 import { RUNWAYS } from './runways.js';
+import { Gauges } from './gauges.js';
 
 // Minimap projection: north (-Z) is map up, east (+X) is map right — matching
 // the out-the-window world. Compass heading = atan2(fx, -fz): right turn counts up.
 const MAP_S = 280;      // backing pixels (140 css px at 2x)
 const MAP_HALF = 7500;  // meters from map center to edge (island r~7000 fits)
-const CARDINALS = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'];
 const _fwd = new THREE.Vector3();
+const _up = new THREE.Vector3();
+const _right = new THREE.Vector3();
 
 function bakeIslandMap() {
   const N = 140;
@@ -60,64 +62,51 @@ function bakeIslandMap() {
 
 export class HUD {
   constructor() {
-    this.spd = document.getElementById('spd');
-    this.alt = document.getElementById('alt');
-    this.g = document.getElementById('g');
-    this.vario = document.getElementById('vario');
-    this.hdg = document.getElementById('hdg');
-    this.hdgCard = document.getElementById('hdg-card');
+    this.gauges = new Gauges(document.getElementById('gauges'));
     this.gearChip = document.getElementById('gear-chip');
     this.brakeChip = document.getElementById('brake-chip');
     this.gearWarn = document.getElementById('gearwarn');
-    this.thrPct = document.getElementById('thr-pct');
-    this.thrBar = document.getElementById('throttle-bar');
     this.stall = document.getElementById('stall');
     this.msgEl = document.getElementById('msg');
     this.flashEl = document.getElementById('flash');
     this.flapChip = document.getElementById('flap-chip');
     this.overspd = document.getElementById('overspd');
-    this.stressTrack = document.getElementById('stress-track');
-    this.stressBar = document.getElementById('stress-bar');
     this.gvign = document.getElementById('gvign');
     this.gvignRed = document.getElementById('gvign-red');
     this.map = document.getElementById('minimap');
     this.mapCtx = this.map.getContext('2d');
     this._bake = bakeIslandMap();
     this._msgTimer = null;
-    this._varioCls = '';
     this._gearState = '';
     this._brakeOn = false;
     this._gearWarnOn = false;
     this._flapState = '';
     this._overspdOn = false;
-    this._stressVis = false;
     this._vign = 0;
     this._vignRed = 0;
     this._vignShown = -1;
     this._vignRedShown = -1;
     this._pt = 0;
+    this._att = { pitchDeg: 0, bank: 0, hdg: 0 };
   }
 
   update(phys, input) {
-    this.spd.textContent = Math.round(phys.speed * 3.6);
-    this.alt.textContent = Math.max(0, Math.round(phys.altitude));
-    this.g.textContent = phys.gLoad.toFixed(1);
-    const pct = Math.round(phys.throttle * 100);
-    this.thrPct.textContent = pct;
-    this.thrBar.style.width = pct + '%';
     this.stall.style.display = phys.stalled ? 'block' : 'none';
-
     const vy = phys.vel.y;
-    this.vario.textContent = (vy < -0.05 ? '▼' : '▲') + Math.abs(vy).toFixed(1);
-    const vc = vy > 0.5 ? 'climb' : (vy < -0.5 ? 'sink' : '');
-    if (vc !== this._varioCls) { this._varioCls = vc; this.vario.className = vc; }
 
     // north = -Z, heading increases N -> E per contract convention
     _fwd.set(0, 0, -1).applyQuaternion(phys.quat);
     const hdgRad = Math.atan2(_fwd.x, -_fwd.z);
-    const deg = (hdgRad * 180 / Math.PI + 360) % 360;
-    this.hdg.textContent = String(Math.round(deg) % 360).padStart(3, '0');
-    this.hdgCard.textContent = CARDINALS[Math.round(deg / 45) % 8];
+
+    // attitude for the artificial horizon: pitch from the nose vector, bank
+    // from where world-up falls between the wing and cabin axes
+    _up.set(0, 1, 0).applyQuaternion(phys.quat);
+    _right.set(1, 0, 0).applyQuaternion(phys.quat);
+    const att = this._att;
+    att.pitchDeg = Math.asin(Math.max(-1, Math.min(1, _fwd.y))) * 180 / Math.PI;
+    att.bank = Math.atan2(_right.y, _up.y);
+    att.hdg = hdgRad;
+    this.gauges.update(phys, input, att);
 
     const gt = phys.gearTransit;
     const gs = (gt > 0.02 && gt < 0.98) ? 'transit' : (phys.gearDown ? 'down' : 'up');
@@ -144,20 +133,14 @@ export class HUD {
       this.flapChip.textContent = fs === 0 ? 'FLAPS UP' : 'FLAPS ' + fs;
     }
 
-    // overspeed: red speed readout + pulsing banner (small hysteresis vs flicker)
+    // overspeed banner (small hysteresis vs flicker); the ASI needle and its
+    // digital window turn red on their own inside the gauge panel
     const ov = phys.overspeed ?? 0;
     const oOn = this._overspdOn ? ov > 0.12 : ov > 0.15;
     if (oOn !== this._overspdOn) {
       this._overspdOn = oOn;
       this.overspd.style.display = oOn ? 'block' : 'none';
-      this.spd.className = oOn ? 'over' : '';
     }
-
-    // airframe stress bar under the G readout
-    const st = phys.stress ?? 0;
-    const sVis = st > 0.05;
-    if (sVis !== this._stressVis) { this._stressVis = sVis; this.stressTrack.style.display = sVis ? 'block' : 'none'; }
-    if (sVis) this.stressBar.style.width = Math.min(100, st * 100).toFixed(0) + '%';
 
     this._updateVignette(phys.gLoad);
     this._drawMap(phys, hdgRad);
