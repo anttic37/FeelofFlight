@@ -4,28 +4,28 @@ import { terrainColor } from './colorcore.js';
 import { noise2 } from './noise.js';
 import * as HC from './heightcore.js'; // _wD/_wH are live let-bindings set by biomeWeights
 
-// GROUND RUSH: small props streamed in a tight radius around the plane —
-// stones, grass tufts, scrub. Speed is only felt against things close enough
-// to whip past, and the global vegetation is far too sparse and too big to do
-// that job. Nothing here is meant to be looked at; it is meant to be a blur at
-// the edge of vision when you are 10 m up.
+// GROUND RUSH: small props streamed around the plane — stones, slabs, tufts,
+// scrub, dead sticks, fallen logs. Speed is only felt against things close
+// enough to whip past, and the global vegetation is far too sparse and too big
+// to do that job. Nothing here is meant to be looked at; it is meant to be a
+// blur at the edge of vision when you are 10 m up.
 //
 // Placement is a world-aligned CELL GRID so props never pop or slide as the
 // plane turns: a cell always yields the same props. Cells are built a few per
-// frame from a queue — a full rebuild is ~1 ms of heightAt and would hitch
-// every time the plane crossed a boundary (twice a second at cruise).
+// frame from a queue — building the whole disc at once is milliseconds of
+// heightAt and would hitch every time the plane crossed a boundary.
 
-const CELL = 30;          // metres per cell
-const RADIUS = 240;       // props live within this of the plane
-const PER_CELL = 5;       // ~1000 live props: sparse enough to stay cheap, dense
-                          // enough that something is always whipping past
+const CELL = 36;          // metres per cell
+const RADIUS = 480;       // props live within this of the plane
+const PER_CELL = 6;
 // A prop does NOT appear when its cell is built — it waits until the plane is
 // inside its OWN hashed distance and then grows to size over GROW_S. Cells are
 // square and built in lockstep, so without this the whole neighbourhood snaps
 // into existence at one radius and the eye reads a moving ring of pop-in.
-const APPEAR_MIN = 0.5;   // fraction of RADIUS: nearest a prop can wait until
+// The range is deliberately wide: some props are already there at the horizon
+// of the field, others only turn up when they are almost underneath you.
+const APPEAR_MIN = 0.22;  // fraction of RADIUS a prop can wait until
 const GROW_S = 0.55;      // seconds from nothing to full size
-const MAX = 1600;         // instance budget per mesh
 const BUILD_PER_FRAME = 6;
 
 // deterministic per-cell hash, same style as clouds.js
@@ -35,29 +35,38 @@ function rnd(ix, iz, k) {
 }
 
 export function createScatter(scene) {
-  const geoRock = new THREE.DodecahedronGeometry(1, 0);
-  const geoTuft = new THREE.ConeGeometry(0.5, 1, 4);   // closed: an open cone
-  const geoBush = new THREE.IcosahedronGeometry(1, 0); // disappears edge-on
-  // white base + per-instance colour, exactly like world.js's vegetation:
-  // vertexColors:true would look for a geometry colour attribute these
-  // primitives don't have, and instanceColor tints fine without it
-  const mat = () => new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true });
-
-  const kinds = [
-    { mesh: new THREE.InstancedMesh(geoRock, mat(), MAX), n: 0 },
-    { mesh: new THREE.InstancedMesh(geoTuft, mat(), MAX), n: 0 },
-    { mesh: new THREE.InstancedMesh(geoBush, mat(), MAX), n: 0 },
+  // Per-kind instance caps sized to how often each is actually picked. The
+  // whole matrix buffer re-uploads whenever any instance moves, so an
+  // oversized cap for a rare prop costs bandwidth every frame for nothing.
+  //   anchor = how far up its own height the origin sits (keeps it on the deck)
+  //   rock   = the ground itself, greenery = plants, dead = bleached/grey
+  const KINDS = [
+    { geo: new THREE.DodecahedronGeometry(1, 0), cap: 1500, anchor: 0.30, tone: 'rock' },
+    { geo: new THREE.IcosahedronGeometry(1, 0), cap: 900, anchor: 0.32, tone: 'rock' },
+    { geo: new THREE.BoxGeometry(1, 0.3, 1.35), cap: 520, anchor: 0.16, tone: 'rock' },   // slab
+    { geo: new THREE.ConeGeometry(0.5, 1, 4), cap: 900, anchor: 0.45, tone: 'leaf' },     // tuft
+    { geo: new THREE.IcosahedronGeometry(1, 1), cap: 700, anchor: 0.35, tone: 'leaf' },   // bush
+    { geo: new THREE.ConeGeometry(0.13, 1.7, 3), cap: 380, anchor: 0.5, tone: 'dead' },   // dead stick
+    { geo: new THREE.CylinderGeometry(0.34, 0.4, 3, 6).rotateZ(Math.PI / 2), cap: 300, anchor: 0.22, tone: 'dead' }, // log
   ];
-  for (const k of kinds) {
-    k.mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    k.mesh.frustumCulled = false;   // instances move under us every frame
-    k.mesh.castShadow = false;      // hundreds of tiny shadow casters cost more than they add
-    k.mesh.receiveShadow = true;
-    k.mesh.count = 0;
-    scene.add(k.mesh);
-    k.free = [];
-    for (let i = MAX - 1; i >= 0; i--) k.free.push(i);
-  }
+  const N_KINDS = KINDS.length;
+
+  const kinds = KINDS.map(k => {
+    const mesh = new THREE.InstancedMesh(k.geo,
+      // white base + per-instance colour, exactly like world.js's vegetation:
+      // vertexColors:true would look for a geometry colour attribute these
+      // primitives don't have, and instanceColor tints fine without it
+      new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true }), k.cap);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.frustumCulled = false;  // instances move under us every frame
+    mesh.castShadow = false;     // hundreds of tiny casters cost more than they add
+    mesh.receiveShadow = true;
+    mesh.count = 0;
+    scene.add(mesh);
+    const free = [];
+    for (let i = k.cap - 1; i >= 0; i--) free.push(i);
+    return { mesh, free, anchor: k.anchor, tone: k.tone };
+  });
 
   const cells = new Map();   // key -> array of prop records
   const pending = [];
@@ -67,13 +76,32 @@ export function createScatter(scene) {
   const eul = new THREE.Euler(), col = new THREE.Color();
   const HIDE = new THREE.Matrix4().makeScale(0, 0, 0);
   const _gc = [0, 0, 0];
+  const _w = new Float64Array(N_KINDS);
 
   // ground colour under a prop, straight from the terrain palette, so a stone
-  // on red canyon rock is red and the same stone on a dune is sand-coloured
-  function groundTint(x, z, h, out) {
-    const gx = (heightAt(x + 4, z) - heightAt(x - 4, z)) / 8;
-    const gz = (heightAt(x, z + 4) - heightAt(x, z - 4)) / 8;
-    terrainColor(x, z, h, 1 / Math.sqrt(1 + gx * gx + gz * gz), out);
+  // on red canyon rock is red and the same stone on a dune is sand-coloured.
+  // Deferred until the prop actually appears — dormant props that get evicted
+  // before their distance comes up never pay for it.
+  function tintFor(p) {
+    const gx = (heightAt(p.x + 4, p.z) - heightAt(p.x - 4, p.z)) / 8;
+    const gz = (heightAt(p.x, p.z + 4) - heightAt(p.x, p.z - 4)) / 8;
+    terrainColor(p.x, p.z, p.h, 1 / Math.sqrt(1 + gx * gx + gz * gz), _gc);
+    const v = 0.76 + p.shade * 0.38;
+    const tone = kinds[p.k].tone;
+    if (tone === 'rock') {
+      const lum = (_gc[0] + _gc[1] + _gc[2]) / 3;
+      return [(_gc[0] * 0.55 + lum * 0.45) * v, (_gc[1] * 0.55 + lum * 0.45) * v, (_gc[2] * 0.55 + lum * 0.45) * v];
+    }
+    if (tone === 'dead') { // bleached driftwood/deadwood: warm, desaturated, pale
+      const lum = (_gc[0] + _gc[1] + _gc[2]) / 3;
+      return [(lum * 0.9 + 0.16) * v, (lum * 0.82 + 0.13) * v, (lum * 0.66 + 0.09) * v];
+    }
+    // greenery pulls toward foliage but keeps the ground's warmth; a few
+    // bushes flower, which is most of what breaks up a green hillside
+    const flower = p.shade > 0.88;
+    const m = 0.56;
+    const fr = flower ? 0.42 : 0.17, fg = flower ? 0.26 : 0.34, fb = flower ? 0.30 : 0.13;
+    return [(_gc[0] * (1 - m) + fr * m) * v, (_gc[1] * (1 - m) + fg * m) * v, (_gc[2] * (1 - m) + fb * m) * v];
   }
 
   // write one instance at a given growth fraction (0..1); props rise out of the
@@ -83,21 +111,21 @@ export function createScatter(scene) {
     eul.set(p.tx, p.rot, p.tz);
     quat.setFromEuler(eul);
     const sy = p.sy * e;
-    pos.set(p.x, p.h + sy * p.anchor, p.z);
-    scl.set(p.s * e, sy, p.s * e);
+    pos.set(p.x, p.h + sy * kind.anchor, p.z);
+    scl.set(p.sx * e, sy, p.sz * e);
     kind.mesh.setMatrixAt(p.idx, mtx.compose(pos, quat, scl));
     kind.mesh.instanceMatrix.needsUpdate = true;
   }
 
-  // build one cell: pick spots, reject water / runways / cliffs, choose a prop
-  // type from the biome so desert gets stones and grassland gets tufts
+  // build one cell: pick spots, reject water / runways / cliffs, weight the
+  // prop types by biome so desert gets stones and grassland gets scrub
   function buildCell(ix, iz) {
     const key = ix + ':' + iz;
     if (cells.has(key)) return;
     const slots = [];
     for (let p = 0; p < PER_CELL; p++) {
-      const x = (ix + rnd(ix, iz, p * 3 + 1)) * CELL;
-      const z = (iz + rnd(ix, iz, p * 3 + 2)) * CELL;
+      const x = (ix + rnd(ix, iz, p * 4 + 1)) * CELL;
+      const z = (iz + rnd(ix, iz, p * 4 + 2)) * CELL;
       const h = heightAt(x, z);
       if (h < 1.2) continue;                       // sea and beach wash
       // above the painted snowline (same jitter as colorcore) props read as
@@ -108,41 +136,39 @@ export function createScatter(scene) {
       const slope = Math.abs(heightAt(x + 6, z) - heightAt(x - 6, z))
                   + Math.abs(heightAt(x, z + 6) - heightAt(x, z - 6));
       if (slope > 9) continue;                     // cliffs
-      const r3 = rnd(ix, iz, p * 3 + 3);
       biomeWeights(x, z);
-      // desert leans stony, wet ground leans grassy, high ground is bare rock
-      const stony = Math.min(1, HC._wD * 1.3 + (h > 330 ? 1 : 0));
-      let ki = r3 < 0.34 + stony * 0.5 ? 0 : (r3 < 0.78 ? 1 : 2);
-      if (h > 330) ki = 0; // bare rock up high: nothing green grows on the tops
-      const s = 0.32 + rnd(ix, iz, p * 3 + 4) * (ki === 0 ? 0.6 : ki === 1 ? 0.5 : 0.85);
-      const sy = s * (ki === 1 ? 1.3 + rnd(ix, iz, p * 3 + 5) * 0.7 : 0.75 + rnd(ix, iz, p * 3 + 5) * 0.5);
-      const t = rnd(ix, iz, p * 3 + 6);
-      // TINT FROM THE GROUND: sample the terrain palette here and shade the
-      // prop from it, so stones on red canyon rock come out red and the same
-      // stone on a dune comes out sand. Rocks stay near the ground colour
-      // (a shade darker, slightly desaturated); greenery pulls toward foliage
-      // but keeps the ground's warmth so biomes still read as one palette.
-      groundTint(x, z, h, _gc);
-      const v = 0.78 + t * 0.34;
-      let cr, cg, cb;
-      if (ki === 0) {
-        const lum = (_gc[0] + _gc[1] + _gc[2]) / 3;
-        cr = (_gc[0] * 0.55 + lum * 0.45) * v;
-        cg = (_gc[1] * 0.55 + lum * 0.45) * v;
-        cb = (_gc[2] * 0.55 + lum * 0.45) * v;
-      } else {
-        const m = ki === 1 ? 0.5 : 0.62; // how far toward foliage green
-        cr = (_gc[0] * (1 - m) + 0.17 * m) * v;
-        cg = (_gc[1] * (1 - m) + 0.34 * m) * v;
-        cb = (_gc[2] * (1 - m) + 0.13 * m) * v;
-      }
-      // each prop waits for its OWN distance before appearing
-      const ad = (APPEAR_MIN + (1 - APPEAR_MIN) * rnd(ix, iz, p * 3 + 7)) * RADIUS;
+      // stony: desert and high ground. green: everything else, fading out as
+      // the ground dries or climbs. Weights, not a chain of ifs, so a spot can
+      // be a bit of both and the mix shifts gradually across a biome edge.
+      const stony = Math.min(1, HC._wD * 1.3 + Math.max(0, (h - 240) / 120));
+      const green = Math.max(0, 1 - stony);
+      const low = Math.max(0, 1 - h / 160); // logs and reeds are a lowland thing
+      _w[0] = 0.85 + stony * 1.7;
+      _w[1] = 0.55 + stony * 1.15;
+      _w[2] = 0.22 + stony * 0.75;
+      _w[3] = green * 1.6;
+      _w[4] = green * 1.0;
+      _w[5] = 0.2 + HC._wD * 0.55;
+      _w[6] = green * 0.4 * low;
+      let sum = 0;
+      for (let i = 0; i < N_KINDS; i++) sum += _w[i];
+      let pick = rnd(ix, iz, p * 4 + 3) * sum, ki = N_KINDS - 1;
+      for (let i = 0; i < N_KINDS; i++) { pick -= _w[i]; if (pick <= 0) { ki = i; break; } }
+
+      const t = rnd(ix, iz, p * 4 + 4);
+      const a = rnd(x, z, 11), b = rnd(z, x, 12), c = rnd(x, h, 13);
+      const base = 0.32 + t * (ki <= 2 ? 0.62 : ki === 3 ? 0.5 : ki === 4 ? 0.8 : ki === 5 ? 0.55 : 0.7);
+      // per-axis scale: without this every stone is a radially symmetric lump
+      const sx = base * (0.72 + a * 0.62);
+      const sz = base * (0.72 + b * 0.62);
+      const sy = base * (ki === 3 ? 1.3 + c * 0.8 : ki === 5 ? 1.1 + c * 0.7 : 0.7 + c * 0.6);
+      const ad = (APPEAR_MIN + (1 - APPEAR_MIN) * rnd(ix, iz, p * 4 + 5)) * RADIUS;
       slots.push({
-        k: ki, idx: -1, x, z, h, s, sy, rot: t * 6.283,
-        tx: rnd(x, z, 7) * 0.5 - 0.25, tz: rnd(z, x, 8) * 0.4 - 0.2,
-        anchor: ki === 1 ? 0.45 : 0.3,
-        appearD2: ad * ad, cr, cg, cb, grow: 0, alive: true,
+        k: ki, idx: -1, x, z, h, sx, sy, sz, rot: t * 6.283,
+        // logs lie down, everything else only leans a little
+        tx: ki === 6 ? rnd(x, z, 14) * 0.3 - 0.15 : rnd(x, z, 7) * 0.5 - 0.25,
+        tz: rnd(z, x, 8) * 0.4 - 0.2,
+        appearD2: ad * ad, shade: rnd(z, h, 15), grow: 0, alive: true,
       });
     }
     cells.set(key, slots);
@@ -208,7 +234,8 @@ export function createScatter(scene) {
           if (kind.free.length) {
             p.idx = kind.free.pop();
             if (p.idx + 1 > kind.mesh.count) kind.mesh.count = p.idx + 1;
-            col.setRGB(p.cr, p.cg, p.cb);
+            const rgb = tintFor(p);
+            col.setRGB(rgb[0], rgb[1], rgb[2]);
             kind.mesh.setColorAt(p.idx, col);
             if (kind.mesh.instanceColor) kind.mesh.instanceColor.needsUpdate = true;
             p.grow = 0;
@@ -238,8 +265,12 @@ export function createScatter(scene) {
 
   function stats() {
     let live = 0;
-    for (const k of kinds) live += MAX - k.free.length;
-    return { cells: cells.size, props: live, waiting: waiting.length, growing: growing.length, queued: pending.length / 2 };
+    const per = [];
+    for (let i = 0; i < kinds.length; i++) {
+      const n = KINDS[i].cap - kinds[i].free.length;
+      live += n; per.push(n);
+    }
+    return { cells: cells.size, props: live, per, waiting: waiting.length, growing: growing.length, queued: pending.length / 2 };
   }
 
   return { update, stats };
