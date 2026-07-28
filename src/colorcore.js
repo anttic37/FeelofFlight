@@ -86,11 +86,22 @@ export function terrainColor(x, z, h, normalY, out) {
   // desert flats: sunlit dune crests vs shadowed flanks, pale dry-wash beds
   const wDs = _wD / sum;
   if (wDs > 0.3 && h > 4 && steep < 0.3) {
-    const rv = duneRidge(x, z);
-    if (rv > 0.62) lerp1(cCrest, smooth(0.62, 0.95, rv) * 0.4 * wDs);
-    else lerp1(cOchre, (1 - rv) * 0.1 * wDs);
+    // Dunes only exist on ground flat enough to hold blown sand. `steep < 0.3`
+    // passes slopes up to ~40 deg, so the long parallel crest streaks were
+    // being draped straight over hillsides — they ignore the topography
+    // entirely and read as strips laid ON the terrain rather than part of it.
+    // Full strength under ~8 deg, gone by ~20 — a dune field is flat ground,
+    // and anything steeper carries the streaks across the topography.
+    const dFlat = 1 - smooth(0.010, 0.060, 1 - normalY);
+    if (dFlat > 0.02) {
+      const rv = duneRidge(x, z);
+      if (rv > 0.62) lerp1(cCrest, smooth(0.62, 0.95, rv) * 0.4 * wDs * dFlat);
+      else lerp1(cOchre, (1 - rv) * 0.1 * wDs * dFlat);
+    }
+    // wash beds are drainage — they belong in the low flat ground too, but
+    // they wind with the land instead of cutting across it, so a gentler gate
     const wm = desertWash(x, z);
-    if (wm > 0.05) lerp1(cWashBed, wm * 0.5 * wDs);
+    if (wm > 0.05) lerp1(cWashBed, wm * 0.5 * wDs * (1 - smooth(0.06, 0.2, 1 - normalY)));
   }
   // forest rocky outcrops go grey
   if (_wF / sum > 0.3) {

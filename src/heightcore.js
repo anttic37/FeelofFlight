@@ -420,18 +420,32 @@ function computeCorridors() {
 }
 computeCorridors();
 function applyCorridors(x, z, h) {
+  // ONE noise sample for all corridors: it only depends on position, and this
+  // runs inside heightAt for every vertex on the island.
+  // Wandering the lane sideways breaks the ruler-straight edges — a graded
+  // approach should read as a natural gap between hills, not a runway-length
+  // scar ruled across the terrain.
+  const warp = (noise2(x * 0.0042 + 31.7, z * 0.0042 + 12.3) - 0.5) * 78;
   for (let i = 0; i < CORRIDORS.length; i++) {
     const c = CORRIDORS[i];
     const dx = x - c.ox, dz = z - c.oz;
     const along = dx * c.ux + dz * c.uz;
     if (along < 0 || along > c.len) continue;
-    const lat = Math.abs(dx * c.uz - dz * c.ux);
+    const lat = Math.abs(dx * c.uz - dz * c.ux + warp);
     if (lat >= c.hw) continue;
     const cap = c.base + along * 0.065;
-    if (h <= cap) continue;
+    const over = h - cap;
+    if (over <= 0) continue;
+    // SOFT ONSET. `h += (cap - h)` switched on the instant h passed the cap,
+    // so the cut had a slope crease exactly along the h == cap contour — a
+    // long thin line winding across every hillside near a strip. over²/(over+6)
+    // starts with zero value AND zero slope at the contour, so the cut fades
+    // in; it costs at most ~6 m of residual clearance, inside the tolerance
+    // approachOK already allows.
+    const cut = over * over / (over + 3.5);
     // wide lateral falloff: any trimming reads as a natural saddle, not a
     // slot with walls (site selection already avoids big cuts — see siteOK)
-    h += (cap - h) * (1 - smooth(c.hw * 0.3, c.hw, lat)) * (1 - smooth(c.len - 500, c.len, along));
+    h -= cut * (1 - smooth(c.hw * 0.3, c.hw, lat)) * (1 - smooth(c.len - 500, c.len, along));
   }
   return h;
 }
