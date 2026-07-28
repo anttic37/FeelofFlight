@@ -1,11 +1,12 @@
 import * as THREE from 'three';
-import { patchAerialPerspective, SUN_DIR } from './atmosphere.js';
+import { patchAerialPerspective, SUN_DIR, buildSkyEnvironment } from './atmosphere.js';
 // Rewrites three's shared fog chunks for sun-aware aerial perspective. Runs
 // here, at the top of the body, because every material in the project is built
 // inside a factory called further down — a material compiled before this point
 // would bake in the stock flat-colour fog and silently miss the effect.
 patchAerialPerspective();
 import { createWorld, heightAt, surfaceAt } from './world.js';
+import { initGroundFX } from './groundfx.js';
 import { RUNWAYS } from './runways.js';
 import { buildPlane, updatePlaneVisual } from './crimson-kestrel.js'; // KX-1 with load-flexing wings
 import { FlightModel } from './physics.js';
@@ -31,6 +32,8 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.15;
 document.body.appendChild(renderer.domElement);
+// bake the ground's splat detail before anything builds a material that wants it
+initGroundFX(renderer);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.5, 12000);
@@ -44,6 +47,10 @@ const isle = islandInfo();
 console.log(`[flighfeel] island seed ${terrainSeed} (${isle.archetype}, ${isle.strips} strips) — revisit with ?seed=${terrainSeed}`);
 
 const world = createWorld(scene);
+// the sky becomes the ambient light source (see atmosphere.js) — after
+// createWorld, because it needs the palette the dome was built with
+buildSkyEnvironment(renderer, scene);
+scene.environmentIntensity = 0.62;
 const plane = buildPlane();
 scene.add(plane.group);
 

@@ -105,8 +105,13 @@ export function createWorld(scene) {
   flareAnchor.add(flare);
   sky.add(flareAnchor);
 
-  // lights
-  const hemi = new THREE.HemisphereLight(0xbad7f0, 0x5e6a4f, 0.85);
+  // lights. The hemisphere light is now a FLOOR under the sky environment map
+  // rather than the whole ambient term — main.js bakes the dome into
+  // scene.environment, which carries the same idea with real directional
+  // structure. Leaving hemi at its old strength on top of that just washed
+  // everything out, so it drops to filling the gap the env map is weakest at:
+  // deep creases the cube capture cannot see into.
+  const hemi = new THREE.HemisphereLight(0xbad7f0, 0x5e6a4f, 0.34);
   scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xfff4e0, 2.6);
   sun.castShadow = true;

@@ -91,6 +91,40 @@ export function patchAerialPerspective() {
 // express a sun glow at all — the mesh is far too coarse to hold one. Evaluating
 // per pixel costs nothing on a single dome and buys the halo, the horizon haze
 // and a zenith that actually deepens.
+// ---------------------------------------------------------------------------
+// SKY AS THE LIGHT SOURCE. The hemisphere light approximates "blue from above,
+// ground bounce from below" with two flat colours; the actual sky is brighter
+// toward the horizon, brighter again around the sun, and we already evaluate all
+// of that per pixel. So render our own dome into a cube map once at startup and
+// let three use it as the irradiance/specular environment. Costs one 128px cube
+// render plus a PMREM pass at load, nothing per frame.
+//
+// Captured from a FRESH dome rather than the live one: the real sky carries the
+// sun sprite and the lens flare as children, and baking a sun disc into the
+// environment would double-count the directional light that already represents
+// it. Tone mapping is disabled for the capture — the env map feeds the lighting
+// maths, which happens well before tone mapping, so a tone-mapped capture would
+// apply the curve twice.
+export function buildSkyEnvironment(renderer, scene) {
+  const tmp = new THREE.Scene();
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(1000, 24, 16), createSkyMaterial());
+  tmp.add(dome);
+  const prevTone = renderer.toneMapping;
+  renderer.toneMapping = THREE.NoToneMapping;
+  const cubeRT = new THREE.WebGLCubeRenderTarget(128, { type: THREE.HalfFloatType });
+  const cam = new THREE.CubeCamera(1, 3000, cubeRT);
+  cam.update(renderer, tmp);
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  const env = pmrem.fromCubemap(cubeRT.texture);
+  renderer.toneMapping = prevTone;
+  scene.environment = env.texture;
+  pmrem.dispose();
+  cubeRT.dispose();
+  dome.geometry.dispose();
+  dome.material.dispose();
+  return env.texture;
+}
+
 export function createSkyMaterial() {
   return new THREE.ShaderMaterial({
     side: THREE.BackSide,
