@@ -23,16 +23,24 @@ const HALF = BOX / 2;
 // w/d = half extents, h = build height, y = base altitude band.
 // base = flat-bottom puffs, lobes = billowing stacks grown on top of them
 // (how many puffs each stack ends up with follows from h — see the crown loop).
+// squash flattens every puff in the cloud (sheets, not balls); crown scales the
+// per-level taper, so a value above 1 WIDENS a stack as it climbs = anvil.
 const CLASSES = [
+  // shred: torn scraps, the smallest thing in the sky
+  { p: 0.13, w: [26, 58],   d: [22, 48],   h: [16, 34],   y: [640, 1500],  base: [2, 4],   lobes: [1, 2], squash: 0.6 },
   // fair-weather puff: small and rounded — kept low so its crown is one or two
   // fat bumps; taller made these read as a stack of coins at distance
-  { p: 0.30, w: [60, 115],  d: [50, 95],   h: [50, 85],   y: [560, 1120], base: [5, 8],   lobes: [2, 3] },
+  { p: 0.23, w: [60, 115],  d: [50, 95],   h: [50, 85],   y: [560, 1120],  base: [5, 8],   lobes: [2, 3] },
   // heap cumulus: the workhorse — wide flat base, fat crown
-  { p: 0.30, w: [135, 240], d: [105, 175], h: [130, 230], y: [480, 980],  base: [6, 9],   lobes: [3, 5] },
+  { p: 0.23, w: [135, 240], d: [105, 175], h: [130, 230], y: [480, 980],   base: [6, 9],   lobes: [3, 5] },
   // congestus tower: one or two fat stacks climbing out of a broad base
-  { p: 0.17, w: [175, 290], d: [145, 240], h: [270, 430], y: [430, 720],  base: [5, 8],   lobes: [1, 2] },
+  { p: 0.12, w: [175, 290], d: [145, 240], h: [270, 430], y: [430, 720],   base: [5, 8],   lobes: [1, 2] },
+  // anvil: the big one — climbs high and spreads out at the top
+  { p: 0.05, w: [215, 340], d: [180, 285], h: [430, 640], y: [400, 660],   base: [7, 10],  lobes: [1, 2], crown: 1.17 },
   // stratocumulus raft: long, low-relief bank spanning half a kilometre
-  { p: 0.23, w: [320, 580], d: [175, 310], h: [85, 145],  y: [700, 1320], base: [10, 15], lobes: [4, 6] },
+  { p: 0.16, w: [320, 580], d: [175, 310], h: [85, 145],  y: [700, 1320],  base: [10, 15], lobes: [4, 6] },
+  // stratus streak: a thin sheet drawn out by the wind, high and flat
+  { p: 0.08, w: [430, 820], d: [85, 165],  h: [38, 62],   y: [1150, 1950], base: [12, 18], lobes: [2, 4], squash: 0.42 },
 ];
 
 // Uniform deterministic stream. The raw hash, NOT noise2: value noise
@@ -84,6 +92,7 @@ diffuseColor.a *= mix(1.0, 0.35, fres);
       pick -= CLASSES[c].p;
     }
     const W = span(i, 1, cls.w), D = span(i, 2, cls.d), H = span(i, 3, cls.h);
+    const squash = cls.squash || 1, crown = cls.crown || 1;
     parts.length = 0;
 
     // one puff -> a scaled/translated icosphere with the height gradient baked
@@ -115,7 +124,7 @@ diffuseColor.a *= mix(1.0, 0.35, fres);
       const rr = Math.sqrt(rnd(i, 60 + b)); // sqrt => uniform over the disc
       const rx = W * (0.30 + 0.18 * rnd(i, 100 + b));
       const rz = D * (0.34 + 0.20 * rnd(i, 140 + b));
-      const ry = Math.min(rx, rz) * (0.60 + 0.28 * rnd(i, 180 + b));
+      const ry = Math.min(rx, rz) * (0.60 + 0.28 * rnd(i, 180 + b)) * squash;
       addPuff(Math.cos(a) * rr * W * 0.72, ry * (0.40 + 0.16 * rnd(i, 220 + b)), Math.sin(a) * rr * D * 0.72, rx, ry, rz);
     }
 
@@ -141,15 +150,17 @@ diffuseColor.a *= mix(1.0, 0.35, fres);
       const rT = Math.min(W * 0.42, Math.max(lobeH * 0.32, W * 0.22));
       let rx = rT * (0.86 + 0.28 * rnd(i, 460 + l));
       let rz = Math.min(D * 0.52, rT) * (0.86 + 0.28 * rnd(i, 500 + l));
-      let ry = Math.min(rx, rz) * (0.82 + 0.28 * rnd(i, 540 + l));
+      let ry = Math.min(rx, rz) * (0.82 + 0.28 * rnd(i, 540 + l)) * squash;
       let y = ry * 0.55, prevRy = ry;
       for (let k = 0; k < 12 && y + ry * 0.6 < lobeH; k++) {
         addPuff(
           lx + leanX * y + (rnd(i, 580 + l * 13 + k) - 0.5) * rx * 0.6, y,
           lz + leanZ * y + (rnd(i, 720 + l * 13 + k) - 0.5) * rz * 0.6,
           rx, ry, rz);
-        // gentle taper: 0.84^7 spikes the tip to 30% and reads as a spire
-        const taper = 0.90 + 0.06 * rnd(i, 860 + l * 13 + k);
+        // gentle taper: 0.84^7 spikes the tip to 30% and reads as a spire.
+        // crown > 1 pushes it past 1 so the stack FLARES as it climbs — the
+        // spreading head of an anvil rather than a cone.
+        const taper = (0.90 + 0.06 * rnd(i, 860 + l * 13 + k)) * crown;
         rx *= taper; rz *= taper; ry *= taper;
         y += (prevRy + ry) * 0.58;
         prevRy = ry;

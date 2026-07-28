@@ -48,15 +48,30 @@ export function createScatter(scene) {
     { geo: new THREE.IcosahedronGeometry(1, 1), cap: 700, anchor: 0.35, tone: 'leaf' },   // bush
     { geo: new THREE.ConeGeometry(0.13, 1.7, 3), cap: 380, anchor: 0.5, tone: 'dead' },   // dead stick
     { geo: new THREE.CylinderGeometry(0.34, 0.4, 3, 6).rotateZ(Math.PI / 2), cap: 300, anchor: 0.22, tone: 'dead' }, // log
+    // WINTER. Above the snowline the ground was left completely bare because
+    // grey boulders up there read as pepper specks over the white caps. The
+    // answer is not "no props", it is props the colour of the snow they sit
+    // in: wind-carved drifts, buried boulders with only a shoulder showing,
+    // and the odd wind-scoured rock. 'snow' tone keeps them near-white.
+    { geo: new THREE.IcosahedronGeometry(1, 1), cap: 420, anchor: 0.18, tone: 'snow', soft: true },  // drift mound
+    { geo: new THREE.DodecahedronGeometry(1, 0), cap: 340, anchor: 0.16, tone: 'snow', soft: true }, // buried boulder
+    { geo: new THREE.ConeGeometry(0.62, 1.5, 5), cap: 260, anchor: 0.42, tone: 'ice', soft: true },  // scoured rock
   ];
   const N_KINDS = KINDS.length;
 
   const kinds = KINDS.map(k => {
+    // `soft` = the snow set. Flat-shaded facets turned their shadow sides
+    // near-black, and on a white cap that reads as pepper again — the very
+    // thing the winter props exist to avoid. Smooth normals plus an emissive
+    // floor stands in for the subsurface scattering that keeps real snow
+    // bright on its shaded side, so the forms read by gradient alone.
     const mesh = new THREE.InstancedMesh(k.geo,
       // white base + per-instance colour, exactly like world.js's vegetation:
       // vertexColors:true would look for a geometry colour attribute these
       // primitives don't have, and instanceColor tints fine without it
-      new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true }), k.cap);
+      k.soft
+        ? new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0xc9d8e6, emissiveIntensity: 0.5 })
+        : new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true }), k.cap);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.frustumCulled = false;  // instances move under us every frame
     mesh.castShadow = false;     // hundreds of tiny casters cost more than they add
@@ -96,6 +111,16 @@ export function createScatter(scene) {
       const lum = (_gc[0] + _gc[1] + _gc[2]) / 3;
       return [(lum * 0.9 + 0.16) * v, (lum * 0.82 + 0.13) * v, (lum * 0.66 + 0.09) * v];
     }
+    // snow sits ON the snow: barely darker than the ground, with a cool cast so
+    // the form reads by shading alone. Any real contrast up here is pepper.
+    if (tone === 'snow') {
+      const w = 0.9 + p.shade * 0.12;
+      return [_gc[0] * w, _gc[1] * w, _gc[2] * (w + 0.03)];
+    }
+    if (tone === 'ice') { // wind-scoured: a shade more blue and a touch darker
+      const w = 0.8 + p.shade * 0.12;
+      return [_gc[0] * w * 0.97, _gc[1] * w, _gc[2] * (w + 0.06)];
+    }
     // greenery pulls toward foliage but keeps the ground's warmth; a few
     // bushes flower, which is most of what breaks up a green hillside
     const flower = p.shade > 0.88;
@@ -128,10 +153,13 @@ export function createScatter(scene) {
       const z = (iz + rnd(ix, iz, p * 4 + 2)) * CELL;
       const h = heightAt(x, z);
       if (h < 1.2) continue;                       // sea and beach wash
-      // above the painted snowline (same jitter as colorcore) props read as
-      // pepper specks scattered over the white caps — the exact artifact the
-      // scree boulders had, so stop scatter there entirely
-      if (h > 406 + (noise2(x * 0.006 + 3.7, z * 0.006) - 0.5) * 76) continue;
+      // the painted snowline (same jitter as colorcore) switches the whole
+      // prop set over to the winter kinds rather than ending the scatter
+      const snowline = 406 + (noise2(x * 0.006 + 3.7, z * 0.006) - 0.5) * 76;
+      const snow = h > snowline;
+      // high ground is wind-swept: thinner cover, and it stops the white caps
+      // from looking as busy as the meadows
+      if (snow && rnd(ix, iz, p * 4 + 9) > 0.55) continue;
       if (runwayInfluence(x, z) > 0.02) continue;  // keep strips and aprons clean
       const slope = Math.abs(heightAt(x + 6, z) - heightAt(x - 6, z))
                   + Math.abs(heightAt(x, z + 6) - heightAt(x, z - 6));
@@ -143,13 +171,17 @@ export function createScatter(scene) {
       const stony = Math.min(1, HC._wD * 1.3 + Math.max(0, (h - 240) / 120));
       const green = Math.max(0, 1 - stony);
       const low = Math.max(0, 1 - h / 160); // logs and reeds are a lowland thing
-      _w[0] = 0.85 + stony * 1.7;
-      _w[1] = 0.55 + stony * 1.15;
-      _w[2] = 0.22 + stony * 0.75;
-      _w[3] = green * 1.6;
-      _w[4] = green * 1.0;
-      _w[5] = 0.2 + HC._wD * 0.55;
-      _w[6] = green * 0.4 * low;
+      _w[0] = snow ? 0 : 0.85 + stony * 1.7;
+      _w[1] = snow ? 0 : 0.55 + stony * 1.15;
+      _w[2] = snow ? 0 : 0.22 + stony * 0.75;
+      _w[3] = snow ? 0 : green * 1.6;
+      _w[4] = snow ? 0 : green * 1.0;
+      _w[5] = snow ? 0 : 0.2 + HC._wD * 0.55;
+      _w[6] = snow ? 0 : green * 0.4 * low;
+      // winter set — drifts dominate, boulders and scoured rock punctuate
+      _w[7] = snow ? 1.7 : 0;
+      _w[8] = snow ? 0.85 : 0;
+      _w[9] = snow ? 0.5 : 0;
       let sum = 0;
       for (let i = 0; i < N_KINDS; i++) sum += _w[i];
       let pick = rnd(ix, iz, p * 4 + 3) * sum, ki = N_KINDS - 1;
@@ -157,11 +189,17 @@ export function createScatter(scene) {
 
       const t = rnd(ix, iz, p * 4 + 4);
       const a = rnd(x, z, 11), b = rnd(z, x, 12), c = rnd(x, h, 13);
-      const base = 0.32 + t * (ki <= 2 ? 0.62 : ki === 3 ? 0.5 : ki === 4 ? 0.8 : ki === 5 ? 0.55 : 0.7);
-      // per-axis scale: without this every stone is a radially symmetric lump
-      const sx = base * (0.72 + a * 0.62);
-      const sz = base * (0.72 + b * 0.62);
-      const sy = base * (ki === 3 ? 1.3 + c * 0.8 : ki === 5 ? 1.1 + c * 0.7 : 0.7 + c * 0.6);
+      // drifts are big and low; everything else keeps its own size band
+      const base = ki === 7 ? 1.5 + t * 2.6
+        : ki === 8 ? 0.7 + t * 1.1
+        : ki === 9 ? 0.5 + t * 0.8
+        : 0.32 + t * (ki <= 2 ? 0.62 : ki === 3 ? 0.5 : ki === 4 ? 0.8 : ki === 5 ? 0.55 : 0.7);
+      // per-axis scale: without this every stone is a radially symmetric lump.
+      // Drifts stretch hard on one axis — wind builds them in long ridges.
+      const sx = base * (ki === 7 ? 0.8 + a * 1.5 : 0.72 + a * 0.62);
+      const sz = base * (ki === 7 ? 0.8 + b * 1.5 : 0.72 + b * 0.62);
+      const sy = base * (ki === 3 ? 1.3 + c * 0.8 : ki === 5 ? 1.1 + c * 0.7
+        : ki === 7 ? 0.16 + c * 0.14 : ki === 8 ? 0.4 + c * 0.3 : 0.7 + c * 0.6);
       const ad = (APPEAR_MIN + (1 - APPEAR_MIN) * rnd(ix, iz, p * 4 + 5)) * RADIUS;
       slots.push({
         k: ki, idx: -1, x, z, h, sx, sy, sz, rot: t * 6.283,

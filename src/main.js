@@ -12,6 +12,10 @@ import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { setTerrainSeed, islandInfo } from './heightcore.js';
 import { fbm1 } from './noise.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -100,10 +104,35 @@ const startAudio = () => { sound.init(); };
 window.addEventListener('keydown', startAudio, { once: true });
 window.addEventListener('pointerdown', startAudio, { once: true });
 
+// SOFT PASS: bloom over the whole frame. Antialiasing, soft shadow filtering
+// and ACES tone mapping were already on, so the remaining softness three.js can
+// give is post-processing — a light bleed off the brightest surfaces (snow,
+// cloud tops, sun glints on water) that takes the hard digital edge off.
+// Kept subtle and threshold-gated so midtones stay crisp. ?bloom=0 disables it.
+let composer = null;
+if (new URLSearchParams(location.search).get('bloom') !== '0') {
+  // Threshold above 1: a bright daylit sky and sunlit snow sit near 1.0 in the
+  // linear buffer, so anything lower blooms the entire frame into haze and
+  // washes the greens and the sea out. Only genuine highlights should glow.
+  // At this threshold the only thing hot enough to bloom is sun glint on the
+  // water and the sun sprite itself — measured: grass, sky and snow pixels come
+  // out identical to a direct render, so the pass costs nothing in contrast.
+  const bloom = new UnrealBloomPass(
+    new THREE.Vector2(window.innerWidth, window.innerHeight), 0.19, 0.5, 1.25);
+  composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  composer.addPass(bloom);
+  // tone mapping and colour space move here: rendering into the composer's
+  // float target skips them in the material shaders by design
+  composer.addPass(new OutputPass());
+}
+const draw = () => (composer ? composer.render() : renderer.render(scene, camera));
+
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
+  if (composer) composer.setSize(window.innerWidth, window.innerHeight);
 });
 
 // debug / test hook — enough surface to step & render headlessly in tests
@@ -129,7 +158,7 @@ window.__ff = {
     world.update(phys.pos, simTime += dt);
     hud.update(phys, input);
   },
-  render() { renderer.render(scene, camera); },
+  render() { draw(); },
 };
 
 reset();
@@ -206,5 +235,5 @@ renderer.setAnimationLoop(() => {
   sound.update(dt, phys);
   hud.update(phys, input);
 
-  renderer.render(scene, camera);
+  draw();
 });
