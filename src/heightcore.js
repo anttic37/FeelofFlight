@@ -488,9 +488,14 @@ let K_RANGE = 0.00021, K_THR = 0.55;
 // terraced gully bands = smoothstepped PINGPONGED noise as a multiplier, and
 // rivers = channels along |fbm| zero-contours, cut below the water plane)
 let K_ERO = 0, ERO_SOFT = 0.6, RIV_W = 0; // 0 = off (classic island)
+// The mask's transition band is the real slope budget: the whole ridge budget
+// (up to ~850 m) is multiplied in across it, so a narrow band stands the range
+// up like a wall out of flat ground — that, not the ridge noise, was making the
+// near-vertical white flanks. Widening the band spreads the same rise over
+// roughly twice the ground and costs no peak height at all.
 function rangeMask(x, z) {
-  const r1 = smooth(K_THR, K_THR + 0.25, fbm(x * K_RANGE + 51.7, z * K_RANGE + 17.3, 2) * 0.5 + 0.5);
-  const r2 = smooth(0.58, 0.82, fbm(x * K_RANGE * 1.7 + 88.3, z * K_RANGE * 1.7 + 41.9, 2) * 0.5 + 0.5);
+  const r1 = smooth(K_THR - 0.14, K_THR + 0.44, fbm(x * K_RANGE + 51.7, z * K_RANGE + 17.3, 2) * 0.5 + 0.5);
+  const r2 = smooth(0.46, 0.90, fbm(x * K_RANGE * 1.7 + 88.3, z * K_RANGE * 1.7 + 41.9, 2) * 0.5 + 0.5);
   return Math.max(r1, r2 * 0.85);
 }
 let ARCH = 0;
@@ -527,7 +532,11 @@ function genTerrainHeight(x, z) {
     // a 3-7 m knife-edge wrinkle winding across the foothill grass — renders
     // as a dashed dark hairline at every LOD. sqrt(f²+ε²) rounds the crest
     // (~25 m radius); dividing by (1-ε) keeps full peaks at their height.
-    const rf = fbm(x * 0.00085 + 9.1, z * 0.00085 + 4.7, 4);
+    // 0.00085 put a full ridge cycle in ~1.2 km, so a 900 m crest climbed its
+    // own height in 600 m — 55 deg flanks and, once the soft ceiling flattened
+    // the top, a smooth white dome with near-vertical walls. Broadening the
+    // field spreads the SAME height over half again the distance.
+    const rf = fbm(x * 0.00055 + 9.1, z * 0.00055 + 4.7, 4);
     const rv = Math.max(0, (1 - Math.sqrt(rf * rf + 0.001225)) / 0.965); // sqrt>1 at |fbm|→1 would NaN the pow
     // smooth(0.01,0.05,·) zeroes the term EXACTLY at the skip gate: the raw
     // rmk>0.01 cutoff stepped the ground 0.5-3 m along the whole mask contour
@@ -543,6 +552,9 @@ function genTerrainHeight(x, z) {
     const en = fbm(x * 0.0008 + 61.2, z * 0.0008 + 27.8, 3) * 0.5 + 0.5;
     let ero = Math.pow(en * en * (3 - 2 * en), 1 + ERO_SOFT);
     ero = 1 - Math.abs((ero * 2) % 2 - 1); // pingpong to a banded triangle wave
+    ero = ero * ero * (3 - 2 * ero);       // round the triangle: its corners are
+                                           // slope discontinuities, and scaled by
+                                           // height they read as creased terraces
     const eStr = K_ERO * Math.min(1, h / 300);
     h *= 1 - eStr + eStr * (0.5 + 0.5 * ero);
   }

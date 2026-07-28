@@ -129,6 +129,72 @@ export function createRunways(scene) {
     socks.push({ pivot, tilt, ph: socks.length * 2.7 });
   }
 
+  // CONTROL TOWER at every strip: shaft, glazed cab, gallery, mast and a
+  // flashing aerodrome beacon. Stands off the side opposite the windsock so
+  // the two read as one little airfield rather than a cluster of poles.
+  // (No transmission material on the glazing — it triggers three's
+  // transmission pass, which renders the ocean shader black.)
+  const concrete = new THREE.MeshStandardMaterial({ color: 0xd7d2c4, ...flat });
+  const glass = new THREE.MeshStandardMaterial({ color: 0x2b4256, ...flat, roughness: 0.35, metalness: 0.25 });
+  const steel = new THREE.MeshStandardMaterial({ color: 0x8d9298, ...flat });
+  const shaftGeo = new THREE.CylinderGeometry(2.0, 2.9, 11, 8);
+  const galleryGeo = new THREE.CylinderGeometry(4.3, 4.3, 0.35, 8);
+  const glassGeo = new THREE.CylinderGeometry(3.5, 3.15, 2.6, 8);
+  const capGeo = new THREE.CylinderGeometry(3.9, 3.7, 0.5, 8);
+  const mastGeo = new THREE.CylinderGeometry(0.09, 0.09, 3.2, 4);
+  const beaconGeo = new THREE.SphereGeometry(0.55, 8, 6);
+  const beacons = [];
+  for (const r of RUNWAYS) {
+    // opposite side from the windsock, a third of the way along the strip
+    const lx = -(r.width / 2 + 34), lz = -r.length / 2 + 110;
+    const tx = r.x + lx * r._c + lz * r._s, tz = r.z - lx * r._s + lz * r._c;
+    const tower = new THREE.Group();
+    tower.position.set(tx, heightAt(tx, tz) - 0.6, tz);
+    tower.rotation.y = r.heading;
+    const shaft = new THREE.Mesh(shaftGeo, concrete);
+    shaft.position.y = 5.5;
+    const gallery = new THREE.Mesh(galleryGeo, concrete);
+    gallery.position.y = 11.1;
+    const cab = new THREE.Mesh(glassGeo, glass);
+    cab.position.y = 12.5;
+    const cap = new THREE.Mesh(capGeo, concrete);
+    cap.position.y = 14;
+    const mast = new THREE.Mesh(mastGeo, steel);
+    mast.position.y = 15.8;
+    const beacon = new THREE.Mesh(beaconGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
+    beacon.position.y = 17.6;
+    for (const m of [shaft, gallery, cab, cap]) { m.castShadow = true; m.receiveShadow = true; }
+    tower.add(shaft, gallery, cab, cap, mast, beacon);
+    group.add(tower);
+    beacons.push({ beacon, ph: beacons.length * 1.37 });
+  }
+
+  // APPROACH LIGHTS: five crossbars marching out from each threshold along the
+  // extended centreline. Placed in WORLD space and sampled onto the terrain —
+  // parented to the strip they would float or bury themselves, because the
+  // approach corridor slopes away from the graded pad.
+  const APP_BARS = 5, APP_W = 3;
+  const appLights = new THREE.InstancedMesh(lightGeo, lightMat, RUNWAYS.length * 2 * APP_BARS * APP_W);
+  let ai = 0;
+  const whiteC = new THREE.Color(0xf2f6ff);
+  s.set(1.25, 1.25, 1.25); // a touch larger than the edge lights: seen from far out
+  for (const r of RUNWAYS) {
+    for (const end of [-1, 1]) {
+      for (let bar = 1; bar <= APP_BARS; bar++) {
+        const lz = end * (r.length / 2 + bar * 58);
+        for (let k = -1; k <= 1; k++) {
+          const lx = k * 5.0;
+          const wx = r.x + lx * r._c + lz * r._s, wz = r.z - lx * r._s + lz * r._c;
+          p.set(wx, Math.max(0.2, heightAt(wx, wz)) + 0.45, wz);
+          appLights.setMatrixAt(ai, mtx.compose(p, q, s));
+          appLights.setColorAt(ai++, whiteC);
+        }
+      }
+    }
+  }
+  appLights.count = ai;
+  group.add(appLights);
+
   // hangar shed beside the primary strip only, door facing the runway
   const r0 = RUNWAYS[0];
   const hx = r0.x + -46 * r0._c + 150 * r0._s, hz = r0.z - -46 * r0._s + 150 * r0._c;
@@ -155,6 +221,15 @@ export function createRunways(scene) {
     for (const w of socks) {
       w.pivot.rotation.y = 2.3 + (noise2(time * 0.1, 3.3 + w.ph) - 0.5) * 1.1;
       w.tilt.rotation.z = 0.35 - noise2(time * 0.6, 8.1 + w.ph) * 0.25;
+    }
+    // aerodrome beacon: a rotating lamp seen from a fixed point reads as a
+    // sharp flash, not a fade — hence the narrow pulse rather than a sine
+    for (const b of beacons) {
+      const ph = (time * 0.55 + b.ph) % 1;
+      const flash = ph < 0.11 ? 1 : (ph < 0.5 && ph > 0.39 ? 0.75 : 0.06);
+      b.beacon.material.color.setRGB(flash, flash * (0.55 + 0.45 * flash), flash * 0.35);
+      const sc = 0.55 + flash * 0.75;
+      b.beacon.scale.set(sc, sc, sc);
     }
   }
   return { update };
