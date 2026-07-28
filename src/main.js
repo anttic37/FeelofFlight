@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { patchAerialPerspective } from './atmosphere.js';
+import { patchAerialPerspective, SUN_DIR } from './atmosphere.js';
 // Rewrites three's shared fog chunks for sun-aware aerial perspective. Runs
 // here, at the top of the body, because every material in the project is built
 // inside a factory called further down — a material compiled before this point
@@ -132,13 +132,30 @@ if (new URLSearchParams(location.search).get('bloom') !== '0') {
   // float target skips them in the material shaders by design
   composer.addPass(new OutputPass());
 }
-const draw = () => (composer ? composer.render() : renderer.render(scene, camera));
+// SPIKE (?vclouds=1): hand rendering to the volumetric-cloud composer instead.
+// Loaded lazily so the normal game never pays for the extra packages, and set
+// up so a failure leaves the ordinary renderer running.
+let volClouds = null;
+if (new URLSearchParams(location.search).get('vclouds') === '1') {
+  import('./volclouds.js')
+    .then(m => m.createVolumetricClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
+    .then(v => {
+      volClouds = v;
+      v.setSize(window.innerWidth, window.innerHeight);
+      world.clouds.setVisible(false); // the geometry clouds would double up
+      console.log('[flighfeel] volumetric clouds active');
+    })
+    .catch(e => console.error('[flighfeel] volumetric clouds failed:', e));
+}
+const draw = () => (volClouds ? volClouds.render()
+  : composer ? composer.render() : renderer.render(scene, camera));
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
   renderer.setSize(window.innerWidth, window.innerHeight);
   if (composer) composer.setSize(window.innerWidth, window.innerHeight);
+  if (volClouds) volClouds.setSize(window.innerWidth, window.innerHeight);
 });
 
 // debug / test hook — enough surface to step & render headlessly in tests

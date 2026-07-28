@@ -306,5 +306,5 @@ export function createWorld(scene) {
     clouds.update(time, planePos);
   }
 
-  return { update, terrain, scatter };
+  return { update, terrain, scatter, clouds };
 }

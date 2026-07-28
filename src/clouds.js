@@ -321,5 +321,8 @@ float vn3(vec3 p) {
     }
   }
 
-  return { update, puffTotal };
+  // lets the volumetric-cloud spike take over the sky without doubling up
+  const setVisible = (v) => { for (const c of clouds) c.mesh.visible = v; };
+
+  return { update, puffTotal, setVisible };
 }
