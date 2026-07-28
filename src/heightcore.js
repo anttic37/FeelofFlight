@@ -1,4 +1,4 @@
-import { fbm as fbm_, noise2 as noise2_ } from './noise.js';
+import { fbm as fbm_, noise2 as noise2_, pnoise2 as pnoise2_ } from './noise.js';
 
 // ---- terrain seed: a NEW island every run ----
 // One seed reshapes the whole island: every noise field below samples a
@@ -70,6 +70,7 @@ export function getTerrainSeed() { return SEED; }
 export function seededNoise2(x, z) { return noise2_(x + SX, z + SZ); }
 const noise2 = seededNoise2;
 const fbm = (x, z, o) => fbm_(x + SX, z + SZ, o);
+const pnoise = (x, z) => pnoise2_(x + SX, z + SZ);
 
 // The pure analytic terrain core — heightAt(x,z) and everything under it, plus
 // the runway anchors/flattening it depends on. Dependency-free (noise.js only,
@@ -183,6 +184,63 @@ const R_MASK = 7200; // radial falloff denominator; beach lands around r ~6600-7
 export function smooth(a, b, t) {
   t = Math.min(1, Math.max(0, (t - a) / (b - a)));
   return t * t * (3 - 2 * t);
+}
+
+// ---- ridged relief: what turns round fBm blobs into land ----
+// Plain fBm is isotropic. Every hill comes out a dome, slopes are convex in all
+// directions, and water has nowhere to go — the eye reads it as blobs, not
+// terrain. Ridged noise peaks along the field's ZERO CONTOURS instead, and a
+// zero contour is a connected line, so you get ridgelines that run and branch,
+// spurs coming off them, and the ground between two ridges falling into a
+// valley. That is the whole difference between our hills and a real hillside.
+//
+// Octave coupling (each octave scaled by the previous octave's ridge value) is
+// what makes ridges branch rather than corrugate: detail piles onto high ground
+// and valley floors stay smooth, which is also how erosion actually works.
+//
+// Two continuity rules, both learned the hard way here:
+//   - the abs is SMOOTHED (sqrt(n²+eps²)), because a raw abs creases along its
+//     zero contour and an unsmoothed crease aliases into a dashed hairline at
+//     coarse LOD — the same fix the mountain term already carries;
+//   - the octave weight is a smooth ramp, never a min()/clamp. A clamp puts a
+//     slope discontinuity wherever it saturates, and that discontinuity is
+//     multiplied into the next octave's amplitude, which draws exactly the kind
+//     of contour line this codebase has been bitten by twice.
+// Returns [0,1], mean ~0.34.
+// Octave count and falloff matter more than they look. Four octaves at the
+// usual 0.5 falloff lays four INDEPENDENT ridge networks over each other and
+// the long lines mash into cellular blobs — the exact isotropic look we are
+// trying to escape. Three octaves at 0.38, with the coupling nearly zeroing
+// detail off-ridge, keeps one dominant ridge network and hangs spurs off it.
+function ridgedMF(x, z, f, oct) {
+  let sum = 0, norm = 0, amp = 0.5, freq = f, w = 1;
+  for (let i = 0; i < oct; i++) {
+    const n = pnoise(x * freq, z * freq);
+    let r = 1 - Math.sqrt(n * n + 0.0016); // smoothed |n|, crest rounded ~0.04 wide
+    r *= r;                                // square: narrow the crest, widen the flanks
+    sum += r * w * amp;
+    norm += amp;
+    w = 0.1 + 0.9 * r;                     // smooth coupling, no clamp
+    amp *= 0.38; freq *= 2.07;
+  }
+  return sum / norm;
+}
+// Domain-warped ridges, so ridgelines wander like real ones instead of running
+// as straight parallel corrugations. Centred on the field's MEASURED mean
+// (0.524 over a 16 km sample at these octave settings) so that adding this layer
+// reshapes the ground without raising the whole island — get this wrong and
+// every coastline moves.
+const RIDGE_MEAN = 0.524;
+function ridgeRelief(x, z, f, oct, wa, k) {
+  const wx = x + (noise2(x * 0.00031 + k, z * 0.00031 + k * 0.7) - 0.5) * wa;
+  const wz = z + (noise2(x * 0.00031 + k * 1.9, z * 0.00031 + k * 1.3) - 0.5) * wa;
+  return ridgedMF(wx, wz, f, oct) - RIDGE_MEAN;
+}
+// Unwarped variant for the fine gully layer: at a ~180 m wavelength the warp is
+// smaller than the feature it is bending and buys nothing visible, while costing
+// two noise samples in the hottest function in the project.
+function ridgeReliefF(x, z, f, oct) {
+  return ridgedMF(x, z, f, oct) - RIDGE_MEAN;
 }
 
 // ---- mountain ridge segment MTN_A -> MTN_B ----
@@ -532,12 +590,24 @@ function genTerrainHeight(x, z) {
   // district multiplier: whole neighborhoods sit high or low (~5 km, x0.62-1.47)
   const dist = 0.62 + 0.85 * (fbm(x * 0.00013 + 15.9, z * 0.00013 + 71.2, 2) * 0.5 + 0.5);
   let h = 4 + K_ROLL * 0.62 * e * 2.4 + 260 * K_REL * Math.pow(e, 2.6) * dist;
-  // medium relief: hills riding on the base (~600 m wavelength, +-16..50 m)
-  h += fbm(x * 0.0016 + 40.4, z * 0.0016 + 12.7, 3) * (16 + 22 * (K_REL - 0.7)) * dist;
+  // medium relief: hills riding on the base (~600 m wavelength, +-16..50 m).
+  // Mostly RIDGED now — the round fBm is kept at partial weight so slopes still
+  // have some softness between the crests, but the shape of the hill comes from
+  // the ridge field. Faded out below ~25 m so the coastal flats and the beach
+  // contour stay smooth (a ridge crossing the waterline serrates it).
+  const relAmp = (16 + 22 * (K_REL - 0.7)) * dist;
+  h += fbm(x * 0.0016 + 40.4, z * 0.0016 + 12.7, 3) * relAmp * 0.45;
+  h += ridgeRelief(x, z, 0.0010, 3, 900, 6.3) * relAmp * 4.5 * smooth(2, 25, h);
   // close detail: the texture you read at low level (~160 m, grows with ground).
   // Faded out below ~9 m so it can't wiggle the waterline into sawtooth —
   // beaches and the shoreline contour stay smooth curves.
   h += fbm(x * 0.006 + 3.2, z * 0.006 + 55.8, 2) * (3.5 + Math.min(6.5, h * 0.04)) * smooth(1.5, 9, h);
+  // FINE GULLY RIDGING — the layer you actually read at low level. The big ridge
+  // field above shapes hills at a kilometre; this one puts the 80-200 m spurs and
+  // draws on their flanks, which is what stops a hillside reading as a painted
+  // dome when you are 300 m over it. Scaled with height so lowland stays gentle,
+  // and held off the shore so the waterline contour stays smooth.
+  h += ridgeReliefF(x, z, 0.0055, 2) * (22 + Math.min(40, h * 0.16)) * smooth(6, 40, h);
   // mountains: ridged fBm, only inside the range regions, favoring high base
   const rmk = rangeMask(x, z);
   if (rmk > 0.01) {
@@ -731,35 +801,68 @@ function generateIsland() {
   // 6.5% obstacle ramp (a small knick is tolerable, a hillside is not) — if it
   // doesn't, the corridor cap would carve visible trenches through the hills,
   // so such sites are rejected instead of graded
-  const approachOK = (x, z, heading, len, elev, tol) => {
+  const approachOK = (x, z, heading, len, elev, tol, hardMax = 30) => {
     for (const e of [-1, 1]) {
       const fx = -Math.sin(heading) * e, fz = -Math.cos(heading) * e;
       let bad = 0;
-      for (let d = 240; d <= 1200; d += 120) {
+      // out to 1400 to match the corridor length, not 1200: ridged terrain puts
+      // real hills at that range and the old probe never looked there
+      for (let d = 240; d <= 1400; d += 120) {
         const hh = genTerrainHeight(x + fx * (len / 2 + d), z + fz * (len / 2 + d));
-        if (hh > elev + 4 + d * 0.065 + 12) bad++;
+        const over = hh - (elev + 4 + d * 0.065);
+        // A COUNT IS NOT ENOUGH. The tolerance exists to forgive a knick, but it
+        // forgave any single sample no matter how tall, and once the terrain
+        // grew ridges that let a whole hillside sit on short final. The corridor
+        // cap cannot save it either — it fades out over its last 500 m by
+        // design, so an obstacle far down the approach is never graded away.
+        // Reject outright on anything that is a hill rather than a bump.
+        if (over > hardMax) return false;
+        if (over > 12) bad++;
       }
       if (bad > tol) return false;
     }
     return true;
   };
 
-  // 1) the coastal home strip (spawn final comes in over water toward it)
-  for (let k = 0; k < 60; k++) {
-    const a = R1(130) * TAU + k * 2.39996;
-    const rad = RM_BASE * shapeS(a) * 0.84;
-    const x = Math.sin(a) * rad, z = Math.cos(a) * rad;
-    const heading = Math.atan2(x, z) + jit(131 + k, 0.2);
-    const hRaw = genTerrainHeight(x, z);
-    if (hRaw < 6 || hRaw > 48) continue; // rolling ground raised the shore band
-    if (!siteOK(x, z, heading, 560, 48)) continue;
-    if (!approachOK(x, z, heading, 560, hRaw, 1)) continue; // inland final must be clear too
-    pushStrip(pickName('coast', used), x, z, heading, Math.round(hRaw), 520 + Math.round(R1(132) * 120), 26);
-    break;
-  }
-  if (RUNWAYS.length === 0) { // shouldn't happen; belt-and-braces coastal fallback
-    const a = R1(130) * TAU, rad = RM_BASE * shapeS(a) * 0.84;
-    pushStrip('Bay', Math.sin(a) * rad, Math.cos(a) * rad, Math.atan2(Math.sin(a) * rad, Math.cos(a) * rad), 12, 520, 26);
+  // 1) the coastal home strip (spawn final comes in over water toward it).
+  // The island MUST end up with one, so this cannot just filter — it scores.
+  // The old version took the first site that passed and, failing that, dropped a
+  // strip at an arbitrary bearing with no checks at all. That fallback was
+  // harmless while it almost never fired; the moment the terrain grew ridges and
+  // the approach test got stricter it started firing regularly, and an unchecked
+  // placement is exactly how you get a 200 m hill on short final. Now the worst
+  // case is the least-bad real candidate instead of a random one.
+  {
+    let best = null, bestOver = 1e9;
+    for (let k = 0; k < 60; k++) {
+      const a = R1(130) * TAU + k * 2.39996;
+      const rad = RM_BASE * shapeS(a) * 0.84;
+      const x = Math.sin(a) * rad, z = Math.cos(a) * rad;
+      const heading = Math.atan2(x, z) + jit(131 + k, 0.2);
+      const hRaw = genTerrainHeight(x, z);
+      if (hRaw < 6 || hRaw > 48) continue; // rolling ground raised the shore band
+      if (!siteOK(x, z, heading, 560, 48)) continue;
+      // worst obstruction above the 6.5% ramp along either final
+      let over = 0;
+      for (const e of [-1, 1]) {
+        const fx = -Math.sin(heading) * e, fz = -Math.cos(heading) * e;
+        for (let d = 240; d <= 1400; d += 120) {
+          const hh = genTerrainHeight(x + fx * (280 + d), z + fz * (280 + d));
+          const o = hh - (hRaw + 4 + d * 0.065);
+          if (o > over) over = o;
+        }
+      }
+      if (over < bestOver) { bestOver = over; best = { x, z, heading, hRaw }; }
+      if (over <= 12) break; // clear enough — stop looking
+    }
+    if (best) {
+      pushStrip(pickName('coast', used), best.x, best.z, best.heading,
+        Math.round(best.hRaw), 520 + Math.round(R1(132) * 120), 26);
+    } else { // no shore band at all on this island (all cliff or all sea)
+      const a = R1(130) * TAU, rad = RM_BASE * shapeS(a) * 0.84;
+      const x = Math.sin(a) * rad, z = Math.cos(a) * rad;
+      pushStrip('Bay', x, z, Math.atan2(x, z), 12, 520, 26);
+    }
   }
 
   // 2) a high shelf near the summit, when the island grew real mountains —
@@ -775,7 +878,7 @@ function generateIsland() {
       const hh = genTerrainHeight(hx, hz);
       if (hh < 40) continue;
       const heading = b + Math.PI / 2 + jit(148 + k, 0.2);
-      if (!approachOK(hx, hz, heading, 340, hh, 3)) continue;
+      if (!approachOK(hx, hz, heading, 340, hh, 3, 55)) continue; // a shelf is expected to be tight
       pushStrip(pickName('high', used), hx, hz, heading, Math.round(hh), 340, 20);
       break;
     }
@@ -794,7 +897,10 @@ function generateIsland() {
       if (!farFromStrips(p.x, p.z)) continue;
       if (!siteOK(p.x, p.z, heading, len, maxDev)) continue;
       const hRaw = genTerrainHeight(p.x, p.z);
-      if (!approachOK(p.x, p.z, heading, len, hRaw, 1)) continue; // both finals need space
+      // both finals need space. The first pass insists on genuinely clear
+      // approaches; the second accepts a rougher one rather than leave the
+      // island with too few strips to fly between.
+      if (!approachOK(p.x, p.z, heading, len, hRaw, 1, maxDev === 30 ? 30 : 55)) continue;
       biomeWeightsGen(p.x, p.z);
       const pool = hRaw > 260 ? 'high' : _wD > 0.45 ? 'desert' : _wF > 0.45 ? 'forest' : 'open';
       pushStrip(pickName(pool, used), p.x, p.z, heading, Math.round(hRaw), len, 20 + Math.round(((R1(154) + tries * 0.29) % 1) * 10));
@@ -893,12 +999,20 @@ function baseHeight(x, z) {
   if (mSh > 0.01) {
     const rx = x + (noise2(x * 0.00085 + 21.4, z * 0.00085 + 3.3) - 0.5) * 640;
     const rz = z + (noise2(x * 0.00085 + 7.9, z * 0.00085 + 15.2) - 0.5) * 640;
-    h += fbm(rx * 0.00135 + 4.7, rz * 0.00135 + 8.3, 3) * 40 * K_REL * (1 - 0.5 * _wM) * mSh;
+    // Same split as the generated path: the round layer at partial weight for
+    // softness, the ridge field carrying the shape. This is what gives the
+    // lowland hills crests and spurs instead of leaving them as domes.
+    const relW = 40 * K_REL * (1 - 0.5 * _wM) * mSh;
+    h += fbm(rx * 0.00135 + 4.7, rz * 0.00135 + 8.3, 3) * relW * 0.45;
+    h += ridgeRelief(x, z, 0.0012, 3, 760, 2.7) * relW * 4.5 * smooth(2, 25, h);
     // seeded broad swells (~2.4 km wavelength): whole districts rise into
     // uplands or sink toward the sea — can pool inland lakes in deep dips.
     // Zero on the classic island; damped in the mountains (already tall).
     if (K_SWELL > 0) h += fbm(x * 0.00042 + 31.9, z * 0.00042 + 18.4, 2) * 34 * K_SWELL * (1 - 0.55 * _wM) * mSh;
     h += fbm(x * 0.0105 + 2.9, z * 0.0105 + 5.7, 2) * 7 * mSh;
+    // fine gully ridging (see the generated path): hillside spurs and draws at
+    // 80-200 m, the scale low-level flight actually reads
+    h += ridgeReliefF(x, z, 0.0055, 2) * (22 + Math.min(40, h * 0.16)) * smooth(6, 40, h) * mSh;
     h += smooth(0.7, 2.2, h) * (1 - smooth(3.6, 6.5, h)) * (1.9 + noise2(x * 0.01 + 4.4, z * 0.01 + 0.8) * 1.4);
     // per-biome micro-detail — wavelengths only the 5 m tiled mesh can show
     // (the 31 m static grid aliased everything under ~60 m, so this layer was

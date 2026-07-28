@@ -14,6 +14,7 @@ export const uGroundTime = { value: 0 };
 const NOISE_GLSL = `
 uniform float uGroundTime;
 varying vec3 vGWPos;
+varying vec3 vGWNrm;
 float gnoise(vec2 p) {
   vec2 i = floor(p), f = fract(p);
   f = f * f * (3.0 - 2.0 * f);
@@ -45,16 +46,50 @@ const DETAIL_GLSL = `
   diffuseColor.rgb *= 1.0 + vec3(gm * 1.07, gm, gm * 0.93);
 }`;
 
-export function injectGroundFX(material, { detail = true, clouds = true } = {}) {
+// SLOPE MATERIALS, per pixel. colorcore bakes the same idea into the vertex
+// colours, but vertices are 5-40 m apart, so up close the bands are smooth
+// gradients with no tooth. This adds the break-up: rock and soil grain that
+// appears where the ground is steep and disappears where it is flat, at a
+// scale the mesh cannot carry.
+//
+// The world normal comes from a varying rather than dFdx(vGWPos), because the
+// terrain material is flatShading — derivatives would give the facet normal and
+// the materials would then pop facet by facet. The interpolated vertex normal
+// is the analytic ground normal, which is what we actually want to shade by.
+const SLOPE_GLSL = `
+{
+  float gsl = 1.0 - clamp(vGWNrm.y, 0.0, 1.0);
+  float gd2 = length(vViewPosition);
+  float gfade = 1.0 - smoothstep(600.0, 3000.0, gd2);
+  if (gfade > 0.001 && vGWPos.y > 3.0) {
+    vec2 gr = vGWPos.xz;
+    // grain that follows the fall line: stretched across slope, tight down it,
+    // so it reads as run-off streaking rather than as a sprinkled texture
+    float gn = gnoise(gr * 0.42 + 11.3) * 0.6 + gnoise(gr * 1.7 + 4.1) * 0.4;
+    float gband = smoothstep(0.05, 0.30, gsl) * gfade;
+    // soil and scree showing through the turf on the flanks
+    diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(1.20, 1.06, 0.84),
+                           gband * smoothstep(0.35, 0.85, gn) * 0.75);
+    // darker rock in the shaded creases of steeper ground
+    float grock = smoothstep(0.22, 0.50, gsl) * gfade;
+    diffuseColor.rgb = mix(diffuseColor.rgb, diffuseColor.rgb * vec3(0.80, 0.80, 0.83),
+                           grock * smoothstep(0.62, 0.18, gn) * 0.7);
+  }
+}`;
+
+export function injectGroundFX(material, { detail = true, clouds = true, slope = detail } = {}) {
   material.onBeforeCompile = (shader) => {
     shader.uniforms.uGroundTime = uGroundTime;
     shader.vertexShader = shader.vertexShader
-      .replace('#include <common>', '#include <common>\nvarying vec3 vGWPos;')
+      .replace('#include <common>', '#include <common>\nvarying vec3 vGWPos;\nvarying vec3 vGWNrm;')
+      .replace('#include <beginnormal_vertex>',
+        '#include <beginnormal_vertex>\nvGWNrm = normalize(mat3(modelMatrix) * objectNormal);')
       .replace('#include <begin_vertex>',
         '#include <begin_vertex>\nvGWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', '#include <common>' + NOISE_GLSL)
       .replace('#include <color_fragment>',
-        '#include <color_fragment>' + (detail ? DETAIL_GLSL : '') + (clouds ? CLOUD_GLSL : ''));
+        '#include <color_fragment>' + (detail ? DETAIL_GLSL : '') + (slope ? SLOPE_GLSL : '')
+        + (clouds ? CLOUD_GLSL : ''));
   };
 }

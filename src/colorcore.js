@@ -72,8 +72,34 @@ export function terrainColor(x, z, h, normalY, out) {
   if (_wF > 0.004) { set2(cForL); lerp2(cForD, 0.3 + patch * 0.6); addC2(_wF); }
   if (_wM > 0.004) { set2(cMtnLow); lerp2(cRock, smooth(90, 300, h)); lerp2(cRockD, jit * 0.4); addC2(_wM); }
   _r = ar / sum; _g = ag / sum; _b = ab / sum;
+  // MOISTURE. One low-frequency field so whole districts share a character
+  // rather than the tone flickering hill by hill, gated by height: uplands are
+  // exposed and run dry and olive, sheltered low ground stays green. Without
+  // this the island is a single saturated green from the beach to the snowline,
+  // which is the other half of why it reads as painted rather than grown.
+  const dry = smooth(0.40, 0.70, noise2(x * 0.00045 + 61.3, z * 0.00045 + 22.9)) * smooth(70, 430, h);
+  if (dry > 0.01) lerp1(cSage, dry * 0.36);
+  // damp valley floors — low AND flat, where water would actually collect
+  const damp = (1 - smooth(0.008, 0.06, 1 - normalY)) * (1 - smooth(30, 150, h));
+  if (damp > 0.01) lerp1(cGrassD, damp * 0.28);
+  // SLOPE IS THE MATERIAL. 1 - normalY is 0.015 at 10 deg, 0.13 at 30, 0.29 at
+  // 45 — so the old rock ramp (0.28 -> 0.55) only ever fired above ~44 deg, and
+  // every gentler face on the island, which is nearly all of it, came out one
+  // flat green. Real hillsides grade: grass holds the flats, thins to dry scrub
+  // and soil where the slope steepens, then breaks to scree and bare rock.
+  // Three overlapping bands, each a smoothstep of slope, gets that for free —
+  // no extra sampling, and it reads at every distance because it is baked into
+  // the vertex colour rather than a near-field shader trick.
+  const steep = smooth(0.20, 0.46, 1 - normalY);   // ~36 deg -> ~56 deg: bare rock
+  const midSl = smooth(0.02, 0.17, 1 - normalY) * (1 - steep); // ~11 -> ~34 deg
+  if (midSl > 0.01 && h > 3) {
+    // dry soil and thinning scrub on the flanks. Warmer and less saturated than
+    // the grass, so a hillside separates from the valley floor by tone as well
+    // as by shading — that separation is most of what reads as "terrain".
+    set2(cSage); lerp2(cDirt, 0.28 + jit * 0.44);
+    lerp12(midSl * 0.5);
+  }
   // exposed rock on steep faces; desert cliffs get height-banded strata (mesas)
-  const steep = smooth(0.28, 0.55, 1 - normalY);
   if (steep > 0 && h > 2) {
     set2(cRock); lerp2(cRockD, jit * 0.7);
     if (_wD / sum > 0.45) {
