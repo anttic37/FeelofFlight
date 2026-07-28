@@ -70,10 +70,19 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // cloud comes out the same size. 250 brings the blobs down to something like
   // real cumulus spacing. Much higher and the coverage field averages out into
   // permanent overcast, plus the raymarch starts aliasing.
-  clouds.coverage = 0.28;
+  clouds.coverage = 0.34;
   clouds.localWeatherRepeat.set(250, 250);
   clouds.localWeatherVelocity.set(0.00008, 0);
   clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
+
+  // CLOUD SHAPE — this is what stops them looking like carved boxes. The shape
+  // noise that erodes the coverage volume into lobes defaults to a 3333 m
+  // wavelength (repeat 0.0003), which is WIDER THAN A WHOLE CLOUD: it barely
+  // varies across one, so nothing carves the sides and you get a slab with a
+  // flat top and vertical walls. At 833 m there are several lobes per cloud and
+  // they read as cauliflower bumps. Do not go much finer — by 333 m the noise
+  // eats the cloud faster than it shapes it and they come apart into spray.
+  clouds.shapeRepeat.setScalar(0.0012);
 
   // RAYMARCH RANGE — this is what makes the distant clouds hold together.
   // The stock march is sized for a geospatial viewer looking at weather 100+ km
@@ -122,28 +131,35 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // comes from. Two of them ride the same r channel on purpose: the strongest
   // cells of a field are exactly the ones that build deepest.
   //
-  // Keep the depths within reach of the blob widths. A weather blob is a few km
-  // across but often ribbon-shaped, and extruding a ribbon far enough vertically
-  // stops reading as a cloud and starts reading as a curtain — 1700 m tall was
-  // well over the line. Tops here run 1000/1320/1620 m off a 620 m base, which
-  // is a visible spread without any of them turning into a wall.
+  // Keep the depths WELL under the blob widths. Real fair-weather cumulus are
+  // far wider than they are deep — flat-bottomed lozenges with bumpy tops — and
+  // a weather blob here is a few km across, so depths of a few hundred metres
+  // are what read as cloud. Push a ribbon-shaped blob up past a kilometre and it
+  // stops being a cloud and becomes a curtain. Tops run 880/1040/1240 m off a
+  // 620 m base: enough spread to see, flat enough to look right.
+  //
+  // shapeDetailAmount is held low (0.4). The fine erosion noise is near the
+  // ray-step frequency, so at full strength it aliases into ribs on anything
+  // seen edge-on at distance — and the big smooth lumps are what actually read
+  // as cloud anyway. The bumps come from shapeRepeat above, not from detail.
   const LAYERS = [
     // the general population — small to medium
-    { channel: 'r', altitude: 620, height: 380, densityScale: 0.40,
-      weatherExponent: 1.0, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6, shadow: true },
-    // the strongest cells of that same field, climbing further
-    { channel: 'r', altitude: 620, height: 700, densityScale: 0.46,
-      weatherExponent: 2.2, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35, shadow: true,
-      profile: [0, 0, -0.6, 1.0] },
-    // a decorrelated set of big ones. The stock density profile ramps UP with
-    // height (0.25 + 0.75h), so density peaks exactly where the layer ceiling
-    // cuts it off — that gives every cloud a flat sliced top, and on a deep
-    // layer it turns marginal cells into thin vertical spikes, a sky full of
-    // spray plumes. Tapering the other way keeps the mass low, so only strong
+    { channel: 'r', altitude: 620, height: 260, densityScale: 0.46,
+      weatherExponent: 1.0, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6,
+      shapeDetailAmount: 0.4, shadow: true },
+    // the strongest cells of that same field, building a little deeper
+    { channel: 'r', altitude: 620, height: 420, densityScale: 0.50,
+      weatherExponent: 2.2, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
+      shapeDetailAmount: 0.4, shadow: true, profile: [0, 0, -0.5, 1.0] },
+    // a decorrelated set of the biggest ones. The stock density profile ramps UP
+    // with height (0.25 + 0.75h), so density peaks exactly where the layer
+    // ceiling cuts it off — that gives every cloud a flat sliced top, and on a
+    // deep layer it turns marginal cells into thin vertical spikes, a sky full
+    // of spray plumes. Tapering the other way keeps the mass low, so only strong
     // cores climb and the tops end where the cloud ends.
-    { channel: 'g', altitude: 620, height: 1000, densityScale: 0.5,
-      weatherExponent: 1.6, shapeAlteringBias: 0.3, coverageFilterWidth: 0.3, shadow: true,
-      profile: [0, 0, -0.7, 1.0] },
+    { channel: 'g', altitude: 620, height: 620, densityScale: 0.54,
+      weatherExponent: 1.6, shapeAlteringBias: 0.3, coverageFilterWidth: 0.3,
+      shapeDetailAmount: 0.4, shadow: true, profile: [0, 0, -0.6, 1.0] },
     // thin high veil, for something to fly under and to give the sky depth
     { channel: 'b', altitude: 4200, height: 600, densityScale: 0.16,
       weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.7, shadow: false,
