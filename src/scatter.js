@@ -35,27 +35,30 @@ function rnd(ix, iz, k) {
 }
 
 export function createScatter(scene) {
-  // Per-kind instance caps sized to how often each is actually picked. The
-  // whole matrix buffer re-uploads whenever any instance moves, so an
-  // oversized cap for a rare prop costs bandwidth every frame for nothing.
+  // Per-kind instance caps: MEASURED peaks plus ~40% headroom, not guesses.
+  // The whole matrix buffer re-uploads whenever any instance of a kind moves,
+  // so slack costs bandwidth every frame for nothing — and a cap set too low
+  // silently starves that prop (drifts sat pinned at exactly their old 420).
+  // Peaks in play: rockA 611, rockB 375, slab 195, tuft 530, bush 311,
+  // stick 136, log 81, drift >420 (capped out), boulder 195, scoured 114.
   //   anchor = how far up its own height the origin sits (keeps it on the deck)
   //   rock   = the ground itself, greenery = plants, dead = bleached/grey
   const KINDS = [
-    { geo: new THREE.DodecahedronGeometry(1, 0), cap: 1500, anchor: 0.30, tone: 'rock' },
-    { geo: new THREE.IcosahedronGeometry(1, 0), cap: 900, anchor: 0.32, tone: 'rock' },
-    { geo: new THREE.BoxGeometry(1, 0.3, 1.35), cap: 520, anchor: 0.16, tone: 'rock' },   // slab
-    { geo: new THREE.ConeGeometry(0.5, 1, 4), cap: 900, anchor: 0.45, tone: 'leaf' },     // tuft
-    { geo: new THREE.IcosahedronGeometry(1, 1), cap: 700, anchor: 0.35, tone: 'leaf' },   // bush
-    { geo: new THREE.ConeGeometry(0.13, 1.7, 3), cap: 380, anchor: 0.5, tone: 'dead' },   // dead stick
-    { geo: new THREE.CylinderGeometry(0.34, 0.4, 3, 6).rotateZ(Math.PI / 2), cap: 300, anchor: 0.22, tone: 'dead' }, // log
+    { geo: new THREE.DodecahedronGeometry(1, 0), cap: 880, anchor: 0.30, tone: 'rock' },
+    { geo: new THREE.IcosahedronGeometry(1, 0), cap: 550, anchor: 0.32, tone: 'rock' },
+    { geo: new THREE.BoxGeometry(1, 0.3, 1.35), cap: 300, anchor: 0.16, tone: 'rock' },   // slab
+    { geo: new THREE.ConeGeometry(0.5, 1, 4), cap: 780, anchor: 0.45, tone: 'leaf' },     // tuft
+    { geo: new THREE.IcosahedronGeometry(1, 1), cap: 470, anchor: 0.35, tone: 'leaf' },   // bush
+    { geo: new THREE.ConeGeometry(0.13, 1.7, 3), cap: 240, anchor: 0.5, tone: 'dead' },   // dead stick
+    { geo: new THREE.CylinderGeometry(0.34, 0.4, 3, 6).rotateZ(Math.PI / 2), cap: 170, anchor: 0.22, tone: 'dead' }, // log
     // WINTER. Above the snowline the ground was left completely bare because
     // grey boulders up there read as pepper specks over the white caps. The
     // answer is not "no props", it is props the colour of the snow they sit
     // in: wind-carved drifts, buried boulders with only a shoulder showing,
     // and the odd wind-scoured rock. 'snow' tone keeps them near-white.
-    { geo: new THREE.IcosahedronGeometry(1, 1), cap: 420, anchor: 0.18, tone: 'snow', soft: true },  // drift mound
+    { geo: new THREE.IcosahedronGeometry(1, 1), cap: 760, anchor: 0.18, tone: 'snow', soft: true },  // drift mound
     { geo: new THREE.DodecahedronGeometry(1, 0), cap: 340, anchor: 0.16, tone: 'snow', soft: true }, // buried boulder
-    { geo: new THREE.ConeGeometry(0.62, 1.5, 5), cap: 260, anchor: 0.42, tone: 'ice', soft: true },  // scoured rock
+    { geo: new THREE.ConeGeometry(0.62, 1.5, 5), cap: 240, anchor: 0.42, tone: 'ice', soft: true },  // scoured rock
   ];
   const N_KINDS = KINDS.length;
 
@@ -149,8 +152,12 @@ export function createScatter(scene) {
     if (cells.has(key)) return;
     const slots = [];
     for (let p = 0; p < PER_CELL; p++) {
-      const x = (ix + rnd(ix, iz, p * 4 + 1)) * CELL;
-      const z = (iz + rnd(ix, iz, p * 4 + 2)) * CELL;
+      // Each prop's rolls live in their OWN slice of the key space. With a
+      // stride of 4 the keys overlapped: prop p's appear-distance key (p*4+5)
+      // was prop p+1's x-offset key, so how far out a prop appeared was locked
+      // to where the next one sat in the cell. Stride 8 leaves room for six.
+      const x = (ix + rnd(ix, iz, p * 8 + 1)) * CELL;
+      const z = (iz + rnd(ix, iz, p * 8 + 2)) * CELL;
       const h = heightAt(x, z);
       if (h < 1.2) continue;                       // sea and beach wash
       // the painted snowline (same jitter as colorcore) switches the whole
@@ -159,7 +166,7 @@ export function createScatter(scene) {
       const snow = h > snowline;
       // high ground is wind-swept: thinner cover, and it stops the white caps
       // from looking as busy as the meadows
-      if (snow && rnd(ix, iz, p * 4 + 9) > 0.55) continue;
+      if (snow && rnd(ix, iz, p * 8 + 6) > 0.55) continue;
       if (runwayInfluence(x, z) > 0.02) continue;  // keep strips and aprons clean
       const slope = Math.abs(heightAt(x + 6, z) - heightAt(x - 6, z))
                   + Math.abs(heightAt(x, z + 6) - heightAt(x, z - 6));
@@ -184,10 +191,10 @@ export function createScatter(scene) {
       _w[9] = snow ? 0.5 : 0;
       let sum = 0;
       for (let i = 0; i < N_KINDS; i++) sum += _w[i];
-      let pick = rnd(ix, iz, p * 4 + 3) * sum, ki = N_KINDS - 1;
+      let pick = rnd(ix, iz, p * 8 + 3) * sum, ki = N_KINDS - 1;
       for (let i = 0; i < N_KINDS; i++) { pick -= _w[i]; if (pick <= 0) { ki = i; break; } }
 
-      const t = rnd(ix, iz, p * 4 + 4);
+      const t = rnd(ix, iz, p * 8 + 4);
       const a = rnd(x, z, 11), b = rnd(z, x, 12), c = rnd(x, h, 13);
       // drifts are big and low; everything else keeps its own size band
       const base = ki === 7 ? 1.5 + t * 2.6
@@ -200,7 +207,7 @@ export function createScatter(scene) {
       const sz = base * (ki === 7 ? 0.8 + b * 1.5 : 0.72 + b * 0.62);
       const sy = base * (ki === 3 ? 1.3 + c * 0.8 : ki === 5 ? 1.1 + c * 0.7
         : ki === 7 ? 0.16 + c * 0.14 : ki === 8 ? 0.4 + c * 0.3 : 0.7 + c * 0.6);
-      const ad = (APPEAR_MIN + (1 - APPEAR_MIN) * rnd(ix, iz, p * 4 + 5)) * RADIUS;
+      const ad = (APPEAR_MIN + (1 - APPEAR_MIN) * rnd(ix, iz, p * 8 + 5)) * RADIUS;
       slots.push({
         k: ki, idx: -1, x, z, h, sx, sy, sz, rot: t * 6.283,
         // logs lie down, everything else only leans a little
@@ -230,10 +237,20 @@ export function createScatter(scene) {
   }
 
   let lastIx = NaN, lastIz = NaN, lastT = 0;
+  let lastPX = NaN, lastPZ = NaN, snapFrames = 0;
+  const JUMP2 = 400 * 400; // a reset or T-spawn moves far further than a frame of flight
 
   function update(planePos, time = 0) {
     const dt = Math.min(0.1, Math.max(0, time - lastT));
     lastT = time;
+    // A reset or T-spawn refills the whole disc at once, and growing all of it
+    // meant the entire landscape visibly inflated out of the ground every time
+    // you respawned (measured: 550+ props mid-grow). After a jump, props that
+    // come due arrive already full size until the backlog is worked off.
+    const jdx = planePos.x - lastPX, jdz = planePos.z - lastPZ;
+    if (!Number.isFinite(lastPX) || jdx * jdx + jdz * jdz > JUMP2) snapFrames = 150;
+    else if (snapFrames > 0) snapFrames--;
+    lastPX = planePos.x; lastPZ = planePos.z;
     const cx = Math.floor(planePos.x / CELL), cz = Math.floor(planePos.z / CELL);
     if (cx !== lastIx || cz !== lastIz) {
       lastIx = cx; lastIz = cz;
@@ -276,9 +293,14 @@ export function createScatter(scene) {
             col.setRGB(rgb[0], rgb[1], rgb[2]);
             kind.mesh.setColorAt(p.idx, col);
             if (kind.mesh.instanceColor) kind.mesh.instanceColor.needsUpdate = true;
-            p.grow = 0;
-            writeProp(p, 0.001);
-            growing.push(p);
+            if (snapFrames > 0) {          // refilling after a jump: no grow-in
+              p.grow = 1;
+              writeProp(p, 1);
+            } else {
+              p.grow = 0;
+              writeProp(p, 0.001);
+              growing.push(p);
+            }
             take = true;
           }
         }
