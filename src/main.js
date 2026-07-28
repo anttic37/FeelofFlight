@@ -11,6 +11,7 @@ import { SoundFX } from './sound.js';
 import { Input } from './input.js';
 import { HUD } from './hud.js';
 import { setTerrainSeed, islandInfo } from './heightcore.js';
+import { fbm1 } from './noise.js';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -55,6 +56,11 @@ function syncPlaneToPhysics() {
 function updateWingFlex(dt) {
   const target = Math.max(-1, Math.min(1, (phys.gLoad - 1) / 2.5));
   input.wingFlexSm += (target - input.wingFlexSm) * Math.min(1, dt * 5);
+  // pre-stall shudder: the wings visibly rattle as the margin closes, so the
+  // warning is seen as well as heard — added AFTER the smoothing so it stays
+  // fast and ragged instead of being averaged away
+  const sm = phys.stallMargin || 0;
+  if (sm > 0.02) input.wingFlexSm += fbm1(phys.time * 13.7, 17) * sm * sm * 0.5;
 }
 
 function reset(message) {

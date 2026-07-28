@@ -79,6 +79,34 @@ export class SoundFX {
     this.creakGain.connect(this.master);
     this._creakPrev = 0;
 
+    // pre-stall burble: separated air off the wing root thumping the tail —
+    // a low, ragged rush that rides in over the last few degrees before the
+    // break. Same noise source, its own lowpass so it sits under the wind.
+    this.burbleFilter = ctx.createBiquadFilter();
+    this.burbleFilter.type = 'lowpass';
+    this.burbleFilter.frequency.value = 320;
+    this.burbleFilter.Q.value = 1.6;
+    this.burbleGain = ctx.createGain();
+    this.burbleGain.gain.value = 0;
+    src.connect(this.burbleFilter);
+    this.burbleFilter.connect(this.burbleGain);
+    this.burbleGain.connect(this.master);
+
+    // stall horn: the reed warner every light aircraft has. Square wave through
+    // a gentle lowpass so it reads as a cheap buzzer, not a synth tone.
+    this.hornOsc = ctx.createOscillator();
+    this.hornOsc.type = 'square';
+    this.hornOsc.frequency.value = 840;
+    this.hornFilter = ctx.createBiquadFilter();
+    this.hornFilter.type = 'lowpass';
+    this.hornFilter.frequency.value = 2400;
+    this.hornGain = ctx.createGain();
+    this.hornGain.gain.value = 0;
+    this.hornOsc.connect(this.hornFilter);
+    this.hornFilter.connect(this.hornGain);
+    this.hornGain.connect(this.master);
+    this.hornOsc.start();
+
     // brake squeal: narrow bandpass path, driven only via setBrake()
     this.squealFilter = ctx.createBiquadFilter();
     this.squealFilter.type = 'bandpass';
@@ -133,6 +161,17 @@ export class SoundFX {
     const roll = phys.grounded ? Math.min(0.4, Math.pow(spd / 30, 1.4) * 0.34) : 0;
     this.rumbleGain.gain.setTargetAtTime(this.muted ? 0 : roll, t, 0.09);
     this.rumbleFilter.frequency.setTargetAtTime(90 + spd * 4, t, 0.15);
+
+    // pre-stall burble + horn. The burble is amplitude-modulated at ~14 Hz so
+    // it thumps rather than hisses, and it keeps running once fully stalled;
+    // the horn comes in over the last third of the margin.
+    const sm = Math.min(1, Math.max(0, phys.stallMargin ?? 0));
+    const thump = 0.72 + 0.28 * Math.sin(this.time * Math.PI * 2 * 14);
+    const burble = this.muted ? 0 : sm * sm * 0.30 * thump;
+    this.burbleGain.gain.setTargetAtTime(burble, t, 0.05);
+    this.burbleFilter.frequency.setTargetAtTime(220 + sm * 340, t, 0.1);
+    const horn = this.muted ? 0 : Math.max(0, (sm - 0.62) / 0.38) * 0.055;
+    this.hornGain.gain.setTargetAtTime(horn, t, 0.05);
 
     const sq = (phys.grounded && spd > 6 && this.braking) ? Math.min(0.06, 0.018 + spd * 0.0012) : 0;
     this.squealGain.gain.setTargetAtTime(this.muted ? 0 : sq, t, 0.05);

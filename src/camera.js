@@ -67,9 +67,18 @@ export class ChaseCam {
     }, { passive: true });
     window.addEventListener('contextmenu', e => e.preventDefault());
 
+    // pilot head: a small sprung mass on the airframe. It lags acceleration,
+    // sinks under g and rises when you unload, so the plane is felt through the
+    // eye instead of the view being bolted rigidly to the fuselage.
+    this.head = new THREE.Vector3();     // body-frame offset, metres
+    this.headV = new THREE.Vector3();
+    this._prevVel = new THREE.Vector3();
+    this._haveVel = false;
+
     this._t = { fwd: new THREE.Vector3(), up: new THREE.Vector3(), mix: new THREE.Vector3(),
                 des: new THREE.Vector3(), lt: new THREE.Vector3(), right: new THREE.Vector3(),
-                a: new THREE.Vector3(), dir: new THREE.Vector3() };
+                a: new THREE.Vector3(), dir: new THREE.Vector3(),
+                acc: new THREE.Vector3(), hd: new THREE.Vector3(), q: new THREE.Quaternion() };
   }
 
   cycleTightness() {
@@ -93,11 +102,48 @@ export class ChaseCam {
     this.orbitPitch = 0;
     this.accLagSm = 0;
     this._prevSpeed = phys.speed; // no lag spike from teleports
+    this.head.set(0, 0, 0);
+    this.headV.set(0, 0, 0);
+    this._haveVel = false;        // teleports must not read as a huge acceleration
+  }
+
+  // Pilot-head spring. Acceleration in BODY frame drives an offset in the
+  // opposite direction (your head keeps going when the airframe changes
+  // course), plus a vertical sag under g. Returns the offset in this.head.
+  _updateHead(dt, phys) {
+    const t = this._t;
+    const acc = t.acc;
+    if (this._haveVel && dt > 1e-4) {
+      acc.copy(phys.vel).sub(this._prevVel).divideScalar(dt);
+    } else {
+      acc.set(0, 0, 0);
+    }
+    this._prevVel.copy(phys.vel);
+    this._haveVel = true;
+    // into body frame, then clamp: a crash spike must not fling the view
+    acc.applyQuaternion(t.q.copy(phys.quat).invert());
+    const gz = Math.max(-4, Math.min(4, ((phys.gLoad ?? 1) - 1)));
+    const target = t.hd.set(
+      Math.max(-9, Math.min(9, acc.x)) * -0.022,
+      Math.max(-9, Math.min(9, acc.y)) * -0.014 - gz * 0.035,
+      Math.max(-9, Math.min(9, acc.z)) * -0.020,
+    );
+    // critically-damped-ish spring so it settles without wobbling like jelly
+    const k = 42, damp = 2 * Math.sqrt(k) * 0.85;
+    this.headV.addScaledVector(t.a.copy(target).sub(this.head).multiplyScalar(k).addScaledVector(this.headV, -damp), dt);
+    this.head.addScaledVector(this.headV, dt);
+    const lim = 0.42; // hard cap — the head never leaves the cockpit
+    this.head.set(
+      Math.max(-lim, Math.min(lim, this.head.x)),
+      Math.max(-lim, Math.min(lim, this.head.y)),
+      Math.max(-lim, Math.min(lim, this.head.z)),
+    );
   }
 
   update(dt, phys) {
     const t = this._t;
     this.time += dt;
+    this._updateHead(dt, phys);
     const fwd = t.fwd.set(0, 0, -1).applyQuaternion(phys.quat);
     const planeUp = t.up.set(0, 1, 0).applyQuaternion(phys.quat);
 
@@ -105,10 +151,16 @@ export class ChaseCam {
     // just a touch of buffet so speed and stall still reach the eye
     if (this.view !== 0) {
       const v = VIEWS[this.view];
-      const amp = Math.pow(phys.speed / 115, 2) * 0.09 + (phys.stalled ? 0.22 : 0)
+      const sm = phys.stallMargin ?? 0;
+      // engine vibration: always there, strongest at high power and low speed
+      const vib = 0.010 * (phys.throttle ?? 0) * (1 - Math.min(1, phys.speed / 120));
+      const amp = Math.pow(phys.speed / 115, 2) * 0.09 + sm * sm * 0.20 + (phys.stalled ? 0.14 : 0)
         + (phys.flapBuffet ?? 0) * 0.12 + (phys.overspeed ?? 0) * 0.15;
-      this.camera.position.set(v.off.x, v.off.y, v.off.z).applyQuaternion(phys.quat).add(phys.pos)
-        .addScaledVector(planeUp, fbm1(this.time * 7.1, 7) * amp);
+      // head offset rides in the body frame, so it leans with the airframe
+      this.camera.position.set(v.off.x + this.head.x, v.off.y + this.head.y, v.off.z + this.head.z)
+        .applyQuaternion(phys.quat).add(phys.pos)
+        .addScaledVector(planeUp, fbm1(this.time * 7.1, 7) * amp + fbm1(this.time * 41, 15) * vib)
+        .addScaledVector(fwd, fbm1(this.time * 37, 16) * vib);
       t.lt.set(v.look.x, v.look.y, v.look.z).applyQuaternion(phys.quat).add(phys.pos);
       this.fov += (v.fov - this.fov) * Math.min(1, dt * 5);
       this.camera.fov = this.fov;
@@ -179,13 +231,18 @@ export class ChaseCam {
     this.camera.fov = this.fov;
     this.camera.updateProjectionMatrix();
 
-    // shake: speed² + stall buffet + flaps-overspeed buffet + airframe overspeed
-    const amp = Math.pow(phys.speed / 115, 2) * 0.25 + (phys.stalled ? 0.55 : 0)
+    // shake: speed² + PRE-stall burble (squared so it creeps in, then bites) +
+    // stall break + flaps-overspeed buffet + airframe overspeed
+    const sm = phys.stallMargin ?? 0;
+    const amp = Math.pow(phys.speed / 115, 2) * 0.25 + sm * sm * 0.45 + (phys.stalled ? 0.3 : 0)
       + (phys.flapBuffet ?? 0) * 0.35 + (phys.overspeed ?? 0) * 0.4;
     const right = t.right.copy(fwd).cross(upMix).normalize();
+    // the chase camera feels the head spring too, at reduced weight — it reads
+    // as the whole rig being shoved around rather than a floating tripod
     this.camera.position.copy(this.pos)
-      .addScaledVector(right, fbm1(this.time * 6.5, 6) * amp)
-      .addScaledVector(upMix, fbm1(this.time * 7.1, 7) * amp);
+      .addScaledVector(right, fbm1(this.time * 6.5, 6) * amp + this.head.x * 1.6)
+      .addScaledVector(upMix, fbm1(this.time * 7.1, 7) * amp + this.head.y * 1.6)
+      .addScaledVector(fwd, this.head.z * -1.6);
 
     // never sink below the terrain
     const gy = Math.max(0, this.heightAt(this.camera.position.x, this.camera.position.z)) + 1.6;

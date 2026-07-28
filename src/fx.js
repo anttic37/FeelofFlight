@@ -37,6 +37,7 @@ export function createFX(scene) {
   const spin = new Float32Array(POOL);
   let cursor = 0;
   let emitAcc = 0;
+  let washAcc = 0;
 
   for (let i = 0; i < POOL; i++) {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -88,6 +89,40 @@ export function createFX(scene) {
   }
 
   function update(dt, phys) {
+    // LOW PASS WASH: propwash and wingtip vortices scuff the surface when you
+    // scream past a few metres up. Nothing sells "fast and low" like the ground
+    // reacting to you — emitted behind and below, so it streams away astern.
+    if (!phys.grounded && !phys.crashed && phys.speed > 28) {
+      const agl = phys.altitude;
+      if (agl < 18) {
+        const k = (1 - agl / 18) * Math.min(1, (phys.speed - 28) / 40);
+        washAcc += dt * k * 34;
+        while (washAcc >= 1) {
+          washAcc -= 1;
+          // trail it ASTERN: spawned under the nose the plume is hidden by the
+          // aircraft itself, and the puff spends its bright early life there
+          const sp = Math.max(1, phys.speed);
+          const back = 6 + Math.random() * 14;
+          const bx = phys.pos.x - (phys.vel.x / sp) * back;
+          const bz = phys.pos.z - (phys.vel.z / sp) * back;
+          const s = phys.surfaceAt(bx, bz);
+          const water = s.type === 'water';
+          const gy = water ? 0.1 : Math.max(0, s.h);
+          spawn(
+            bx + (Math.random() - 0.5) * 11,
+            gy + 0.4 + Math.random() * 0.9,
+            bz + (Math.random() - 0.5) * 11,
+            water ? COL_SPRAY : (s.type === 'runway' ? COL_SMOKE : COL_DUST),
+            // the u^1.5 fade eats most of this, so it starts high on purpose
+            (water ? 1.0 : 0.9) * k,
+            2.6 + Math.random() * 1.6, 10 + Math.random() * 5,
+            0.9 + Math.random() * 0.7,
+            (Math.random() - 0.5) * 3, (water ? 1.8 : 1.1) + Math.random(), (Math.random() - 0.5) * 3,
+          );
+        }
+      } else washAcc = 0;
+    } else washAcc = 0;
+
     if (phys.grounded && phys.speed > 8) {
       emitAcc += dt * (1 + Math.min(1, (phys.speed - 8) / 32)); // 1-2 puffs/sec
       while (emitAcc >= 1) {

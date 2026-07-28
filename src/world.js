@@ -9,6 +9,7 @@ import {
 } from './heightcore.js';
 import { createTerrain } from './terrain.js';
 import { uGroundTime } from './groundfx.js';
+import { createScatter } from './scatter.js';
 import { createRunways } from './runways.js';
 import { createWater } from './water.js';
 import { createClouds } from './clouds.js';
@@ -250,6 +251,7 @@ export function createWorld(scene) {
   const runways = createRunways(scene);
   const water = createWater(scene, heightAt);
   const clouds = createClouds(scene);
+  const scatter = createScatter(scene); // near-field props: the ground-rush layer
 
   // keep the sun (and its shadow box) and sky centered on the plane
   function update(planePos, time = 0) {
@@ -260,10 +262,11 @@ export function createWorld(scene) {
     sun.target.position.copy(planePos);
     sky.position.set(planePos.x, 0, planePos.z);
     terrain.update(planePos);
+    scatter.update(planePos);
     runways.update(time);
     water.update(time);
     clouds.update(time, planePos);
   }
 
-  return { update, terrain };
+  return { update, terrain, scatter };
 }

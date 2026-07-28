@@ -92,6 +92,7 @@ export class FlightModel {
     this.aoa = 0;
     this.gLoad = 1;
     this.stalled = false;
+    this.stallMargin = 0;              // 0..1 approaching the break — pre-stall warning
     this.crashed = false;              // false | reason string
 
     this._tmp = {
@@ -116,6 +117,7 @@ export class FlightModel {
     this.throttle = 0.65;
     this.crashed = false;
     this.stalled = false;
+    this.stallMargin = 0;
     this.gLoad = 1;
     this.gearDown = false;
     this.gearTransit = 0;
@@ -151,6 +153,7 @@ export class FlightModel {
     this.throttle = this.grounded ? 0 : 0.65;
     this.crashed = false;
     this.stalled = false;
+    this.stallMargin = 0;
     this.gLoad = 1;
     this.justTouchedDown = null;
     this.justGearMoved = false;
@@ -217,6 +220,7 @@ export class FlightModel {
     this.airspeed = this.speed;
     this.gLoad = 1;
     this.stalled = false;
+    this.stallMargin = 0;
     this.overspeed = 0;
     this.wreckSettled = this.pos.y <= gy + 0.05 && this.speed < 0.7 && wMag < 0.4;
   }
@@ -299,6 +303,15 @@ export class FlightModel {
     // flap blowback buffet past 62 m/s (shake flag only — no auto-retract)
     this.flapBuffet = ft > 0.05 ? clamp((airSpeed - 62) / 8, 0, 1) * ft : 0;
     this.overspeed = clamp((airSpeed - 108) / 18, 0, 1); // Vne ~115
+
+    // PRE-STALL MARGIN: how far into the last ~4 deg before the break we are,
+    // 0 well clear -> 1 at the break itself. A real wing warns for seconds
+    // before it lets go — separated air off the root thumps the tail — and that
+    // warning is most of the seat-of-the-pants feel in slow flight and the
+    // flare. Camera, sound and the wing flex all read this, so the airplane
+    // starts talking BEFORE `stalled` flips.
+    this.stallMargin = aero && airSpeed > 12
+      ? clamp((Math.abs(this.aoa) - (stallEff - 0.075)) / 0.075, 0, 1) : 0;
 
     // --- forces (world frame) ---
     const force = t.force.set(0, -G * this.mass, 0);
@@ -457,6 +470,15 @@ export class FlightModel {
       tq.x -= Math.sign(this.aoa) * over * this.stallBreak * qnS; // stall break
       // stall wing-drop: slowly-wandering asymmetry — a different wing each time
       tq.z += fbm1(this.time * 0.16, 5) * (600 + 1400 * over) * qnS;
+    }
+    // pre-stall burble: fast, small, RANDOM shaking that grows as the margin
+    // closes. Deliberately weaker than elevator authority — it is a warning you
+    // feel through the airframe, never a loss of control on its own.
+    if (this.stallMargin > 0) {
+      const sm = this.stallMargin * this.stallMargin;
+      tq.x += fbm1(this.time * 9.3, 12) * 1500 * sm;
+      tq.z += fbm1(this.time * 11.7, 13) * 2100 * sm;
+      tq.y += fbm1(this.time * 8.1, 14) * 700 * sm;
     }
 
     // prop torque / P-factor: high power at low airspeed rolls and yaws LEFT —
