@@ -71,12 +71,57 @@ export function createClouds(scene) {
     emissive: 0xdae6f2, emissiveIntensity: 0.3,
     transparent: true, opacity: 0.96, depthWrite: true,
   });
-  // fresnel alpha fade softens silhouette edges; injected before opaque_fragment
-  // where lambert's per-fragment `normal` and vViewPosition are in scope (r164)
+  // EDGE EROSION. The puffs are spheres, and a sphere's giveaway is a perfectly
+  // circular silhouette — no amount of stacking hides it. So the rim gets eaten
+  // away per-pixel by 3D value noise: where the noise runs low near the
+  // silhouette the fragment is thrown away entirely, tearing the outline into
+  // wisps and shreds. This is the cheap half of what a raymarched volume buys
+  // you — it only touches cloud pixels and costs no geometry, no 3D texture and
+  // no marching loop, but it kills the "pile of balls" read.
+  //
+  // The noise is sampled in OBJECT space, not world space: clouds drift, and a
+  // world-space pattern would crawl through them as they moved, boiling. A
+  // per-cloud seed attribute offsets it so no two clouds erode identically.
+  //
+  // Fully eroded pixels MUST discard, not just fade — the material writes depth,
+  // and a transparent-but-depth-writing pixel would punch an invisible occluder.
   mat.onBeforeCompile = (shader) => {
-    shader.fragmentShader = shader.fragmentShader.replace('#include <opaque_fragment>',
-      `float fres = pow(1.0 - clamp(abs(dot(normalize(vViewPosition), normal)), 0.0, 1.0), 2.5);
-diffuseColor.a *= mix(1.0, 0.35, fres);
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>
+attribute float cseed;
+varying vec3 vLocal;
+varying float vSeed;`)
+      .replace('#include <begin_vertex>', `#include <begin_vertex>
+vLocal = position;
+vSeed = cseed;`);
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `#include <common>
+varying vec3 vLocal;
+varying float vSeed;
+float h3(vec3 p) { return fract(sin(dot(p, vec3(127.1, 311.7, 74.7))) * 43758.5453); }
+float vn3(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(h3(i), h3(i + vec3(1,0,0)), f.x),
+                 mix(h3(i + vec3(0,1,0)), h3(i + vec3(1,1,0)), f.x), f.y),
+             mix(mix(h3(i + vec3(0,0,1)), h3(i + vec3(1,0,1)), f.x),
+                 mix(h3(i + vec3(0,1,1)), h3(i + vec3(1,1,1)), f.x), f.y), f.z);
+}`)
+      .replace('#include <opaque_fragment>', `{
+  float rim = 1.0 - clamp(abs(dot(normalize(vViewPosition), normal)), 0.0, 1.0);
+  vec3 np = vLocal + vec3(vSeed * 37.1, vSeed * 17.7, vSeed * 91.3);
+  float n = vn3(np * 0.06) * 0.62 + vn3(np * 0.15) * 0.38;
+  n = clamp((n - 0.5) * 1.45 + 0.5, 0.0, 1.0);   // widen the contrast
+  // Erosion has to reach INWARD from the silhouette to be visible: rim*rim
+  // confined it to a hairline band at the exact edge and read as nothing.
+  // A smoothstep over the outer band tears the outline properly, and the
+  // 1.3 overdrive lets low-noise patches clamp to zero and be discarded,
+  // which is what actually shreds the circle instead of just fading it.
+  float e = smoothstep(0.16, 0.78, rim);
+  diffuseColor.a *= clamp(1.0 - e * smoothstep(0.68, 0.33, n) * 1.45, 0.0, 1.0);
+  diffuseColor.a *= mix(1.0, 0.62, pow(rim, 2.5)); // fringe on what survives
+  if (diffuseColor.a < 0.06) discard;
+}
 #include <opaque_fragment>`);
   };
 
@@ -93,6 +138,9 @@ diffuseColor.a *= mix(1.0, 0.35, fres);
     }
     const W = span(i, 1, cls.w), D = span(i, 2, cls.d), H = span(i, 3, cls.h);
     const squash = cls.squash || 1, crown = cls.crown || 1;
+    // constant across this cloud, different for every cloud: shifts the erosion
+    // noise so two clouds never tear along the same pattern
+    const cseed = rnd(i, 13) * 190;
     parts.length = 0;
 
     // one puff -> a scaled/translated icosphere with the height gradient baked
@@ -112,6 +160,9 @@ diffuseColor.a *= mix(1.0, 0.35, fres);
         col[v * 3 + 2] = 0.74 + 0.26 * s;
       }
       g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      const seeds = new Float32Array(pa.count);
+      seeds.fill(cseed);
+      g.setAttribute('cseed', new THREE.BufferAttribute(seeds, 1));
       parts.push(g);
     };
 
