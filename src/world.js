@@ -14,10 +14,10 @@ import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
 import { SUN_DIR, SKY, createSkyMaterial } from './atmosphere.js';
 import { createRunways } from './runways.js';
 import { createWater } from './water.js';
-import { createClouds } from './clouds.js';
 
 // Scene construction for the procedural island: sky/sun/lights, the static
-// terrain mesh, vegetation scatter, runways, water, clouds. The analytic
+// terrain mesh, vegetation scatter, runways, water. Clouds are not scene
+// objects any more — they are raymarched in post by volclouds.js. The analytic
 // height field lives in heightcore.js and the vertex-color rules in
 // colorcore.js (both pure and worker-loadable); heightAt/surfaceAt are
 // re-exported here so consumer imports are unchanged.
@@ -288,7 +288,6 @@ export function createWorld(scene) {
 
   const runways = createRunways(scene);
   const water = createWater(scene, heightAt);
-  const clouds = createClouds(scene);
   const scatter = createScatter(scene); // near-field props: the ground-rush layer
 
   // keep the sun (and its shadow box) and sky centered on the plane
@@ -303,8 +302,7 @@ export function createWorld(scene) {
     scatter.update(planePos, time);
     runways.update(time);
     water.update(time);
-    clouds.update(time, planePos);
   }
 
-  return { update, terrain, scatter, clouds };
+  return { update, terrain, scatter };
 }

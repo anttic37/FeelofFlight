@@ -1,7 +1,9 @@
 // Shared per-pixel ground detail for standard materials, injected via
 // onBeforeCompile (same technique as the water shader): three octaves of
 // value-noise albedo mottle that fade in by view distance, plus large soft
-// cloud-shadow blobs drifting +x to match the cumulus layer in clouds.js.
+// cloud-shadow blobs drifting +x. Those blobs are their own noise field, not a
+// projection of the volumetric clouds overhead — they only have to agree on
+// drift direction and rough scale, and at a glance they do.
 // Vertex colors only vary per-vertex (5-40 m), which reads as airbrushed
 // plastic up close — this layer is what makes low flight feel fast.
 //

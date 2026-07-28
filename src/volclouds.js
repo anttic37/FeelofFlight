@@ -4,11 +4,11 @@ import { CloudsEffect, CloudShape, CloudShapeDetail, LocalWeather, Turbulence } 
 import { AerialPerspectiveEffect, PrecomputedTexturesLoader, DEFAULT_PRECOMPUTED_TEXTURES_URL } from '@takram/three-atmosphere';
 import { STBNLoader, DEFAULT_STBN_URL } from '@takram/three-geospatial';
 
-// SPIKE — volumetric clouds via @takram/three-clouds, behind ?vclouds=1.
-// This is the real thing from the three.js 3d-tiles example: a raymarched
-// density field with shape and detail noise, a weather map, and temporal
-// upscaling driven by blue noise. It replaces our geometry clouds and takes
-// over the post-processing chain, so it stays flag-gated until we decide.
+// The sky. Volumetric clouds via @takram/three-clouds — the same thing the
+// three.js 3d-tiles example uses: a raymarched density field with shape and
+// detail noise, a weather map, and temporal upscaling driven by blue noise.
+// These replaced the old sprite cumulus outright, so this module owns the
+// post-processing chain whenever it loads (?vclouds=0 falls back to plain).
 //
 // The one genuinely awkward part is that the library is GEOSPATIAL: it works
 // on a WGS84 ellipsoid in ECEF coordinates, where "up" is away from Earth's
@@ -64,14 +64,97 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   clouds.ecefToWorldMatrix.copy(w2e).invert();
   clouds.sunDirection.copy(sunDir).transformDirection(w2e).normalize();
 
-  // Our cumulus live at ~620 m with a few hundred metres of depth; the library
-  // defaults are tuned for a much deeper sky.
-  clouds.coverage = 0.32;
+  // SIZE VARIATION. The default localWeatherRepeat of 100 tiles the weather
+  // texture 100x around the globe, so one tile spans ~400 km while our island is
+  // a few km across — we only ever sample a near-uniform scrap of it and every
+  // cloud comes out the same size. 250 brings the blobs down to something like
+  // real cumulus spacing. Much higher and the coverage field averages out into
+  // permanent overcast, plus the raymarch starts aliasing.
+  clouds.coverage = 0.28;
+  clouds.localWeatherRepeat.set(250, 250);
   clouds.localWeatherVelocity.set(0.00008, 0);
-  if (clouds.cloudLayers && clouds.cloudLayers.length) {
-    const l0 = clouds.cloudLayers[0];
-    l0.altitude = 620; l0.height = 420; l0.densityScale = 0.25;
-    for (let i = 1; i < clouds.cloudLayers.length; i++) clouds.cloudLayers[i].densityScale = 0;
+  clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
+
+  // RAYMARCH RANGE — this is what makes the distant clouds hold together.
+  // The stock march is sized for a geospatial viewer looking at weather 100+ km
+  // away across the globe: steps start at 50 m and grow 1% each one up to
+  // 1000 m, out to 200 km. Our camera's far plane is 12 km. So everything past
+  // a few km was being crossed in strides far larger than a cloud layer is
+  // deep, and distant clouds came out combed into regular vertical ribs — the
+  // ribs fan with perspective because they are fixed-size gaps in world space,
+  // which is what gave the sampling away. Holding the step constant over a ray
+  // that stops near the far plane samples the whole visible range evenly.
+  //
+  // It costs nothing (measured p50 5.3 ms either way): rays terminate on
+  // transmittance as soon as they are inside cloud, and empty sky is cheap at
+  // any step size, so the long strides were only ever saving work nobody
+  // needed. The artifact was invisible before only because the clouds were too
+  // small and far to show it.
+  clouds.clouds.minStepSize = 50;
+  clouds.clouds.maxStepSize = 120;
+  clouds.clouds.maxRayDistance = 15000;
+  clouds.clouds.perspectiveStepScale = 1.0;
+
+  // The secondary march toward the sun is what self-shadows a cloud. Two
+  // iterations at 100 m is enough for cloudscapes viewed from far away and too
+  // coarse from inside one, where it banded the nearer masses.
+  clouds.clouds.maxIterationCountToSun = 6;
+  clouds.clouds.minSecondaryStepSize = 40;
+  clouds.clouds.secondaryStepScale = 1.6;
+
+  // 512 across three cascades put visible steps in the cloud self-shadowing at
+  // this range. The cascade split planes were showing up as flat vertical faces
+  // slicing through the nearer clouds.
+  clouds.shadow.mapSize.set(2048, 2048);
+
+  // Four layers, used as size classes. Only three weather channels carry a
+  // distribution — measured over the generated texture: r is sparse blobs (mean
+  // 0.27), g sparser (0.16), b a smooth full-range bell (0.50). The a channel is
+  // a constant 1.0, NOT a distribution: point a layer at it and you get
+  // permanent overcast. weatherExponent thins a channel out, but note that
+  // thinning the smooth b field yields FEWER, LARGER slabs rather than small
+  // puffs, so b is only good for the high veil.
+  //
+  // The convective classes share ONE base altitude, because they should: in a
+  // real cumulus field every cloud condenses at the same lifting condensation
+  // level and they differ only in how far they climb. That is what makes the
+  // bases line up flat while the tops vary — and it is where the size range
+  // comes from. Two of them ride the same r channel on purpose: the strongest
+  // cells of a field are exactly the ones that build deepest.
+  //
+  // Keep the depths within reach of the blob widths. A weather blob is a few km
+  // across but often ribbon-shaped, and extruding a ribbon far enough vertically
+  // stops reading as a cloud and starts reading as a curtain — 1700 m tall was
+  // well over the line. Tops here run 1000/1320/1620 m off a 620 m base, which
+  // is a visible spread without any of them turning into a wall.
+  const LAYERS = [
+    // the general population — small to medium
+    { channel: 'r', altitude: 620, height: 380, densityScale: 0.40,
+      weatherExponent: 1.0, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6, shadow: true },
+    // the strongest cells of that same field, climbing further
+    { channel: 'r', altitude: 620, height: 700, densityScale: 0.46,
+      weatherExponent: 2.2, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35, shadow: true,
+      profile: [0, 0, -0.6, 1.0] },
+    // a decorrelated set of big ones. The stock density profile ramps UP with
+    // height (0.25 + 0.75h), so density peaks exactly where the layer ceiling
+    // cuts it off — that gives every cloud a flat sliced top, and on a deep
+    // layer it turns marginal cells into thin vertical spikes, a sky full of
+    // spray plumes. Tapering the other way keeps the mass low, so only strong
+    // cores climb and the tops end where the cloud ends.
+    { channel: 'g', altitude: 620, height: 1000, densityScale: 0.5,
+      weatherExponent: 1.6, shapeAlteringBias: 0.3, coverageFilterWidth: 0.3, shadow: true,
+      profile: [0, 0, -0.7, 1.0] },
+    // thin high veil, for something to fly under and to give the sky depth
+    { channel: 'b', altitude: 4200, height: 600, densityScale: 0.16,
+      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.7, shadow: false,
+      shapeDetailAmount: 0.5 },
+  ];
+  for (let i = 0; i < clouds.cloudLayers.length; i++) {
+    const layer = clouds.cloudLayers[i], spec = LAYERS[i];
+    if (!spec) { layer.densityScale = 0; continue; }
+    const { profile, ...fields } = spec;
+    Object.assign(layer, fields);
+    if (profile) layer.densityProfile.set(...profile);
   }
 
   // CloudsEffect only RENDERS the cloud buffer — it hands the result to an

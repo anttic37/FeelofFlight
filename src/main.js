@@ -132,17 +132,18 @@ if (new URLSearchParams(location.search).get('bloom') !== '0') {
   // float target skips them in the material shaders by design
   composer.addPass(new OutputPass());
 }
-// SPIKE (?vclouds=1): hand rendering to the volumetric-cloud composer instead.
-// Loaded lazily so the normal game never pays for the extra packages, and set
-// up so a failure leaves the ordinary renderer running.
+// CLOUDS. Raymarched volumetrics (volclouds.js) took over from the old sprite
+// cumulus. They come from packages on a CDN, so they arrive a couple of seconds
+// after the world does and take over rendering when they land; until then, and
+// if the fetch fails outright, the bloom composer above keeps drawing a normal
+// (cloudless) sky rather than leaving a broken frame. ?vclouds=0 skips them.
 let volClouds = null;
-if (new URLSearchParams(location.search).get('vclouds') === '1') {
+if (new URLSearchParams(location.search).get('vclouds') !== '0') {
   import('./volclouds.js')
     .then(m => m.createVolumetricClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
     .then(v => {
       volClouds = v;
       v.setSize(window.innerWidth, window.innerHeight);
-      world.clouds.setVisible(false); // the geometry clouds would double up
       console.log('[flighfeel] volumetric clouds active');
     })
     .catch(e => console.error('[flighfeel] volumetric clouds failed:', e));
