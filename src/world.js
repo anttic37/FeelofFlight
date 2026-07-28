@@ -11,6 +11,7 @@ import { createTerrain } from './terrain.js';
 import { uGroundTime } from './groundfx.js';
 import { createScatter } from './scatter.js';
 import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
+import { SUN_DIR, SKY, createSkyMaterial } from './atmosphere.js';
 import { createRunways } from './runways.js';
 import { createWater } from './water.js';
 import { createClouds } from './clouds.js';
@@ -24,26 +25,17 @@ import { createClouds } from './clouds.js';
 export { heightAt, surfaceAt } from './heightcore.js';
 
 export function createWorld(scene) {
-  const skyHorizon = new THREE.Color(0xbcd8ee);
-  scene.fog = new THREE.Fog(skyHorizon, 1500, 6500);
+  // fogColor is now only a fallback: the patched fog chunk computes the haze
+  // per pixel from the view direction (see atmosphere.js), so distance tints
+  // warm toward the sun and cool away from it instead of one flat grey
+  scene.fog = new THREE.Fog(new THREE.Color(0xbcd8ee), 1500, 6500);
 
-  // sky dome: vertical gradient + haze band hugging the horizon (radius 8500 > fog.far)
-  const skyGeo = new THREE.SphereGeometry(8500, 20, 12);
-  const zenith = new THREE.Color(0x4f8fd4);
-  const cHaze = new THREE.Color(0xe4edf3);
-  const colors = [];
-  const posAttr = skyGeo.attributes.position;
-  for (let i = 0; i < posAttr.count; i++) {
-    const y = posAttr.getY(i) / 8500;
-    const c = skyHorizon.clone().lerp(zenith, Math.max(0, y) ** 0.7);
-    if (y < 0.16) c.lerp(cHaze, Math.min(1, (0.16 - y) / 0.22) * 0.8);
-    colors.push(c.r, c.g, c.b);
-  }
-  skyGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-  const sky = new THREE.Mesh(skyGeo, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false }));
+  // sky dome: gradient, horizon haze and the sun's halo, evaluated per pixel.
+  // Radius 8500 > fog.far so nothing in the world ever pokes through it.
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(8500, 24, 16), createSkyMaterial());
   scene.add(sky);
 
-  const sunDir = new THREE.Vector3(0.45, 0.75, 0.3).normalize();
+  const sunDir = SUN_DIR;
 
   // sun disc + glow: additive canvas sprite riding on the dome
   const sunCv = document.createElement('canvas');
@@ -94,7 +86,10 @@ export function createWorld(scene) {
     [1, 'rgba(255,255,255,0)'],
   ], 64);
   const flare = new Lensflare();
-  flare.addElement(new LensflareElement(glowTex, 520, 0, new THREE.Color(0xfff2d6)));
+  // smaller than it was: the sky dome now draws its own Mie halo around the
+  // sun, and stacking a big flare bloom on top of it turned the whole area
+  // into a lavender smear
+  flare.addElement(new LensflareElement(glowTex, 300, 0, new THREE.Color(0xfff2d6)));
   flare.addElement(new LensflareElement(ghostTex, 34, 0.32, new THREE.Color(0x9fd0ff)));
   flare.addElement(new LensflareElement(ghostTex, 58, 0.52, new THREE.Color(0xffd6a8)));
   flare.addElement(new LensflareElement(ghostTex, 26, 0.68, new THREE.Color(0xc8ffd8)));

@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { noise2 } from './noise.js';
 import { heightAt } from './heightcore.js';
+import { SUN_GLSL } from './atmosphere.js';
 
 // Puffy cumulus. Each cloud is built like a real one rather than a row of
 // blobs: a FLAT BASE layer of wide puffs straddling the condensation level,
@@ -151,6 +152,13 @@ float vn3(vec3 p) {
   diffuseColor.a *= clamp(1.0 - e * smoothstep(0.68, 0.33, n) * 1.45, 0.0, 1.0);
   diffuseColor.a *= mix(1.0, 0.62, pow(rim, 2.5)); // fringe on what survives
   if (diffuseColor.a < 0.06) discard;
+  // SILVER LINING. Sunlight punches through the thin edge of a cloud, so a
+  // backlit rim burns bright while the body stays flat — it is most of what
+  // makes real cumulus look lit rather than painted. Bright only where the
+  // view ray runs toward the sun AND the surface is edge-on.
+  vec3 sunView = normalize((viewMatrix * vec4(${SUN_GLSL}, 0.0)).xyz);
+  float toSun = clamp(dot(normalize(-vViewPosition), sunView), 0.0, 1.0);
+  diffuseColor.rgb += vec3(1.0, 0.95, 0.86) * pow(toSun, 5.0) * pow(rim, 1.6) * 0.85;
 }
 #include <opaque_fragment>`);
   };

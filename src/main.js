@@ -1,4 +1,10 @@
 import * as THREE from 'three';
+import { patchAerialPerspective } from './atmosphere.js';
+// Rewrites three's shared fog chunks for sun-aware aerial perspective. Runs
+// here, at the top of the body, because every material in the project is built
+// inside a factory called further down — a material compiled before this point
+// would bake in the stock flat-colour fog and silently miss the effect.
+patchAerialPerspective();
 import { createWorld, heightAt, surfaceAt } from './world.js';
 import { RUNWAYS } from './runways.js';
 import { buildPlane, updatePlaneVisual } from './crimson-kestrel.js'; // KX-1 with load-flexing wings
