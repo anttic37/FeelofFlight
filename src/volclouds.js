@@ -58,9 +58,16 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // The generator has no size parameter (LocalWeather hard-codes 512), but the
   // shader derives its UVs from geometry, so resizing the target before the one
   // render it does is enough: 78 m per texel, and the blocks go away.
+  // 4096, and the reason is worth writing down: the resolution that matters is
+  // METRES PER TEXEL, not the texture size. Enlarging the clouds (localWeather-
+  // Repeat 250 -> 150) enlarged the tile too, so at 2048 the grid coarsened from
+  // 78 m to 130 m per texel — and the layer that keeps only the field's peaks
+  // then had surviving regions just two or three texels across. A few texels of a
+  // thresholded bilinear field IS a rectangle, extruded into a literal cube of
+  // cloud. 4096 puts it back to 65 m and the cubes go with it.
   const weather = new LocalWeather();
-  weather.renderTarget.setSize(2048, 2048);
-  weather.size = 2048;
+  weather.renderTarget.setSize(4096, 4096);
+  weather.size = 4096;
   weather.render(renderer, 0); clouds.localWeatherTexture = weather.texture; procedural.push(weather);
   const turb = new Turbulence(); turb.render(renderer, 0); clouds.turbulenceTexture = turb.texture; procedural.push(turb);
 
@@ -214,8 +221,13 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
       weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6,
       shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // the strongest cells of that same field, building a little deeper
+    // 2.1, not 2.8. Past about 2.2 this layer keeps so little of the field that
+    // its surviving regions shrink to a couple of weather texels, and at that
+    // size they take the texel grid's shape instead of their own — isolated
+    // rectangular clouds. The exponent buys separation right up until it starts
+    // buying rectangles.
     { channel: 'r', altitude: 620, height: 500, densityScale: 0.50,
-      weatherExponent: 2.8, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
+      weatherExponent: 2.1, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
       shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
