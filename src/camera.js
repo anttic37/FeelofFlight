@@ -62,8 +62,13 @@ export class ChaseCam {
     });
     window.addEventListener('pointerup', () => { this._dragging = false; });
     window.addEventListener('blur', () => { this._dragging = false; });
+    // Zoom range runs much further back now (34 -> 110 m of extra tether), and
+    // the step scales with how far out you already are: fine control close to
+    // the aircraft where a metre matters, and you are not scrolling for a week
+    // to get out to the wide shots.
     window.addEventListener('wheel', e => {
-      this.zoomOff = Math.max(-8, Math.min(34, this.zoomOff + e.deltaY * 0.012));
+      const step = e.deltaY * 0.012 * (1 + Math.max(0, this.zoomOff) * 0.055);
+      this.zoomOff = Math.max(-8, Math.min(110, this.zoomOff + step));
     }, { passive: true });
     window.addEventListener('contextmenu', e => e.preventDefault());
 
@@ -74,6 +79,10 @@ export class ChaseCam {
     this.headV = new THREE.Vector3();
     this._prevVel = new THREE.Vector3();
     this._haveVel = false;
+
+    // crash: the wreck tumbles, the camera must not (see update)
+    this._wasCrashed = false;
+    this._crashDir = new THREE.Vector3(0, 0, 1);
 
     this._t = { fwd: new THREE.Vector3(), up: new THREE.Vector3(), mix: new THREE.Vector3(),
                 des: new THREE.Vector3(), lt: new THREE.Vector3(), right: new THREE.Vector3(),
@@ -105,6 +114,7 @@ export class ChaseCam {
     this.head.set(0, 0, 0);
     this.headV.set(0, 0, 0);
     this._haveVel = false;        // teleports must not read as a huge acceleration
+    this._wasCrashed = false;
   }
 
   // Pilot-head spring. Acceleration in BODY frame drives an offset in the
@@ -170,13 +180,33 @@ export class ChaseCam {
       return; // cycleView snaps the spring when we come back to CHASE
     }
 
+    // CRASH: the wreck tumbles, the camera must not. Everything below derives
+    // from phys.quat — the up vector partly follows the plane's own up, and the
+    // chase direction is the plane's forward — so once the airframe is cartwheeling
+    // the view rolls and orbits with it, which is unwatchable and tells you
+    // nothing. From the moment of impact the camera becomes an OBSERVER: world
+    // up, and a viewing direction frozen at the direction it was already
+    // watching from, so the wreck tumbles across a steady frame.
+    const crashed = !!phys.crashed;
+    if (crashed && !this._wasCrashed) {
+      // freeze the bearing we are already on, flattened — not the plane's, which
+      // by now is whatever attitude it happened to break at
+      this._crashDir.copy(this.pos).sub(phys.pos);
+      this._crashDir.y = 0;
+      if (this._crashDir.lengthSq() < 1e-6) this._crashDir.copy(fwd).setY(0).negate();
+      this._crashDir.normalize();
+    }
+    this._wasCrashed = crashed;
+
     // camera up: mostly world in level flight so banking reads on screen, but as
     // the nose leaves level (loops, verticals) blend toward the plane's own up —
     // a world-locked up flips/spins the view when fwd nears +-Y.
     const sv = Math.min(1, Math.max(0, (Math.abs(fwd.y) - 0.45) / 0.45));
     const steep = sv * sv * (3 - 2 * sv); // smoothstep(0.45, 0.9, |fwd.y|)
-    const upMix = t.mix.copy(WORLD_UP).multiplyScalar(0.75 * (1 - steep))
-      .addScaledVector(planeUp, 0.25 + 0.75 * steep).normalize();
+    const upMix = crashed
+      ? t.mix.copy(WORLD_UP)
+      : t.mix.copy(WORLD_UP).multiplyScalar(0.75 * (1 - steep))
+          .addScaledVector(planeUp, 0.25 + 0.75 * steep).normalize();
 
     // orbit eases back behind the plane when the mouse is released
     if (!this._dragging) {
@@ -201,7 +231,9 @@ export class ChaseCam {
     this.accLagSm += (accTarget - this.accLagSm) * Math.min(1, dt * accRate);
 
     const dist = Math.max(7, 17 + phys.speed * 0.04 + this.zoomSm + this.gLagSm * 0.9 + this.accLagSm);
-    const dir = t.dir.copy(fwd).negate();
+    // a crashed airframe's forward vector is meaningless, so hold the bearing
+    // frozen at impact instead of orbiting with the tumble
+    const dir = crashed ? t.dir.copy(this._crashDir) : t.dir.copy(fwd).negate();
     const orbitMag = Math.abs(this.orbitYaw) + Math.abs(this.orbitPitch);
     if (orbitMag > 1e-4) {
       dir.applyAxisAngle(upMix, this.orbitYaw);
@@ -220,9 +252,13 @@ export class ChaseCam {
     // look slightly ahead of the plane; when orbiting, center on the plane itself.
     // Deliberately loose aim: a slow spring (2.2/s) plus a G-load offset push the
     // plane away from screen center in maneuvers; the camera catches up afterwards.
-    const ahead = 9 / (1 + 3 * orbitMag);
-    const gOff = Math.max(-0.8, Math.min(1.6, (phys.gLoad - 1) * 0.55));
-    const lt = t.lt.copy(phys.pos).addScaledVector(fwd, ahead).addScaledVector(planeUp, 0.8 + gOff);
+    // Aim: lead the plane in flight, but sit straight on the wreck after a crash.
+    // Leading along a tumbling forward vector would swing the aim around the
+    // frame, and the g-load term spikes hard on impact.
+    const ahead = crashed ? 0 : 9 / (1 + 3 * orbitMag);
+    const gOff = crashed ? 0 : Math.max(-0.8, Math.min(1.6, (phys.gLoad - 1) * 0.55));
+    const lt = t.lt.copy(phys.pos).addScaledVector(fwd, ahead)
+      .addScaledVector(crashed ? WORLD_UP : planeUp, 0.8 + gOff);
     this.look.lerp(lt, 1 - Math.exp(-dt * tn.look));
 
     // FOV stretches with speed
