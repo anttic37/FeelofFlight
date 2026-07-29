@@ -81,7 +81,12 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // real cumulus spacing. Much higher and the coverage field averages out into
   // permanent overcast, plus the raymarch starts aliasing.
   clouds.coverage = 0.30;
-  clouds.localWeatherRepeat.set(250, 250);
+  // 150, not 250. This is the only control over the SIZE of the weather blobs
+  // every layer inherits — a smaller number means a bigger tile in world terms,
+  // so 250 -> 150 scales the whole cloud population up by about 1.7x. The layers
+  // can vary size relative to each other but they cannot escape this, since they
+  // all read the same field; if the sky feels small, it is this number.
+  clouds.localWeatherRepeat.set(150, 150);
   clouds.localWeatherVelocity.set(0.00008, 0);
   clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
 
@@ -191,18 +196,26 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // exponential here: the exponential spends most of its range near zero, which
   // thins the cloud out from the base up and puts the boxiness back.
   const TOP_TAPER = [0, 0, -1.0, 1.0];
+  // Zero at BOTH ends, for the deepest layer. A top-only taper leaves full
+  // density on the layer floor, which is right for a flat cumulus base — but on
+  // a layer this deep the cells that only just clear the coverage threshold then
+  // hang below it as thin full-strength columns, and the big clouds grew a beard
+  // of tendrils. Fading the base as well lets those marginal cells stay faint.
+  // The flat-based look still comes from the two shallower layers, which carry
+  // most of the sky.
+  const BOTH_TAPER = [-1, -2.4, -0.909, 1];
   const LAYERS = [
     // the general population — small to medium
     // SEPARATION comes from the exponent. At 1.0 the surviving coverage was a
     // connected carpet whose arms extruded into long chained masses; raising it
     // keeps only each blob's core, so clouds come out discrete with sky between
     // them, which is what a fair-weather field actually looks like.
-    { channel: 'r', altitude: 620, height: 260, densityScale: 0.46,
-      weatherExponent: 1.5, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6,
+    { channel: 'r', altitude: 620, height: 280, densityScale: 0.46,
+      weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6,
       shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // the strongest cells of that same field, building a little deeper
-    { channel: 'r', altitude: 620, height: 420, densityScale: 0.50,
-      weatherExponent: 2.6, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
+    { channel: 'r', altitude: 620, height: 500, densityScale: 0.50,
+      weatherExponent: 2.8, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
       shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
@@ -216,11 +229,13 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // EXPONENT, pushed the opposite way to the separation above: a LOW exponent
     // lets more of the field through, so neighbouring blobs merge into masses
     // several times the width of the scattered puffs. Depth still has to stay
-    // moderate (760, not the 1150 that looked right on paper) or that wide
-    // footprint extrudes straight back into vertical curtains.
-    { channel: 'g', altitude: 620, height: 760, densityScale: 0.54,
-      weatherExponent: 1.2, shapeAlteringBias: 0.3, coverageFilterWidth: 0.5,
-      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
+    // moderate (880, not the 1150 that looked right on paper) or that wide
+    // footprint extrudes straight back into vertical curtains. It also wants the
+    // both-ends taper, hence the higher densityScale to make up for the hump only
+    // peaking around a third of the way up.
+    { channel: 'g', altitude: 620, height: 880, densityScale: 0.85,
+      weatherExponent: 1.25, shapeAlteringBias: 0.3, coverageFilterWidth: 0.5,
+      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BOTH_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
     // the top: the stock one sits at 0.25 density on the layer's floor, so the
     // veil was sliced off flat along its underside and squared off at the end of
