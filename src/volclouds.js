@@ -51,7 +51,17 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   const procedural = [];
   const shape = new CloudShape(); shape.render(renderer, 0); clouds.shapeTexture = shape.texture; procedural.push(shape);
   const detail = new CloudShapeDetail(); detail.render(renderer, 0); clouds.shapeDetailTexture = detail.texture; procedural.push(detail);
-  const weather = new LocalWeather(); weather.render(renderer, 0); clouds.localWeatherTexture = weather.texture; procedural.push(weather);
+  // The weather map is generated at 512 and stretched over a tile the size of a
+  // continent — at our localWeatherRepeat that is 312 m per texel. Edge-on you
+  // never notice, but seen from ABOVE the coverage threshold runs along the
+  // bilinear texel grid and the cloud field comes out as axis-aligned blocks.
+  // The generator has no size parameter (LocalWeather hard-codes 512), but the
+  // shader derives its UVs from geometry, so resizing the target before the one
+  // render it does is enough: 78 m per texel, and the blocks go away.
+  const weather = new LocalWeather();
+  weather.renderTarget.setSize(2048, 2048);
+  weather.size = 2048;
+  weather.render(renderer, 0); clouds.localWeatherTexture = weather.texture; procedural.push(weather);
   const turb = new Turbulence(); turb.render(renderer, 0); clouds.turbulenceTexture = turb.texture; procedural.push(turb);
 
   // Blue noise drives the temporal sampling. Non-fatal if it fails to load —
@@ -79,10 +89,16 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // noise that erodes the coverage volume into lobes defaults to a 3333 m
   // wavelength (repeat 0.0003), which is WIDER THAN A WHOLE CLOUD: it barely
   // varies across one, so nothing carves the sides and you get a slab with a
-  // flat top and vertical walls. At 833 m there are several lobes per cloud and
-  // they read as cauliflower bumps. Do not go much finer — by 333 m the noise
-  // eats the cloud faster than it shapes it and they come apart into spray.
-  clouds.shapeRepeat.setScalar(0.0012);
+  // flat top and vertical walls.
+  //
+  // But this value is also the WORLD-SPACE TILING PERIOD of the shape texture,
+  // and that is the trap: 833 m gave lovely lobes and then repeated them every
+  // 833 m, so neighbouring clouds came out as copies of each other and the sky
+  // read as a grid. The period has to stay clear of the cloud sizes it is
+  // carving — ours run to about 1200 m across, so 2000 m puts the repeat beyond
+  // anything you can see two of at once. Finer than ~600 m and you are trading
+  // a shape problem for a tiling one; coarser than ~3000 m and the lobes go away.
+  clouds.shapeRepeat.setScalar(0.0005);
 
   // RAYMARCH RANGE — this is what makes the distant clouds hold together.
   // The stock march is sized for a geospatial viewer looking at weather 100+ km
@@ -101,8 +117,17 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // small and far to show it.
   clouds.clouds.minStepSize = 50;
   clouds.clouds.maxStepSize = 120;
-  clouds.clouds.maxRayDistance = 15000;
-  clouds.clouds.perspectiveStepScale = 1.0;
+  // RANGE IS NOT THE CAMERA'S FAR PLANE. Capping this at 12-15 km to "match" the
+  // far plane was wrong reasoning: the far plane clips scene GEOMETRY, while the
+  // clouds are raymarched in post and composited, so nothing bounded them but
+  // this number — and it was slicing the sky flat, cutting distant clouds in
+  // half and leaving a hard band along the horizon.
+  clouds.clouds.maxRayDistance = 60000;
+  // ...and the step has to be allowed to grow again, or the iteration budget
+  // (500) runs out at 50 m a step and the cut simply moves to 25 km instead.
+  // Growth was never what caused the combing — maxStepSize 1000 was, and that
+  // stays capped at 120.
+  clouds.clouds.perspectiveStepScale = 1.005;
 
   // The secondary march toward the sun is what self-shadows a cloud. Two
   // iterations at 100 m is enough for cloudscapes viewed from far away and too
@@ -142,15 +167,24 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // ray-step frequency, so at full strength it aliases into ribs on anything
   // seen edge-on at distance — and the big smooth lumps are what actually read
   // as cloud anyway. The bumps come from shapeRepeat above, not from detail.
+  // DENSITY MUST REACH ZERO AT THE CEILING. This is the one that kept producing
+  // "sliced" clouds. A profile of (linear -0.6, constant 1.0) looks like a taper
+  // and reads like one in the code, but it still leaves 0.4 density at the top of
+  // the layer — and the layer ends there, so every cloud gets cut flat across.
+  // Seen from below you rarely notice; from above the whole field is slabs.
+  // Ending at exactly 0 is what gives them rounded tops. A linear ramp beats an
+  // exponential here: the exponential spends most of its range near zero, which
+  // thins the cloud out from the base up and puts the boxiness back.
+  const TOP_TAPER = [0, 0, -1.0, 1.0];
   const LAYERS = [
     // the general population — small to medium
     { channel: 'r', altitude: 620, height: 260, densityScale: 0.46,
       weatherExponent: 1.0, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6,
-      shapeDetailAmount: 0.4, shadow: true },
+      shapeDetailAmount: 0.4, shadow: true, profile: TOP_TAPER },
     // the strongest cells of that same field, building a little deeper
     { channel: 'r', altitude: 620, height: 420, densityScale: 0.50,
       weatherExponent: 2.2, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
-      shapeDetailAmount: 0.4, shadow: true, profile: [0, 0, -0.5, 1.0] },
+      shapeDetailAmount: 0.4, shadow: true, profile: TOP_TAPER },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
     // ceiling cuts it off — that gives every cloud a flat sliced top, and on a
@@ -159,7 +193,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // cores climb and the tops end where the cloud ends.
     { channel: 'g', altitude: 620, height: 620, densityScale: 0.54,
       weatherExponent: 1.6, shapeAlteringBias: 0.3, coverageFilterWidth: 0.3,
-      shapeDetailAmount: 0.4, shadow: true, profile: [0, 0, -0.6, 1.0] },
+      shapeDetailAmount: 0.4, shadow: true, profile: TOP_TAPER },
     // thin high veil, for something to fly under and to give the sky depth
     { channel: 'b', altitude: 4200, height: 600, densityScale: 0.16,
       weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.7, shadow: false,

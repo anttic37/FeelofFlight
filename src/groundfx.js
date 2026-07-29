@@ -32,6 +32,29 @@ float gnoise(vec2 p) {
   float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
   float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+// Inigo Quilez's tile-breaking sample: two lookups at cell-hashed offsets,
+// blended across the cell boundary. Gradients are passed in from the UNOFFSET
+// coordinates, because the offsets make the derivatives discontinuous and the
+// hardware would otherwise pick a different mip on each side of every cell.
+vec2 gCellOff(vec2 c) {
+  return fract(sin(vec2(dot(c, vec2(127.1, 311.7)), dot(c, vec2(269.5, 183.3)))) * 43758.5453);
+}
+vec4 gNoTile(vec2 uv, vec2 ddx, vec2 ddy) {
+  vec2 cell = uv * 0.27;                 // one random patch per ~60 m of ground
+  vec2 ic = floor(cell), fc = fract(cell);
+  vec2 w = fc * fc * (3.0 - 2.0 * fc);
+  vec4 acc = vec4(0.0);
+  float wsum = 0.0;
+  for (int j = 0; j < 2; j++) {
+    for (int i = 0; i < 2; i++) {
+      vec2 o = vec2(float(i), float(j));
+      float bw = mix(1.0 - w.x, w.x, o.x) * mix(1.0 - w.y, w.y, o.y);
+      acc += bw * textureGrad(uDetailTex, uv + gCellOff(ic + o), ddx, ddy);
+      wsum += bw;
+    }
+  }
+  return acc / max(wsum, 1e-4);
 }`;
 
 // pattern shifts toward -offset/scale: -(-0.0053)/0.0014 = +3.8 m/s eastward
@@ -58,12 +81,24 @@ const DETAIL_GLSL = `
 // texture reads. The weights come from slope, matching the bands colorcore bakes
 // into the vertex colours, so the texture lands on the material it belongs to.
 //
-// ANTI-TILING: sampled at two non-harmonic scales, the second rotated, and
-// multiplied together. The textbook fix is Inigo Quilez's random per-cell offset
-// blend, which is stronger — but it makes the UV derivatives jump at cell
-// borders, so it needs explicit textureGrad to avoid mip seams. Two incommensurate
-// scales beat the repeat far enough into the distance for a detail layer this
-// subtle, with no seam risk and the same two samples.
+// ANTI-TILING, properly this time. The first attempt sampled two non-harmonic
+// scales and combined them, on the theory that incommensurate periods would beat
+// the repeat far enough out to hide it. They do not: the ground came out with a
+// regular diamond crosshatch at the 16 m repeat, because two periodic functions
+// combined are still periodic — you just get a longer period and a busier motif.
+//
+// This is Inigo Quilez's variant instead: hash each low-frequency cell to a
+// random UV offset, sample twice with neighbouring cells' offsets, and blend
+// across the boundary. The pattern still comes from one small texture, but the
+// piece of it that lands on any given patch of ground is effectively random, so
+// there is nothing to see repeating.
+//
+// It needs textureGrad. Offsetting the UVs makes their screen-space derivatives
+// jump at every cell border, and the hardware picks the mip level from those
+// derivatives — so with an ordinary sample you trade the tiling for a grid of
+// mip seams. Passing the UNOFFSET gradients explicitly keeps the filtering
+// continuous. WebGL2/GLSL3 has textureGrad natively; three's texture2D alias
+// does not cover it, hence the direct call.
 //
 // gDet is deliberately declared at function scope, NOT inside a block: the
 // normal perturbation below reads it, and recomputing it there would double the
@@ -86,14 +121,19 @@ float gBumpFade = 0.0;
   gBumpFade = (1.0 - smoothstep(70.0, 320.0, gdist)) * smoothstep(1.0, 5.0, vGWPos.y);
   if (gDetFade > 0.002) {
     vec2 guv = vGWPos.xz * 0.062;                      // ~16 m per repeat
-    vec2 gr = vec2(0.4536, -0.8912);                   // ~1.1 rad rotation
+    vec2 gddx = dFdx(guv), gddy = dFdy(guv);
+    vec4 gFine = gNoTile(guv, gddx, gddy);
     // The macro tap MODULATES the grain rather than multiplying into it. A
     // product of two noise fields is just noisier noise — it was reading as
     // static. Using the far coarser tap as an amplitude instead gives the grain
     // somewhere to be thick and somewhere to thin out, which is what ground
     // cover actually does and what stops it looking like sandpaper.
+    // Plain sample for the macro tap: it is only an amplitude, at a sixth of the
+    // frequency, and low-frequency repetition in something that merely thickens
+    // and thins the grain is not visible. Tile-breaking it would double the
+    // texture reads for nothing.
+    vec2 gr = vec2(0.4536, -0.8912);                   // ~1.1 rad rotation
     vec2 guvM = vec2(guv.x * gr.x - guv.y * gr.y, guv.x * gr.y + guv.y * gr.x) * 0.17;
-    vec4 gFine = texture2D(uDetailTex, guv);
     vec4 gMacro = texture2D(uDetailTex, guvM);
     vec4 gt = clamp(vec4(0.5) + (gFine - 0.5) * (0.45 + 1.5 * gMacro), 0.0, 1.0);
     // material weights: turf on the flats, dry scrub as it tips, scree, then rock
