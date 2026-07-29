@@ -110,7 +110,14 @@ float gBumpFade = 0.0;
 {
   float gsl = 1.0 - clamp(vGWNrm.y, 0.0, 1.0);
   float gdist = length(vViewPosition);
-  gDetFade = (1.0 - smoothstep(900.0, 4200.0, gdist)) * smoothstep(1.0, 5.0, vGWPos.y);
+  // DISTANCE FADE. This used to run to 4.2 km, which is precisely where the
+  // layer stops helping and starts hurting: past a few hundred metres one texel
+  // is under a pixel, so the detail cannot resolve — all it can do is alias, and
+  // any residue of the tiling is most legible out there where the ground is
+  // compressed into a few rows of pixels. Gone by ~1.4 km, so the far field is
+  // carried by the vertex colours and the aerial perspective, which is what
+  // should be describing distance anyway.
+  gDetFade = (1.0 - smoothstep(420.0, 1400.0, gdist)) * smoothstep(1.0, 5.0, vGWPos.y);
   // The bump gets its OWN, far shorter range. Derivative bump reads the screen-
   // space gradient of the detail, and when you look ACROSS ground rather than
   // down at it the two derivatives are wildly different scales, so the gradient
@@ -120,7 +127,15 @@ float gBumpFade = 0.0;
   // adds the light response underfoot.
   gBumpFade = (1.0 - smoothstep(70.0, 320.0, gdist)) * smoothstep(1.0, 5.0, vGWPos.y);
   if (gDetFade > 0.002) {
-    vec2 guv = vGWPos.xz * 0.062;                      // ~16 m per repeat
+    // A low-frequency WARP before the lookup. The cell-offset trick randomises
+    // which piece of texture lands where, but its own cell lattice is still a
+    // regular grid, and at a glance that grid is what was left of the tiling.
+    // Bending the coordinates first means the lattice is no longer straight, so
+    // there is no longer a regular anything to lock onto. gnoise is hashed from
+    // world position and does not repeat at all over an island this size.
+    vec2 gwp = vGWPos.xz;
+    vec2 gwarp = vec2(gnoise(gwp * 0.0031 + 3.7), gnoise(gwp * 0.0031 + 19.1)) - 0.5;
+    vec2 guv = (gwp + gwarp * 46.0) * 0.062;           // ~16 m per repeat
     vec2 gddx = dFdx(guv), gddy = dFdy(guv);
     vec4 gFine = gNoTile(guv, gddx, gddy);
     // The macro tap MODULATES the grain rather than multiplying into it. A
@@ -128,13 +143,14 @@ float gBumpFade = 0.0;
     // static. Using the far coarser tap as an amplitude instead gives the grain
     // somewhere to be thick and somewhere to thin out, which is what ground
     // cover actually does and what stops it looking like sandpaper.
-    // Plain sample for the macro tap: it is only an amplitude, at a sixth of the
-    // frequency, and low-frequency repetition in something that merely thickens
-    // and thins the grain is not visible. Tile-breaking it would double the
-    // texture reads for nothing.
-    vec2 gr = vec2(0.4536, -0.8912);                   // ~1.1 rad rotation
-    vec2 guvM = vec2(guv.x * gr.x - guv.y * gr.y, guv.x * gr.y + guv.y * gr.x) * 0.17;
-    vec4 gMacro = texture2D(uDetailTex, guvM);
+    // The macro amplitude comes from NOISE, not from the texture. It used to be
+    // a plain texture sample at a sixth of the frequency, on the reasoning that
+    // low-frequency repetition would not be visible — it was: at that scale the
+    // tile is ~94 m, and a regular 94 m modulation over open ground is exactly
+    // the sort of thing the eye locks onto. gnoise is hash-based and aperiodic,
+    // it costs less than a texture read, and it cannot tile by construction.
+    float gMac = gnoise(gwp * 0.0125 + 5.3) * 0.65 + gnoise(gwp * 0.041 + 11.9) * 0.35;
+    vec4 gMacro = vec4(gMac);
     vec4 gt = clamp(vec4(0.5) + (gFine - 0.5) * (0.45 + 1.5 * gMacro), 0.0, 1.0);
     // material weights: turf on the flats, dry scrub as it tips, scree, then rock
     float wRock  = smoothstep(0.20, 0.46, gsl);

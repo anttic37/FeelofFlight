@@ -80,7 +80,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // cloud comes out the same size. 250 brings the blobs down to something like
   // real cumulus spacing. Much higher and the coverage field averages out into
   // permanent overcast, plus the raymarch starts aliasing.
-  clouds.coverage = 0.34;
+  clouds.coverage = 0.30;
   clouds.localWeatherRepeat.set(250, 250);
   clouds.localWeatherVelocity.set(0.00008, 0);
   clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
@@ -92,13 +92,19 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // flat top and vertical walls.
   //
   // But this value is also the WORLD-SPACE TILING PERIOD of the shape texture,
-  // and that is the trap: 833 m gave lovely lobes and then repeated them every
-  // 833 m, so neighbouring clouds came out as copies of each other and the sky
-  // read as a grid. The period has to stay clear of the cloud sizes it is
-  // carving — ours run to about 1200 m across, so 2000 m puts the repeat beyond
-  // anything you can see two of at once. Finer than ~600 m and you are trading
-  // a shape problem for a tiling one; coarser than ~3000 m and the lobes go away.
-  clouds.shapeRepeat.setScalar(0.0005);
+  // and that is the trap. 833 m gave lovely lobes and repeated them every 833 m,
+  // so neighbouring clouds came out as copies and the sky read as a grid. Going
+  // to a flat 2000 m killed the repeat and the lobes with it: the noise barely
+  // varied across a 600 m cloud, so nothing carved it and clouds fused into long
+  // smooth pipes. The two requirements pull in opposite directions.
+  //
+  // The way out is that this is a Vector3, not a scalar. Giving each axis its own
+  // NON-COMMENSURATE period keeps the lobe scale near 1 km — where the
+  // cauliflower reads — while the 3D pattern only truly repeats after the common
+  // multiple of the three, which is far past anything on screen. The y period is
+  // deliberately the shortest: clouds are only 260-620 m deep, so vertical detail
+  // has to be finer than horizontal to show at all.
+  clouds.shapeRepeat.set(0.00104, 0.00131, 0.00097); // ~960 / 763 / 1031 m
 
   // RAYMARCH RANGE — this is what makes the distant clouds hold together.
   // The stock march is sized for a geospatial viewer looking at weather 100+ km
@@ -178,13 +184,17 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   const TOP_TAPER = [0, 0, -1.0, 1.0];
   const LAYERS = [
     // the general population — small to medium
+    // SEPARATION comes from the exponent. At 1.0 the surviving coverage was a
+    // connected carpet whose arms extruded into long chained masses; raising it
+    // keeps only each blob's core, so clouds come out discrete with sky between
+    // them, which is what a fair-weather field actually looks like.
     { channel: 'r', altitude: 620, height: 260, densityScale: 0.46,
-      weatherExponent: 1.0, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6,
-      shapeDetailAmount: 0.4, shadow: true, profile: TOP_TAPER },
+      weatherExponent: 1.5, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6,
+      shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // the strongest cells of that same field, building a little deeper
     { channel: 'r', altitude: 620, height: 420, densityScale: 0.50,
-      weatherExponent: 2.2, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
-      shapeDetailAmount: 0.4, shadow: true, profile: TOP_TAPER },
+      weatherExponent: 2.6, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
+      shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
     // ceiling cuts it off — that gives every cloud a flat sliced top, and on a
@@ -192,8 +202,8 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // of spray plumes. Tapering the other way keeps the mass low, so only strong
     // cores climb and the tops end where the cloud ends.
     { channel: 'g', altitude: 620, height: 620, densityScale: 0.54,
-      weatherExponent: 1.6, shapeAlteringBias: 0.3, coverageFilterWidth: 0.3,
-      shapeDetailAmount: 0.4, shadow: true, profile: TOP_TAPER },
+      weatherExponent: 2.0, shapeAlteringBias: 0.3, coverageFilterWidth: 0.3,
+      shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // thin high veil, for something to fly under and to give the sky depth
     { channel: 'b', altitude: 4200, height: 600, densityScale: 0.16,
       weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.7, shadow: false,
