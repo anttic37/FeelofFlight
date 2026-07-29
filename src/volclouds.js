@@ -87,13 +87,23 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // cloud comes out the same size. 250 brings the blobs down to something like
   // real cumulus spacing. Much higher and the coverage field averages out into
   // permanent overcast, plus the raymarch starts aliasing.
-  clouds.coverage = 0.30;
-  // 150, not 250. This is the only control over the SIZE of the weather blobs
-  // every layer inherits — a smaller number means a bigger tile in world terms,
-  // so 250 -> 150 scales the whole cloud population up by about 1.7x. The layers
-  // can vary size relative to each other but they cannot escape this, since they
-  // all read the same field; if the sky feels small, it is this number.
-  clouds.localWeatherRepeat.set(150, 150);
+  // FEWER BUT BIGGER. These two numbers have to move together, and that is the
+  // whole trick. localWeatherRepeat is the only control over blob SIZE (smaller
+  // number = bigger tile in world terms = bigger clouds); coverage is the
+  // threshold, so lowering it makes clouds both fewer AND smaller.
+  //
+  // Enlarging alone is a trap: at repeat 100 with coverage still 0.30 the deck
+  // got so continuous that 44% of the frame was optically saturated — every ray
+  // fully attenuating — up from 12%. That saturation is what produced the hard
+  // rectangular "cuts": a fully-attenuated region renders featureless, so the
+  // boundary of the saturated area becomes a visible edge, and with a continuous
+  // deck that boundary follows a layer's footprint and reads as a rectangle.
+  //
+  // Bigger AND sparser together gets both: 120 / 0.24 puts saturation back to
+  // about 9% while the clouds are noticeably larger and separated by real sky, so
+  // what saturation remains is cloud-shaped instead of slab-shaped.
+  clouds.coverage = 0.24;
+  clouds.localWeatherRepeat.set(120, 120);
   clouds.localWeatherVelocity.set(0.00008, 0);
   clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
 
