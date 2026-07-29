@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { EffectComposer, RenderPass, EffectPass, ToneMappingEffect, ToneMappingMode } from 'postprocessing';
+import { EffectComposer, RenderPass, EffectPass, ToneMappingEffect, ToneMappingMode, BloomEffect } from 'postprocessing';
 import { CloudsEffect, CloudShape, CloudShapeDetail, LocalWeather, Turbulence } from '@takram/three-clouds';
 import { AerialPerspectiveEffect, PrecomputedTexturesLoader, DEFAULT_PRECOMPUTED_TEXTURES_URL } from '@takram/three-atmosphere';
 import { STBNLoader, DEFAULT_STBN_URL } from '@takram/three-geospatial';
@@ -230,12 +230,42 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   });
   link();
 
-  const composer = new EffectComposer(renderer, { frameBufferType: THREE.HalfFloatType });
+  // MULTISAMPLING HAS TO BE ASKED FOR HERE. The renderer is built with
+  // antialias:true, but that only ever applied to the DEFAULT framebuffer — the
+  // moment this composer took over we stopped drawing to it, and every terrain
+  // edge, runway marking and wingtip went aliased without anything reporting it.
+  const composer = new EffectComposer(renderer, {
+    frameBufferType: THREE.HalfFloatType,
+    multisampling: Math.min(4, renderer.capabilities.maxSamples),
+  });
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(new EffectPass(camera, clouds, aerial));
-  composer.addPass(new EffectPass(camera, new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC })));
 
-  window.__vc = { clouds, aerial, composer, textures }; // tuning handle, same idea as __ff
+  // BLOOM, restored. The old UnrealBloomPass lived on main.js's composer, which
+  // this one bypasses entirely, so the flag-gated spike quietly took the glow
+  // off the water glints and the sunlit cloud edges when it became the default.
+  //
+  // It runs AFTER the clouds are composited so their highlights can bloom, and
+  // BEFORE tone mapping because bloom is a linear-light operation — put it after
+  // the ACES curve and it spreads already-compressed values, which reads as haze.
+  //
+  // The threshold is the whole game. A daylit sky and sunlit snow sit near 1.0
+  // in this buffer, so anything much below that blooms the entire frame into
+  // fog; only genuine highlights should glow.
+  const bloom = new BloomEffect({
+    intensity: 0.7,
+    luminanceThreshold: 1.25,
+    luminanceSmoothing: 0.2,
+    mipmapBlur: true,
+    radius: 0.62,
+  });
+  // ?bloom=0 already existed for main.js's composer; it has to be honoured here
+  // too or the flag silently stops working the moment this path takes over.
+  if (new URLSearchParams(location.search).get('bloom') === '0') bloom.intensity = 0;
+  composer.addPass(new EffectPass(camera, bloom,
+    new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC })));
+
+  window.__vc = { clouds, aerial, composer, textures, bloom }; // tuning handle, same idea as __ff
 
   return {
     clouds,
