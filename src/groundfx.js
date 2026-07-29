@@ -16,7 +16,10 @@ export const uGroundTime = { value: 0 };
 const uDetailTex = { value: null };
 // live-tunable so the bump can be A/B'd from the console without a reload —
 // window.__ff exposes it as groundBump
-export const uBumpScale = { value: 2.4 };
+// 1.1, down from 2.4: the terrain is smooth-shaded now, and the flat facet
+// normals had been masking half of this. On a smooth base the same bump reads
+// roughly twice as strong.
+export const uBumpScale = { value: 1.1 };
 
 const NOISE_GLSL = `
 uniform float uGroundTime;

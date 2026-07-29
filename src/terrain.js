@@ -80,11 +80,23 @@ function bakeIslandGeometry(segments, minSpan) {
   return geo;
 }
 
+// SMOOTH-SHADED GROUND. The terrain used to be flatShading, which throws away
+// the analytic normals bakeTile computes and lights each triangle by its face
+// normal instead. On a regular LOD grid that turns the mesh into a regular
+// diagonal lattice of facets — and that lattice, not the detail texture, was
+// what kept reading as "the ground repeats". It is most obvious on open slopes,
+// where there is nothing else to look at, and the splat layer was only ever
+// masking it. The normals are already there and already continuous across tile
+// seams (they come from heightAt, not from the mesh), so using them costs
+// nothing. ?facets=1 restores the old faceted look.
+const FLAT_SHADE = new URLSearchParams(
+  typeof location === 'undefined' ? '' : location.search).get('facets') === '1';
+
 export function createTerrain(scene) {
   if (new URLSearchParams(location.search).get('terrain') === 'static') {
     // A/B fallback: today's static path, bit for bit (geometry — the ground
     // detail shader layer applies here too so both modes look the same)
-    const staticMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: true, roughness: 1 });
+    const staticMat = new THREE.MeshStandardMaterial({ vertexColors: true, flatShading: FLAT_SHADE, roughness: 1 });
     injectGroundFX(staticMat);
     const terrain = new THREE.Mesh(bakeIslandGeometry(500), staticMat);
     terrain.receiveShadow = true;
@@ -102,7 +114,7 @@ export function createTerrain(scene) {
   // resolves toward the finer ring — the depth-buffer half of anti-overlap
   function ringMaterial(po) {
     const mat = new THREE.MeshStandardMaterial({
-      vertexColors: true, flatShading: true, roughness: 1,
+      vertexColors: true, flatShading: FLAT_SHADE, roughness: 1,
       polygonOffset: po > 0, polygonOffsetFactor: po, polygonOffsetUnits: po,
     });
     injectGroundFX(mat);

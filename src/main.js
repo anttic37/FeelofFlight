@@ -36,7 +36,13 @@ document.body.appendChild(renderer.domElement);
 initGroundFX(renderer);
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.5, 12000);
+// FAR PLANE 45 km, not 12. The ocean plane is already 80 km wide, so the hard
+// line along the horizon was never the water running out — it was the far plane
+// CLIPPING it, leaving bare sky dome above a sharp edge. Depth precision is
+// governed almost entirely by NEAR (resolution at distance z goes as z²/near),
+// so pushing far out nearly four times costs essentially nothing, while the sea
+// now reaches the true horizon and fades into haze instead of stopping dead.
+const camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.5, 45000);
 
 // a NEW island every launch: seed the terrain before anything samples it.
 // ?seed=N pins an island you liked (?seed=0 is the classic hand-tuned one).
