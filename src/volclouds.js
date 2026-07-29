@@ -201,13 +201,28 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // deep layer it turns marginal cells into thin vertical spikes, a sky full
     // of spray plumes. Tapering the other way keeps the mass low, so only strong
     // cores climb and the tops end where the cloud ends.
-    { channel: 'g', altitude: 620, height: 620, densityScale: 0.54,
-      weatherExponent: 2.0, shapeAlteringBias: 0.3, coverageFilterWidth: 0.3,
+    // THE BIG ONES. Size variation cannot come from a layer's height, because
+    // every layer draws on the same weather field and so inherits the same
+    // footprint — making one taller only builds curtains. It comes from the
+    // EXPONENT, pushed the opposite way to the separation above: a LOW exponent
+    // lets more of the field through, so neighbouring blobs merge into masses
+    // several times the width of the scattered puffs. Depth still has to stay
+    // moderate (760, not the 1150 that looked right on paper) or that wide
+    // footprint extrudes straight back into vertical curtains.
+    { channel: 'g', altitude: 620, height: 760, densityScale: 0.54,
+      weatherExponent: 1.2, shapeAlteringBias: 0.3, coverageFilterWidth: 0.5,
       shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
-    // thin high veil, for something to fly under and to give the sky depth
-    { channel: 'b', altitude: 4200, height: 600, densityScale: 0.16,
+    // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
+    // the top: the stock one sits at 0.25 density on the layer's floor, so the
+    // veil was sliced off flat along its underside and squared off at the end of
+    // every streak — those were the hard cut edges up near the horizon. Channel b
+    // resolves into long thin ribbons (see the note above), which is right for
+    // cirrus, but only once the ends actually feather out. This is
+    // A*exp(b*h) + m*h + c solved for f(0) = f(1) = 0, peaking about 0.32 a third
+    // of the way up; densityScale carries the rest.
+    { channel: 'b', altitude: 4200, height: 420, densityScale: 0.45,
       weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.7, shadow: false,
-      shapeDetailAmount: 0.5 },
+      shapeDetailAmount: 0.5, profile: [-1, -3, -0.95, 1] },
   ];
   for (let i = 0; i < clouds.cloudLayers.length; i++) {
     const layer = clouds.cloudLayers[i], spec = LAYERS[i];
