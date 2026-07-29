@@ -99,12 +99,21 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // smooth pipes. The two requirements pull in opposite directions.
   //
   // The way out is that this is a Vector3, not a scalar. Giving each axis its own
-  // NON-COMMENSURATE period keeps the lobe scale near 1 km — where the
-  // cauliflower reads — while the 3D pattern only truly repeats after the common
+  // NON-COMMENSURATE period lets the 3D pattern repeat only at the common
   // multiple of the three, which is far past anything on screen. The y period is
-  // deliberately the shortest: clouds are only 260-620 m deep, so vertical detail
+  // deliberately the shortest: clouds are only 260-760 m deep, so vertical detail
   // has to be finer than horizontal to show at all.
-  clouds.shapeRepeat.set(0.00104, 0.00131, 0.00097); // ~960 / 763 / 1031 m
+  //
+  // AND IT MUST BE SHORTER THAN THE CLOUD. At ~960 m the noise barely changed
+  // across a 600 m cloud, so it could not chew through a coverage edge — and
+  // those edges are the real source of the boxiness. The weather map is bilinear,
+  // and a thresholded bilinear field has contours that follow its texel quads,
+  // which are AXIS-ALIGNED in texture space; with only ~8 texels across a cloud
+  // you get long straight silhouette edges lined up with two fixed world
+  // directions. That is why clouds kept showing hard vertical sides no matter
+  // what the coverage was doing. Noise at ~600 m breaks those edges up. Much
+  // finer than ~450 m and it stops shaping and starts dissolving.
+  clouds.shapeRepeat.set(0.0015, 0.0019, 0.0014); // ~667 / 526 / 714 m
 
   // RAYMARCH RANGE — this is what makes the distant clouds hold together.
   // The stock march is sized for a geospatial viewer looking at weather 100+ km
@@ -190,11 +199,11 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // them, which is what a fair-weather field actually looks like.
     { channel: 'r', altitude: 620, height: 260, densityScale: 0.46,
       weatherExponent: 1.5, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6,
-      shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
+      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // the strongest cells of that same field, building a little deeper
     { channel: 'r', altitude: 620, height: 420, densityScale: 0.50,
       weatherExponent: 2.6, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
-      shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
+      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
     // ceiling cuts it off — that gives every cloud a flat sliced top, and on a
@@ -211,7 +220,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // footprint extrudes straight back into vertical curtains.
     { channel: 'g', altitude: 620, height: 760, densityScale: 0.54,
       weatherExponent: 1.2, shapeAlteringBias: 0.3, coverageFilterWidth: 0.5,
-      shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
+      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
     // the top: the stock one sits at 0.25 density on the layer's floor, so the
     // veil was sliced off flat along its underside and squared off at the end of
