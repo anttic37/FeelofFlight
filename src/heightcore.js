@@ -574,6 +574,24 @@ let ARCH = 0;
 const ARCH_NAMES = ['ROLLING', 'HIGHLAND', 'MOUNTAIN'];
 export function islandInfo() { return { archetype: ARCH_NAMES[ARCH], strips: RUNWAYS.length }; }
 
+// ---- terrain CHARACTER: what stops one island being one formula ----
+// Every relief term below scales with `dist` and with h — but both of those are
+// about HOW HIGH the ground is, not what KIND of ground it is. So at any given
+// elevation the whole island got the same gullies at the same strength, and
+// flying across it you passed the same hillside over and over.
+//
+// These two fields vary the STYLE instead of the amount, at ~3.5 km so they are
+// district-sized: you fly out of smooth downs into rugged gullied country, and
+// over tableland that breaks into benches. They are deliberately independent of
+// each other and of `dist`, so height and character do not correlate — rugged
+// lowland and smooth uplands both exist.
+function charRough(x, z) { // 0 = smooth downs, 1 = heavily gullied
+  return smooth(-0.5, 0.5, fbm(x * 0.00029 + 63.7, z * 0.00029 + 24.1, 2));
+}
+function charBench(x, z) { // 0 = rounded, 1 = stepped tableland
+  return smooth(0.42, 0.78, noise2(x * 0.00024 + 12.9, z * 0.00024 + 51.3));
+}
+
 function genTerrainHeight(x, z) {
   const r2 = x * x + z * z;
   if (r2 > SH_R2OUT) return -20;
@@ -595,9 +613,12 @@ function genTerrainHeight(x, z) {
   // have some softness between the crests, but the shape of the hill comes from
   // the ridge field. Faded out below ~25 m so the coastal flats and the beach
   // contour stay smooth (a ridge crossing the waterline serrates it).
+  const rough = charRough(x, z), bench = charBench(x, z);
   const relAmp = (16 + 22 * (K_REL - 0.7)) * dist;
   h += fbm(x * 0.0016 + 40.4, z * 0.0016 + 12.7, 3) * relAmp * 0.45;
-  h += ridgeRelief(x, z, 0.0010, 3, 900, 6.3) * relAmp * 4.5 * smooth(2, 25, h);
+  // ridge strength now swings 0.4x .. 1.8x across the island rather than sitting
+  // at one value everywhere
+  h += ridgeRelief(x, z, 0.0010, 3, 900, 6.3) * relAmp * 4.5 * (0.55 + 0.75 * rough) * smooth(2, 25, h);
   // close detail: the texture you read at low level (~160 m, grows with ground).
   // Faded out below ~9 m so it can't wiggle the waterline into sawtooth —
   // beaches and the shoreline contour stay smooth curves.
@@ -607,7 +628,43 @@ function genTerrainHeight(x, z) {
   // draws on their flanks, which is what stops a hillside reading as a painted
   // dome when you are 300 m over it. Scaled with height so lowland stays gentle,
   // and held off the shore so the waterline contour stays smooth.
-  h += ridgeReliefF(x, z, 0.0055, 2) * (22 + Math.min(40, h * 0.16)) * smooth(6, 40, h);
+  // FINE DRAINAGE. This layer used the ridge field CENTRED, so it added as much
+  // as it subtracted — and at a 180 m wavelength a field that bumps up and down
+  // everywhere reads as a carpet of rounded worms, not as terrain. It was most of
+  // why the ground looked like one formula stamped over the whole island.
+  //
+  // A hillside is mostly smooth slope with occasional incised draws, so keep only
+  // the negative half and let it CUT. The smoothstep weight is what makes that
+  // safe: a bare max(0, ·) creases along its own zero contour, and a crease
+  // scaled by tens of metres is exactly the dashed hairline this codebase has
+  // been bitten by twice. Weighting by the depth itself gives zero value AND
+  // zero slope at the contour.
+  // Cut along the ridge field's PEAKS, not its troughs. The peaks trace the
+  // noise's zero contours, which are connected LINES — exactly the shape a draw
+  // wants. The troughs are the broad regions between those lines, so cutting
+  // there gave a hillside pocked with isolated round craters. Cubing keeps the
+  // term near zero off the line and sharp on it, and it is smooth everywhere so
+  // nothing creases.
+  // Depth is the whole difference between drainage and brain coral: at ~85 m of
+  // cut the channels stop being draws in a hillside and become a maze with walls.
+  // A draw is a shallow feature — a few tens of metres at most — and the eye
+  // reads the NETWORK, not the depth.
+  const line = ridgeReliefF(x, z, 0.0042, 2) + RIDGE_MEAN;
+  h -= line * line * line * (13 + Math.min(23, h * 0.085))
+    * (0.3 + 0.8 * rough) * smooth(6, 40, h);
+  // TABLELAND. Where the bench field is high, part of the elevation is quantised
+  // into steps: flat benches with short risers between them, the shape you get
+  // from horizontally bedded rock rather than from soil creep. The same
+  // continuous-terrace construction the desert mesas use — (i + smoothstep(frac))
+  // stays C0 across every step boundary, so there is no cliff-line artifact, just
+  // a flat tread and a steep riser. Held off low ground so beaches and coastal
+  // flats keep their smooth contours.
+  if (bench > 0.02) {
+    const stepH = 34 + 26 * noise2(x * 0.00041 + 7.3, z * 0.00041 + 19.7);
+    const t = h / stepH, i = Math.floor(t), fr = t - i;
+    const stepped = (i + smooth(0.52, 0.94, fr)) * stepH;
+    h += (stepped - h) * bench * 0.6 * smooth(45, 110, h);
+  }
   // mountains: ridged fBm, only inside the range regions, favoring high base
   const rmk = rangeMask(x, z);
   if (rmk > 0.01) {
