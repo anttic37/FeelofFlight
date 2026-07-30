@@ -18,6 +18,7 @@ export class Input {
     this.onView = null;
     this.onRunwaySpawn = null;
     this.onFreeCam = null;
+    this.onTweak = null;
     this.freeCam = false;   // set by main; suppresses flight input while the camera flies
     this._gpGearHeld = false;
 
@@ -34,6 +35,7 @@ export class Input {
       if (e.code === 'KeyV' && this.onView) this.onView();
       if (e.code === 'KeyT' && this.onRunwaySpawn) this.onRunwaySpawn();
       if (e.code === 'KeyB' && this.onFreeCam) this.onFreeCam();
+      if (e.code === 'KeyP' && this.onTweak) this.onTweak();
     });
     window.addEventListener('keyup', e => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());

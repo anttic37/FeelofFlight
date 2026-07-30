@@ -103,6 +103,10 @@ input.onFlaps = () => { if (phys.setFlaps) phys.setFlaps(((phys.flapSetting || 0
 input.onCamera = () => hud.msg(`CAMERA ${chase.cycleTightness()}`, 1200);
 input.onView = () => hud.msg(`VIEW ${chase.cycleView(phys)}`, 1200);
 let runwayCycle = -1;
+input.onTweak = () => {
+  if (!tweak) { hud.msg('TUNING PANEL NEEDS THE CLOUDS — STILL LOADING', 1600); return; }
+  hud.msg(tweak.toggle() ? 'TUNING PANEL OPEN' : 'TUNING PANEL CLOSED', 1000);
+};
 input.onFreeCam = () => {
   const on = chase.toggleFree(phys);
   input.freeCam = on;
@@ -157,6 +161,7 @@ if (new URLSearchParams(location.search).get('bloom') !== '0') {
 // if the fetch fails outright, the bloom composer above keeps drawing a normal
 // (cloudless) sky rather than leaving a broken frame. ?vclouds=0 skips them.
 let volClouds = null;
+let tweak = null;   // live tuning panel (P), built once the clouds land
 if (new URLSearchParams(location.search).get('vclouds') !== '0') {
   import('./volclouds.js')
     .then(m => m.createVolumetricClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
@@ -164,6 +169,12 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
       volClouds = v;
       v.setSize(window.innerWidth, window.innerHeight);
       console.log('[flighfeel] volumetric clouds active');
+      // the panel needs the live effect objects, so it can only be built once the
+      // clouds have actually landed
+      return import('./tweak.js').then(t => {
+        tweak = t.initTweakPanel({ clouds: v.clouds, bloom: window.__vc.bloom,
+          composer: window.__vc.composer, renderer, camera });
+      });
     })
     .catch(e => console.error('[flighfeel] volumetric clouds failed:', e));
 }
@@ -287,6 +298,7 @@ renderer.setAnimationLoop(() => {
   world.update(chase.free ? chase.camera.position : phys.pos, simTime);
   sound.update(dt, phys);
   hud.update(phys, input);
+  if (tweak && tweak.open) tweak.tick();
 
   draw();
 });
