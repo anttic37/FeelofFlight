@@ -19,6 +19,8 @@ export class Input {
     this.onRunwaySpawn = null;
     this.onFreeCam = null;
     this.onTweak = null;
+    this.onPause = null;
+    this.paused = false;   // set by main; holds the controls still so nothing drifts
     this.freeCam = false;   // set by main; suppresses flight input while the camera flies
     this._gpGearHeld = false;
 
@@ -36,6 +38,7 @@ export class Input {
       if (e.code === 'KeyT' && this.onRunwaySpawn) this.onRunwaySpawn();
       if (e.code === 'KeyB' && this.onFreeCam) this.onFreeCam();
       if (e.code === 'KeyP' && this.onTweak) this.onTweak();
+      if ((e.code === 'Escape' || e.code === 'Pause') && this.onPause) this.onPause();
     });
     window.addEventListener('keyup', e => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
@@ -48,7 +51,10 @@ export class Input {
     // FREE CAMERA TAKES THE STICK. It flies on the same WASD/QE keys, so without this
     // every camera move also feeds the aeroplane — pressing W to fly forward would put
     // the nose down and you would come back from admiring the sky to a smoking hole.
-    const fc = this.freeCam;
+    // Paused counts as free-cam here for the same reason: the smoothed control targets
+    // keep integrating from held keys even with physics stopped, so a key resting on the
+    // stick during a pause would be waiting at full deflection when you unpause.
+    const fc = this.freeCam || this.paused;
     let pitch = fc ? 0 : this._key('KeyS', 'ArrowDown') - this._key('KeyW', 'ArrowUp');
     let roll = fc ? 0 : this._key('KeyD', 'ArrowRight') - this._key('KeyA', 'ArrowLeft');
     let yaw = fc ? 0 : this._key('KeyE') - this._key('KeyQ');

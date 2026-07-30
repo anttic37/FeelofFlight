@@ -26,6 +26,12 @@
   #chips #flap-chip.f1, #chips #flap-chip.f2 { color: #ffc861; border-color: rgba(255,200,95,0.55); background: rgba(255,180,70,0.10); }
   #chips #flap-chip.transit { animation: blink 0.4s steps(2) infinite; }
   #minimap { position: absolute; top: 40px; right: 16px; width: 140px; height: 140px; }
+  /* top centre, clear of the stall/gear warnings that own the middle of the screen */
+  #paused { position: absolute; top: 16px; left: 50%; transform: translateX(-50%); display: none;
+            font-size: 15px; letter-spacing: 6px; color: #9ecbff; padding: 5px 14px 6px;
+            background: rgba(8,16,26,0.5); border: 1px solid rgba(160,210,255,0.3); border-radius: 6px;
+            text-shadow: 0 1px 6px rgba(0,0,0,0.6); }
+  #paused span { font-size: 10px; letter-spacing: 2px; color: rgba(190,215,240,0.55); }
   #stall { position: absolute; top: 32%; left: 50%; transform: translate(-50%, -50%); font-size: 30px; letter-spacing: 8px; color: #ff5a4d; text-shadow: 0 0 18px rgba(255,60,40,0.8); display: none; animation: blink 0.45s steps(2) infinite; }
   @keyframes blink { 50% { opacity: 0.15; } }
   #gearwarn { position: absolute; top: 24%; left: 50%; transform: translate(-50%, -50%); font-size: 26px; letter-spacing: 6px; color: #ff5a4d; text-shadow: 0 0 16px rgba(255,60,40,0.85); display: none; animation: pulsewarn 0.7s ease-in-out infinite; }
@@ -64,6 +70,7 @@
     <div id="chips"><span id="gear-chip" class="chip">GEAR UP</span><span id="flap-chip" class="chip">FLAPS UP</span><span id="brake-chip" class="chip">BRAKE</span></div>
     <canvas id="gauges"></canvas>
   </div>
+  <div id="paused">PAUSED &nbsp;<span>ESC</span></div>
   <div id="stall">STALL</div>
   <div id="gearwarn">GEAR!</div>
   <div id="overspd">OVERSPEED</div>
@@ -71,7 +78,7 @@
   <div id="help" class="panel">
     <kbd>S</kbd> pull up &nbsp; <kbd>W</kbd> nose down &nbsp; <kbd>A</kbd>/<kbd>D</kbd> roll &nbsp; <kbd>Q</kbd>/<kbd>E</kbd> rudder<br>
     <kbd>X</kbd>/<kbd>Z</kbd> throttle &nbsp; <kbd>G</kbd> gear &nbsp; <kbd>F</kbd> flaps &nbsp; <kbd>Space</kbd> brake &nbsp; <kbd>T</kbd> next runway<br>
-    <kbd>R</kbd> reset &nbsp; <kbd>C</kbd> camera &nbsp; <kbd>V</kbd> view &nbsp; <kbd>B</kbd> free cam &nbsp; <kbd>P</kbd> tuning &nbsp; <kbd>I</kbd> invert &nbsp; <kbd>M</kbd> mute &nbsp; mouse drag look &nbsp; wheel zoom &nbsp; gamepad
+    <kbd>R</kbd> reset &nbsp; <kbd>C</kbd> camera &nbsp; <kbd>V</kbd> view &nbsp; <kbd>B</kbd> free cam &nbsp; <kbd>P</kbd> tuning &nbsp; <kbd>Esc</kbd> pause &nbsp; <kbd>I</kbd> invert &nbsp; <kbd>M</kbd> mute &nbsp; mouse drag look &nbsp; wheel zoom &nbsp; gamepad
   </div>
   <div id="gvign"></div>
   <div id="gvign-red"></div>
