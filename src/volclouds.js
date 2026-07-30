@@ -23,7 +23,9 @@ const EARTH_R = 6378137;
 // island cap has to be baked into that map at generation time, and it needs the
 // tile size in metres — so this value must be known BEFORE the map is rendered,
 // not set later alongside coverage.
-const WEATHER_REPEAT = 120;
+// ?wrepeat= overrides it for tuning: it is the one knob for cloud SIZE, and the
+// only way to compare sizes is to look at two of them.
+const WEATHER_REPEAT = +(new URLSearchParams(location.search).get('wrepeat')) || 120;
 
 // our world: +X east, +Y up, -Z north (so +Z is south)
 // ECEF at lat 0 lon 0: +X is up through the surface, +Y east, +Z north
@@ -54,47 +56,153 @@ function worldToECEF() {
 // 4096² texture and no second target. Only the r and g channels are masked;
 // b carries the high veil, and cirrus is synoptic rather than thermal, so it has
 // no business caring where the island is.
+// TILE SIZE IS NOT THE EQUATOR OVER THE REPEAT COUNT, and getting that wrong is
+// what made the first version of this cap useless. localWeatherRepeat counts
+// repeats across a CUBE-SPHERE FACE, not around the circumference: the library's
+// getGlobeUv is getCubeSphereUv, and near the centre of a face that reduces to
+// uv = 0.5 + 0.5 * sqrt(2) * lateral / R. So one uv unit spans sqrt(2) * R, and a
+// tile is sqrt(2) * R / repeat = 75 km at repeat 120 — not the 334 km that
+// 2*pi*R/repeat gives. Assuming the circumference made every distance in here
+// 4.44x too large, so a cap meant to cover a 7-8 km island actually died 2-4 km
+// out (measured looking straight up: cloud overhead 87% at 2 km, 1.7% at 4 km).
+// That near, hard, all-round boundary is exactly what reads as a straight wall of
+// cloud from the cockpit.
+function capTileMetres(repeat) {
+  return Math.SQRT2 * EARTH_R / repeat;
+}
+
+// THE FADE IS NOT AS SOFT AS IT LOOKS, because the mask lands upstream of a
+// nonlinear threshold. The library computes
+//   lw = pow(weather, weatherExponent)
+//   density = remapClamped(mix(lw, 1, cfw), factor, factor + cfw), factor = 1 - coverage*heightScale
+// so nothing survives at all unless lw > (1 - cfw - coverage*heightScale)/(1 - cfw).
+// At best height that is weather > 0.75 for the sharp layer (cfw 0.35, exp 2.1)
+// and > 0.46 for the soft ones. Multiplying the map by m therefore stops
+// producing cloud once m falls past those values — not at uFloor. So the floor is
+// almost decorative, the kill lands only ~40% of the way through the smoothstep
+// for the sharpest layer and ~70% for the softest, and the fade has to be spread
+// wide for the transition to read. The upside is that the layers then die at
+// different radii, which feathers the edge instead of ending it all at once.
 function applyIslandCap(renderer, weather, repeat) {
-  const tileM = 2 * Math.PI * EARTH_R / repeat;
   const scene = new THREE.Scene();
   const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const mat = new THREE.ShaderMaterial({
     uniforms: {
-      uTileM: { value: tileM },
-      uFull: { value: 7600 },   // solid cover out to here (island radius + margin)
-      uFade: { value: 17000 },  // gone by here
-      uFloor: { value: 0.30 },  // a few strays offshore, not a hard wall of nothing
-      uVScale: { value: 1.0 },
+      uTileM: { value: capTileMetres(repeat) },
+      // WHERE the island lands in the texture depends on the repeat count. The
+      // world origin sits at face uv 0.5, which the shader turns into texture uv
+      // fract(0.5 * repeat) — that is 0 for an even repeat, which is why folding
+      // around the texture corner worked at 120 and put the cap 82 km out to sea
+      // at 55, leaving the island under bare floor with one cloud on it.
+      uOrigin: { value: new THREE.Vector2().setScalar((0.5 * repeat) % 1) },
+      // The shore reaches RM_BASE * shapeS() + coast warp, at most ~8 km on any
+      // seed (7200 * 1.0 classic, 5400 * 1.3 seeded), so 9 km is full cover plus
+      // a margin. The layers then give out between roughly 16 and 21 km.
+      uFull: { value: 9000 },
+      uFade: { value: 22000 },
+      // THE FLOOR HAS TO TRACK COVERAGE. Coverage sets the bar the masked field must
+      // clear, so a floor that keeps the sea clear at coverage 0.30 leaks cloud all
+      // the way to the fade limit at 0.44 — measured as the cap's outer cloud jumping
+      // from 19.9 km to 25.6 km. 0.08 holds it up to coverage ~0.5: the strongest
+      // offshore cell reaches 0.9 * 0.08 = 0.07 against a bar of 0.13. It also widens
+      // the fade's USABLE range — the transition now spans almost the whole smoothstep
+      // instead of only its first 40% — so the edge is more gradual, not less.
+      uFloor: { value: 0.08 },
+      uWarp: { value: 4200 },   // how far the edge wanders off a circle
+      // CLUSTERING — see the note above the function.
+      uQuiet: { value: 0.66 },   // how far a quiet district is held down (multiply)
+      uLift: { value: 0.52 },    // how far an active district is blended toward 1
+      // Integer cells per tile so the lattice wraps seamlessly, sized for a ~10 km
+      // district — two or three of them across the cap.
+      uFreq: { value: Math.max(2, Math.round(capTileMetres(repeat) / 10000)) },
+      uAdd: { value: 0 },        // 0 = the multiply pass, 1 = the additive pass
     },
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
     fragmentShader: `
-      uniform float uTileM, uFull, uFade, uFloor, uVScale;
+      uniform float uTileM, uFull, uFade, uFloor, uWarp, uQuiet, uLift, uFreq, uAdd;
+      uniform vec2 uOrigin;
       varying vec2 vUv;
+      // Value noise on a lattice that wraps at uPer, so the district field tiles with
+      // the texture and there is no seam to hide.
+      float h21(vec2 p, float per) {
+        p = mod(p, vec2(per));
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+      }
+      float vn(vec2 p, float per) {
+        vec2 i = floor(p), f = fract(p);
+        vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0); // quintic: C2, no lattice creases
+        return mix(mix(h21(i, per),                h21(i + vec2(1.0, 0.0), per), u.x),
+                   mix(h21(i + vec2(0.0, 1.0), per), h21(i + vec2(1.0), per), u.x), u.y);
+      }
       void main() {
-        // The tile wraps AT the world origin, which is where the island sits, so
-        // the island straddles all four corners of the texture. Fold uv into
-        // [-0.5, 0.5] before scaling to metres or the cap lands in one corner.
-        vec2 p = vec2(vUv.x < 0.5 ? vUv.x : vUv.x - 1.0,
-                      vUv.y < 0.5 ? vUv.y : vUv.y - 1.0) * uTileM;
-        p.y *= uVScale;
-        float m = mix(1.0, uFloor, smoothstep(uFull, uFade, length(p)));
-        gl_FragColor = vec4(m, m, 1.0, 1.0);
+        // The island can straddle the texture wrap, so measure from uOrigin and
+        // wrap the difference into [-0.5, 0.5) before scaling to metres —
+        // otherwise the cap lands in a corner, or in the wrong place entirely.
+        vec2 q = vUv - uOrigin;
+        vec2 p = (q - floor(q + 0.5)) * uTileM;
+        // A perfect circle of cloud looks as manufactured as a straight wall
+        // does, and its tangent is a straight edge too. Integer harmonics of the
+        // bearing wander the edge by a few km and are seamless by construction —
+        // they close on themselves at 2pi with no wrap to hide.
+        float a = atan(p.y, p.x);
+        float warp = 0.55 * sin(a * 3.0 + 0.7) + 0.34 * sin(a * 5.0 + 2.1)
+                   + 0.22 * sin(a * 8.0 + 4.3) + 0.13 * sin(a * 13.0 + 1.2);
+        // Normalised to [0,1] and SUBTRACTED, so the edge only ever moves OUTWARD.
+        // Added symmetrically, the harmonics sum to +-1.24 and would pull full cover
+        // in to uFull - 5200 m on the worst bearing — a bite out of the cap that
+        // leaves a third of the island under clear sky, and the outermost-cloud
+        // measurement cannot see it because it reports the max over all bearings.
+        float r = length(p) - (warp * 0.403 + 0.5) * uWarp;
+        float m = mix(1.0, uFloor, smoothstep(uFull, uFade, r));
+        // Districts of merged masses and districts of scattered puffs. Two octaves,
+        // both wrapping, sampled on the raw uv so the field is continuous across the
+        // fold seam that p has.
+        float cl = vn(vUv * uFreq, uFreq) * 0.64
+                 + vn(vUv * uFreq * 2.0, uFreq * 2.0) * 0.36;
+        // The two passes together compute mix(weather, 1, t) — a blend TOWARD FULL,
+        // not a flat offset. That distinction is the whole thing: a flat +0.26 leaves
+        // the gaps at 0.26, still under the 0.46 the softest layer needs, so nothing
+        // merged. Blending toward 1 lifts the deep gaps a lot and the peaks barely,
+        // which closes gaps at t = 0.5 while leaving the cell cores as cores. The
+        // sharp layer's 0.745 bar still only passes those cores, so an active district
+        // becomes one broad mass with denser knots in it rather than a flat blob.
+        float t = uLift * smoothstep(0.42, 0.95, cl);
+        float v = uAdd > 0.5
+          // ADD the t. Masked by m too, or the sea would gain what the first pass took.
+          ? m * t
+          // MULTIPLY by (1 - t), and hold the quiet districts down while we are here.
+          : m * (1.0 - t) * mix(uQuiet, 1.0, smoothstep(0.0, 0.58, cl));
+        gl_FragColor = vec4(v, v, uAdd > 0.5 ? 0.0 : 1.0, 1.0); // b (veil) left alone by both
       }`,
+    depthTest: false, depthWrite: false,
     blending: THREE.CustomBlending,
     blendEquation: THREE.AddEquation,
-    blendSrc: THREE.DstColorFactor,
+    blendSrc: THREE.DstColorFactor,   // dst * src
     blendDst: THREE.ZeroFactor,
-    depthTest: false, depthWrite: false,
   });
+  // TWO PASSES, because multiply alone cannot merge cells. The cellular field is
+  // bright centres separated by dark gaps, and scaling it scales both together —
+  // the gaps stay proportionally as deep, so the threshold contour keeps every cell
+  // separate no matter how hard the district is lifted (measured: clustering by
+  // multiply alone left the biggest cloud at 2.2 km, unchanged). ADDING is what
+  // closes a gap, because it raises the minima toward the bar without touching the
+  // ratio. So: multiply to suppress the quiet districts, then add to merge the
+  // active ones.
+  const add = mat.clone();
+  add.uniforms.uAdd.value = 1;
+  add.blendSrc = THREE.OneFactor;   // dst + src
+  add.blendDst = THREE.OneFactor;
   scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat));
   const prev = renderer.getRenderTarget();
   const prevAutoClear = renderer.autoClear;
   renderer.autoClear = false;               // must NOT wipe the weather we just made
   renderer.setRenderTarget(weather.renderTarget);
   renderer.render(scene, cam);
+  scene.children[0].material = add;
+  renderer.render(scene, cam);
   renderer.setRenderTarget(prev);
   renderer.autoClear = prevAutoClear;
-  mat.dispose();
+  mat.dispose(); add.dispose();
 }
 
 export async function createVolumetricClouds({ renderer, scene, camera, sunDir }) {
@@ -177,9 +285,26 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // coverage goes back UP to 0.30. Over the island that is a proper cumulus cap
   // rather than a thin scatter, and saturation still measures ~3% against the
   // ~12% we started from.
-  clouds.coverage = 0.30;
+  // 0.34, and the veil's own filter width has to move with it — see the note on the
+  // layer list. Measured against 0.30: the biggest cloud goes 2.3 -> 3.4 km, cloud
+  // count 46 -> 61, and the cap still holds its edge at 18.6 km. Past about 0.38 the
+  // masked sea starts clearing the bar too and the cap leaks out to the fade limit.
+  clouds.coverage = 0.34;
   clouds.localWeatherRepeat.set(WEATHER_REPEAT, WEATHER_REPEAT);
-  clouds.localWeatherVelocity.set(0.00008, 0);
+  // WIND HAS TO COME OUT OF THE WEATHER MAP NOW, and this is the price of baking
+  // the island cap into it. localWeatherOffset accumulates velocity * dt in TILE
+  // units, so 0.00008 was translating the sampled field at 0.00008 * 75 km = 6 m/s
+  // — and the cap rides along with it, sliding off the island by 3.6 km in ten
+  // minutes and 20 km in an hour. Nobody would connect that to wind; it would just
+  // look like the clouds wandered out to sea.
+  //
+  // No loss, because 6 m/s of translation is invisible from an aeroplane doing 60.
+  // What actually reads as living cloud is the shape noise moving THROUGH the
+  // field, which shapeVelocity does without touching the footprint: the lobes
+  // churn and the tops boil while each cloud stays where it belongs. Units are
+  // shape-texture periods, so 0.0022 is about 1.5 m/s of internal motion.
+  clouds.localWeatherVelocity.set(0, 0);
+  clouds.shapeVelocity.set(0.0022, 0.0009, 0.0016);
   clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
 
   // CLOUD SHAPE — this is what stops them looking like carved boxes. The shape
@@ -288,6 +413,21 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // exponential here: the exponential spends most of its range near zero, which
   // thins the cloud out from the base up and puts the boxiness back.
   const TOP_TAPER = [0, 0, -1.0, 1.0];
+  // ...BUT A KNIFE-EDGE BASE IS ITS OWN ARTIFACT, and it is the one that survived
+  // everything else. Full density at h=0 makes the underside a mathematical plane,
+  // and a plane seen at a shallow angle is a perfectly straight line — so from low
+  // altitude the deck ends in horizontal razor edges that run the width of the
+  // frame, plus rectangular shelves where a distant layer saturates through its
+  // whole depth. Visible in the raymarch's own alpha buffer as straight-sided red
+  // strips while the near cumulus cores are correctly lobed.
+  //
+  // A*exp(b*h) + m*h + c with A = -1, b = -14, c = 1, m = -1: zero at both ends,
+  // but the rise happens in the bottom 19% of the layer instead of instantly, so
+  // the base is soft over ~50-95 m and the plane stops being a plane. That is still
+  // short enough to read as a flat cumulus base from level flight, which is the
+  // reason TOP_TAPER existed. It peaks at 0.74 rather than 1.0, and the missing
+  // optical depth is welcome: it is saturation that was drawing the edges.
+  const BASE_SOFT = [-1, -14, -1, 1];
   // Zero at BOTH ends, for the deepest layer. A top-only taper leaves full
   // density on the layer floor, which is right for a flat cumulus base — but on
   // a layer this deep the cells that only just clear the coverage threshold then
@@ -302,18 +442,36 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // connected carpet whose arms extruded into long chained masses; raising it
     // keeps only each blob's core, so clouds come out discrete with sky between
     // them, which is what a fair-weather field actually looks like.
-    { channel: 'r', altitude: 620, height: 280, densityScale: 0.46,
-      weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.6,
-      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
+    // The bases are STAGGERED by a few tens of metres rather than shared exactly.
+    // One airmass really does have one condensation level, but pinning three layers
+    // to the identical metre stacks their undersides into a single plane and
+    // triples how sharply it reads; 580/620/680 is well inside the scatter of a
+    // real field and gives three soft ceilings instead of one hard one.
+    // SIZE COMES FROM THE PER-LAYER BAR, not from global coverage and not from
+    // localWeatherRepeat. Rearranging the library's threshold, a layer produces
+    // nothing unless weather^exponent > (1 - cfw - coverage*heightScale)/(1 - cfw),
+    // so coverageFilterWidth is per-layer coverage: raising it lowers the bar, each
+    // cell's above-bar region widens, and in the lifted districts neighbours merge.
+    // Global coverage does the same thing but to EVERY layer, including the cirrus
+    // veil — at 0.42 the veil's bar goes negative and the upper sky turns into a
+    // fizzy overcast sheet, which is what ruled that lever out. Per-layer keeps the
+    // veil exactly as thin as it was.
+    // ...and the density has to be put BACK when cfw goes up, because peak density is
+    // coverage * heightScale / cfw — a wider filter spreads the same coverage over a
+    // longer ramp and thins the cloud. Raising cfw without this makes clouds broader
+    // and fainter, which reads as less cloud, not more.
+    { channel: 'r', altitude: 580, height: 280, densityScale: 0.64,
+      weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.66,
+      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BASE_SOFT },
     // the strongest cells of that same field, building a little deeper
     // 2.1, not 2.8. Past about 2.2 this layer keeps so little of the field that
     // its surviving regions shrink to a couple of weather texels, and at that
     // size they take the texel grid's shape instead of their own — isolated
     // rectangular clouds. The exponent buys separation right up until it starts
     // buying rectangles.
-    { channel: 'r', altitude: 620, height: 500, densityScale: 0.50,
-      weatherExponent: 2.1, shapeAlteringBias: 0.3, coverageFilterWidth: 0.35,
-      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: TOP_TAPER },
+    { channel: 'r', altitude: 620, height: 500, densityScale: 0.80,
+      weatherExponent: 2.1, shapeAlteringBias: 0.3, coverageFilterWidth: 0.45,
+      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BASE_SOFT },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
     // ceiling cuts it off — that gives every cloud a flat sliced top, and on a
@@ -330,8 +488,8 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // footprint extrudes straight back into vertical curtains. It also wants the
     // both-ends taper, hence the higher densityScale to make up for the hump only
     // peaking around a third of the way up.
-    { channel: 'g', altitude: 620, height: 880, densityScale: 0.85,
-      weatherExponent: 1.25, shapeAlteringBias: 0.3, coverageFilterWidth: 0.5,
+    { channel: 'g', altitude: 680, height: 880, densityScale: 1.09,
+      weatherExponent: 1.25, shapeAlteringBias: 0.3, coverageFilterWidth: 0.64,
       shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BOTH_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
     // the top: the stock one sits at 0.25 density on the layer's floor, so the
@@ -341,8 +499,15 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // cirrus, but only once the ends actually feather out. This is
     // A*exp(b*h) + m*h + c solved for f(0) = f(1) = 0, peaking about 0.32 a third
     // of the way up; densityScale carries the rest.
+    // cfw = 1 - coverage KEEPS THE VEIL WHERE IT WAS. Its bar is
+    // (1 - cfw - coverage*hs)/(1 - cfw), so at 0.70/0.30 it sat at zero — thin and
+    // translucent. Raising global coverage alone drives it negative, the remap clamps
+    // to full density over most of the layer, and the upper sky becomes a fizzy grey
+    // sheet with sun rays combed through it. Moving cfw down in lockstep holds the bar
+    // at zero, so the convective layers can get their coverage without the cirrus
+    // noticing.
     { channel: 'b', altitude: 4200, height: 420, densityScale: 0.45,
-      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.7, shadow: false,
+      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.66, shadow: false,
       shapeDetailAmount: 0.5, profile: [-1, -3, -0.95, 1] },
   ];
   for (let i = 0; i < clouds.cloudLayers.length; i++) {
