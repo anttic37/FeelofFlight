@@ -54,9 +54,17 @@ export class ChaseCam {
     window.addEventListener('pointerdown', e => { this._dragging = true; this._lx = e.clientX; this._ly = e.clientY; });
     window.addEventListener('pointermove', e => {
       if (!this._dragging) return;
-      this.orbitYaw -= (e.clientX - this._lx) * 0.006;
-      this.orbitPitch += (e.clientY - this._ly) * 0.005;
-      this.orbitPitch = Math.max(-1.25, Math.min(0.9, this.orbitPitch)); // negative = above the plane
+      const dx = e.clientX - this._lx, dy = e.clientY - this._ly;
+      if (this.free) {
+        // free look: absolute heading, and pitch stops just short of the poles so the
+        // up vector never degenerates
+        this.freeYaw -= dx * 0.0042;
+        this.freePitch = Math.max(-1.5, Math.min(1.5, this.freePitch - dy * 0.0036));
+      } else {
+        this.orbitYaw -= dx * 0.006;
+        this.orbitPitch += dy * 0.005;
+        this.orbitPitch = Math.max(-1.25, Math.min(0.9, this.orbitPitch)); // negative = above the plane
+      }
       this._lx = e.clientX;
       this._ly = e.clientY;
     });
@@ -67,6 +75,12 @@ export class ChaseCam {
     // the aircraft where a metre matters, and you are not scrolling for a week
     // to get out to the wide shots.
     window.addEventListener('wheel', e => {
+      if (this.free) {
+        // in free flight the wheel is the throttle, not a zoom — geometric so one
+        // scroll gesture covers walking pace to crossing the island
+        this.freeSpeed = Math.max(2, Math.min(4000, this.freeSpeed * Math.exp(-e.deltaY * 0.0012)));
+        return;
+      }
       const step = e.deltaY * 0.012 * (1 + Math.max(0, this.zoomOff) * 0.055);
       this.zoomOff = Math.max(-8, Math.min(110, this.zoomOff + step));
     }, { passive: true });
@@ -79,6 +93,18 @@ export class ChaseCam {
     this.headV = new THREE.Vector3();
     this._prevVel = new THREE.Vector3();
     this._haveVel = false;
+
+    // FREE CAMERA (B). Detaches from the aeroplane entirely so the clouds can be
+    // flown into and looked at from any angle — the chase cam can only ever see them
+    // from wherever the aircraft happens to be, which is a poor way to judge a sky.
+    // Its own yaw/pitch rather than the orbit angles, so coming back to chase does not
+    // inherit a view pointing at nothing.
+    this.free = false;
+    this.freePos = new THREE.Vector3();
+    this.freeVel = new THREE.Vector3();
+    this.freeYaw = 0;
+    this.freePitch = 0;
+    this.freeSpeed = 70;     // m/s, wheel scales it
 
     // crash: the wreck tumbles, the camera must not (see update)
     this._wasCrashed = false;
@@ -93,6 +119,60 @@ export class ChaseCam {
   cycleTightness() {
     this.mode = (this.mode + 1) % TIGHTNESS.length;
     return TIGHTNESS[this.mode].name;
+  }
+
+  // Enter free flight from exactly where the chase camera already is, aimed exactly
+  // where it was aimed — so the toggle is a continuation of the shot rather than a
+  // teleport, and toggling back drops you into the spring from behind the aeroplane.
+  toggleFree(phys) {
+    this.free = !this.free;
+    if (this.free) {
+      this.freePos.copy(this.camera.position);
+      this.freeVel.set(0, 0, 0);
+      const d = this._t.dir.copy(this.look).sub(this.camera.position);
+      const len = d.length();
+      if (len > 1e-4) {
+        d.divideScalar(len);
+        this.freeYaw = Math.atan2(-d.x, -d.z);
+        this.freePitch = Math.asin(Math.max(-1, Math.min(1, d.y)));
+      }
+    } else if (phys) {
+      this.snap(phys);
+    }
+    return this.free;
+  }
+
+  // Free flight. Held keys give a target velocity in the camera's own frame and the
+  // actual velocity eases toward it, which is what keeps hand-held pans watchable —
+  // stepping the position straight from the keys reads as a stutter at any speed.
+  _updateFree(dt, input) {
+    const t = this._t;
+    const cp = Math.cos(this.freePitch), sp = Math.sin(this.freePitch);
+    const cy = Math.cos(this.freeYaw), sy = Math.sin(this.freeYaw);
+    const fwd = t.fwd.set(-sy * cp, sp, -cy * cp);
+    const right = t.right.set(cy, 0, -sy);
+
+    let f = 0, r = 0, u = 0;
+    if (input) {
+      f = input._key('KeyW', 'ArrowUp') - input._key('KeyS', 'ArrowDown');
+      r = input._key('KeyD', 'ArrowRight') - input._key('KeyA', 'ArrowLeft');
+      u = input._key('KeyE') - input._key('KeyQ');
+    }
+    const boost = input && input._key('ShiftLeft', 'ShiftRight') ? 5 : (input && input._key('KeyZ') ? 0.2 : 1);
+    const spd = this.freeSpeed * boost;
+    t.des.set(0, 0, 0)
+      .addScaledVector(fwd, f * spd)
+      .addScaledVector(right, r * spd)
+      .addScaledVector(WORLD_UP, u * spd);
+    this.freeVel.lerp(t.des, Math.min(1, dt * 6));
+    this.freePos.addScaledVector(this.freeVel, dt);
+
+    this.camera.position.copy(this.freePos);
+    this.camera.up.copy(WORLD_UP);
+    this.camera.lookAt(t.lt.copy(this.freePos).add(fwd));
+    this.fov += (62 - this.fov) * Math.min(1, dt * 5);
+    this.camera.fov = this.fov;
+    this.camera.updateProjectionMatrix();
   }
 
   cycleView(phys) {
@@ -150,9 +230,10 @@ export class ChaseCam {
     );
   }
 
-  update(dt, phys) {
+  update(dt, phys, input) {
     const t = this._t;
     this.time += dt;
+    if (this.free) { this._updateFree(dt, input); return; }
     this._updateHead(dt, phys);
     const fwd = t.fwd.set(0, 0, -1).applyQuaternion(phys.quat);
     const planeUp = t.up.set(0, 1, 0).applyQuaternion(phys.quat);

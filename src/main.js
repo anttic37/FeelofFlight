@@ -103,6 +103,12 @@ input.onFlaps = () => { if (phys.setFlaps) phys.setFlaps(((phys.flapSetting || 0
 input.onCamera = () => hud.msg(`CAMERA ${chase.cycleTightness()}`, 1200);
 input.onView = () => hud.msg(`VIEW ${chase.cycleView(phys)}`, 1200);
 let runwayCycle = -1;
+input.onFreeCam = () => {
+  const on = chase.toggleFree(phys);
+  input.freeCam = on;
+  hud.msg(on ? 'FREE CAM — WASD MOVE · Q/E DOWN/UP · SHIFT FAST · Z SLOW · WHEEL SPEED · B EXIT'
+             : 'FREE CAM OFF', on ? 4200 : 1200);
+};
 input.onRunwaySpawn = () => {
   wreckage.restore(plane);
   runwayCycle = (runwayCycle + 1) % RUNWAYS.length;
@@ -179,7 +185,11 @@ window.__ff = {
   step(dt) {
     input.update(dt);
     const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake };
-    if (!phys.crashed) phys.update(dt, controls);
+    // free cam freezes the sim, as in the real loop. This has to be its OWN branch:
+    // folding it into the `if (!phys.crashed)` condition drops the healthy aeroplane
+    // into the else, which starts a wreck and drops it out of the sky.
+    if (chase.free) { /* frozen */ }
+    else if (!phys.crashed) phys.update(dt, controls);
     else {
       if (!phys._wreck) { const sev = phys.vel.length(); phys.startWreck(); wreckage.breakUp(plane, phys, sev); }
       phys.wreckUpdate(dt);
@@ -189,10 +199,10 @@ window.__ff = {
     updateWingFlex(dt);
     updatePlaneVisual(plane, input, phys, dt);
     if (wreckage.active) wreckage.update(dt);
-    chase.update(dt, phys);
+    chase.update(dt, phys, input);
     trails.update(dt, phys);
     fx.update(dt, phys);
-    world.update(phys.pos, simTime += dt);
+    world.update(chase.free ? chase.camera.position : phys.pos, simTime += dt);
     hud.update(phys, input);
   },
   render() { draw(); },
@@ -208,9 +218,13 @@ renderer.setAnimationLoop(() => {
   simTime += dt;
   input.update(dt);
 
+  // The free camera FREEZES the simulation. An inspection camera you have to chase a
+  // moving aeroplane with is not an inspection camera, and leaving the aircraft flying
+  // itself while you look elsewhere just means finding it crashed when you come back.
+  const frozen = chase.free;
   const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake };
   const steps = 2;
-  for (let i = 0; i < steps && !phys.crashed; i++) phys.update(dt / steps, controls);
+  if (!frozen) for (let i = 0; i < steps && !phys.crashed; i++) phys.update(dt / steps, controls);
 
   if (phys.justGearMoved) {
     phys.justGearMoved = false;
@@ -265,10 +279,12 @@ renderer.setAnimationLoop(() => {
       fx.touchdown(h.pos, h.type, h.mag);
     }
   }
-  chase.update(dt, phys);
+  chase.update(dt, phys, input);
   trails.update(dt, phys);
   fx.update(dt, phys);
-  world.update(phys.pos, simTime);
+  // stream terrain around the CAMERA in free flight, or you fly a few km out and the
+  // island stops loading under you
+  world.update(chase.free ? chase.camera.position : phys.pos, simTime);
   sound.update(dt, phys);
   hud.update(phys, input);
 

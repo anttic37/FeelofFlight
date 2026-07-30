@@ -17,6 +17,8 @@ export class Input {
     this.onCamera = null;
     this.onView = null;
     this.onRunwaySpawn = null;
+    this.onFreeCam = null;
+    this.freeCam = false;   // set by main; suppresses flight input while the camera flies
     this._gpGearHeld = false;
 
     window.addEventListener('keydown', e => {
@@ -31,6 +33,7 @@ export class Input {
       if (e.code === 'KeyC' && this.onCamera) this.onCamera();
       if (e.code === 'KeyV' && this.onView) this.onView();
       if (e.code === 'KeyT' && this.onRunwaySpawn) this.onRunwaySpawn();
+      if (e.code === 'KeyB' && this.onFreeCam) this.onFreeCam();
     });
     window.addEventListener('keyup', e => this.keys.delete(e.code));
     window.addEventListener('blur', () => this.keys.clear());
@@ -40,14 +43,18 @@ export class Input {
 
   update(dt) {
     // keyboard: flight-sim convention — S/Down = pull up, W/Up = nose down (flip with I)
-    let pitch = this._key('KeyS', 'ArrowDown') - this._key('KeyW', 'ArrowUp');
-    let roll = this._key('KeyD', 'ArrowRight') - this._key('KeyA', 'ArrowLeft');
-    let yaw = this._key('KeyE') - this._key('KeyQ');
-    let thrRate = (this._key('KeyX', 'ShiftLeft', 'ShiftRight') - this._key('KeyZ')) * 0.55;
+    // FREE CAMERA TAKES THE STICK. It flies on the same WASD/QE keys, so without this
+    // every camera move also feeds the aeroplane — pressing W to fly forward would put
+    // the nose down and you would come back from admiring the sky to a smoking hole.
+    const fc = this.freeCam;
+    let pitch = fc ? 0 : this._key('KeyS', 'ArrowDown') - this._key('KeyW', 'ArrowUp');
+    let roll = fc ? 0 : this._key('KeyD', 'ArrowRight') - this._key('KeyA', 'ArrowLeft');
+    let yaw = fc ? 0 : this._key('KeyE') - this._key('KeyQ');
+    let thrRate = fc ? 0 : (this._key('KeyX', 'ShiftLeft', 'ShiftRight') - this._key('KeyZ')) * 0.55;
 
     // gamepad: left stick, triggers throttle, bumpers rudder, A brake, Y gear
-    this.brake = this._key('Space') === 1;
-    const gp = navigator.getGamepads && navigator.getGamepads()[0];
+    this.brake = !fc && this._key('Space') === 1;
+    const gp = !fc && navigator.getGamepads && navigator.getGamepads()[0];
     if (gp) {
       const dz = v => Math.abs(v) < 0.12 ? 0 : (v - Math.sign(v) * 0.12) / 0.88;
       roll += dz(gp.axes[0] || 0);
