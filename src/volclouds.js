@@ -95,11 +95,14 @@ function applyIslandCap(renderer, weather, repeat) {
       // around the texture corner worked at 120 and put the cap 82 km out to sea
       // at 55, leaving the island under bare floor with one cloud on it.
       uOrigin: { value: new THREE.Vector2().setScalar((0.5 * repeat) % 1) },
-      // The shore reaches RM_BASE * shapeS() + coast warp, at most ~8 km on any
-      // seed (7200 * 1.0 classic, 5400 * 1.3 seeded), so 9 km is full cover plus
-      // a margin. The layers then give out between roughly 16 and 21 km.
-      uFull: { value: 9000 },
-      uFade: { value: 22000 },
+      // TUCKED IN OVER THE ISLAND. The shore reaches RM_BASE * shapeS() + coast warp,
+      // at most ~8 km on any seed (7200 * 1.0 classic, 5400 * 1.3 seeded). Full cover
+      // deliberately stops SHORT of that at 5.5 km, so the outer coast sits in the
+      // fade and the cloud thins as it reaches the water — which is what actually
+      // happens, since the thermals come off the warm interior and die over the sea.
+      // The layers give out around 9.5 km, plus wherever the warp pushes them.
+      uFull: { value: 5500 },
+      uFade: { value: 11000 },
       // THE FLOOR HAS TO TRACK COVERAGE. Coverage sets the bar the masked field must
       // clear, so a floor that keeps the sea clear at coverage 0.30 leaks cloud all
       // the way to the fade limit at 0.44 — measured as the cap's outer cloud jumping
@@ -108,7 +111,7 @@ function applyIslandCap(renderer, weather, repeat) {
       // the fade's USABLE range — the transition now spans almost the whole smoothstep
       // instead of only its first 40% — so the edge is more gradual, not less.
       uFloor: { value: 0.08 },
-      uWarp: { value: 4200 },   // how far the edge wanders off a circle
+      uWarp: { value: 2400 },   // how far the edge wanders off a circle
       // CLUSTERING — see the note above the function.
       uQuiet: { value: 0.66 },   // how far a quiet district is held down (multiply)
       uLift: { value: 0.52 },    // how far an active district is blended toward 1
@@ -285,11 +288,15 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // coverage goes back UP to 0.30. Over the island that is a proper cumulus cap
   // rather than a thin scatter, and saturation still measures ~3% against the
   // ~12% we started from.
-  // 0.34, and the veil's own filter width has to move with it — see the note on the
-  // layer list. Measured against 0.30: the biggest cloud goes 2.3 -> 3.4 km, cloud
-  // count 46 -> 61, and the cap still holds its edge at 18.6 km. Past about 0.38 the
-  // masked sea starts clearing the bar too and the cap leaks out to the fade limit.
-  clouds.coverage = 0.34;
+  // BACK TO 0.30 NOW THE LAYERS ARE TALL. 0.34 was right for a flat deck, but the
+  // convective layers are 2.6x deeper than they were and the cap is tucked in over the
+  // island, so the same coverage puts a third of the frame in fully-attenuated cloud
+  // and buries the island. The lever is savagely nonlinear here — 0.30 / 0.26 / 0.22
+  // measure 12.4% / 4.1% / almost nothing saturated — and 0.30 is the one that keeps a
+  // full sky. Size no longer needs it: it comes from the height and from the tighter
+  // cap concentrating the same cloud over less ground. The veil's own filter width
+  // still has to track it (see the layer note), hence 1 - 0.30.
+  clouds.coverage = 0.30;
   clouds.localWeatherRepeat.set(WEATHER_REPEAT, WEATHER_REPEAT);
   // WIND HAS TO COME OUT OF THE WEATHER MAP NOW, and this is the price of baking
   // the island cap into it. localWeatherOffset accumulates velocity * dt in TILE
@@ -376,7 +383,13 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // 512 across three cascades put visible steps in the cloud self-shadowing at
   // this range. The cascade split planes were showing up as flat vertical faces
   // slicing through the nearer clouds.
-  clouds.shadow.mapSize.set(2048, 2048);
+  // 1024 rather than 2048, because the shadow pass turned out to be where the taller
+  // layers actually cost their time: 2.5 ms of the 12, more than the primary march's
+  // step size (50 -> 95 m bought only 1.1 ms, and visibly washed out the shading) and
+  // far more than the ray range (60 -> 16 km bought 0.2 ms, since empty sky is nearly
+  // free). Checked for the 512 failure at both cruise and close range — no cascade
+  // faces, no banding, just slightly softer self-shadowing.
+  clouds.shadow.mapSize.set(1024, 1024);
 
   // Four layers, used as size classes. Only three weather channels carry a
   // distribution — measured over the generated texture: r is sparse blobs (mean
@@ -460,8 +473,14 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // coverage * heightScale / cfw — a wider filter spreads the same coverage over a
     // longer ramp and thins the cloud. Raising cfw without this makes clouds broader
     // and fainter, which reads as less cloud, not more.
-    { channel: 'r', altitude: 580, height: 280, densityScale: 0.64,
-      weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.66,
+    // cfw 0.60, NOT 0.66 — at 0.66 against coverage 0.30 this layer's bar works out to
+    // (1 - 0.66 - 0.30)/0.34, which is nearly zero, so ANY weather above nothing made
+    // faint cloud. Including the masked sea, which drew a thin haze line along the
+    // whole horizon at cloud-base height: a full-width straight edge, the exact
+    // artifact this has been chasing for days, arriving from a completely new
+    // direction. At 0.60 the bar is 0.25 (weather > 0.46) against the sea's 0.07.
+    { channel: 'r', altitude: 580, height: 460, densityScale: 0.44,
+      weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.60,
       shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BASE_SOFT },
     // the strongest cells of that same field, building a little deeper
     // 2.1, not 2.8. Past about 2.2 this layer keeps so little of the field that
@@ -469,8 +488,8 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // size they take the texel grid's shape instead of their own — isolated
     // rectangular clouds. The exponent buys separation right up until it starts
     // buying rectangles.
-    { channel: 'r', altitude: 620, height: 500, densityScale: 0.80,
-      weatherExponent: 2.1, shapeAlteringBias: 0.3, coverageFilterWidth: 0.45,
+    { channel: 'r', altitude: 620, height: 1200, densityScale: 0.60,
+      weatherExponent: 2.1, shapeAlteringBias: 0.55, coverageFilterWidth: 0.45,
       shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BASE_SOFT },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
@@ -488,8 +507,14 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // footprint extrudes straight back into vertical curtains. It also wants the
     // both-ends taper, hence the higher densityScale to make up for the hump only
     // peaking around a third of the way up.
-    { channel: 'g', altitude: 680, height: 880, densityScale: 1.09,
-      weatherExponent: 1.25, shapeAlteringBias: 0.3, coverageFilterWidth: 0.64,
+    // THE BIAS HAS TO RISE WITH THE HEIGHT. shapeAlteringFunction is
+    // 1 - (2*hf^bias - 1)^2, whose peak sits at hf = 0.5^(1/bias) — 10% of the way up
+    // at bias 0.3, 37% at 0.62. That peak is where the coverage boost is strongest, so
+    // at 0.3 a tall layer gets all its width crammed into the bottom tenth and tapers
+    // away above: a pancake with a spike, not a tower. Moving the peak to a third of
+    // the way up is what lets these build.
+    { channel: 'g', altitude: 680, height: 2300, densityScale: 0.82,
+      weatherExponent: 1.25, shapeAlteringBias: 0.62, coverageFilterWidth: 0.64,
       shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BOTH_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
     // the top: the stock one sits at 0.25 density on the layer's floor, so the
@@ -507,7 +532,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // at zero, so the convective layers can get their coverage without the cirrus
     // noticing.
     { channel: 'b', altitude: 4200, height: 420, densityScale: 0.45,
-      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.66, shadow: false,
+      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.70, shadow: false,
       shapeDetailAmount: 0.5, profile: [-1, -3, -0.95, 1] },
   ];
   for (let i = 0; i < clouds.cloudLayers.length; i++) {
