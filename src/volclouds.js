@@ -39,20 +39,20 @@ const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 120;
 // cirrus stops being speckle. Reprojection also smears anything that does not move
 // with the world, which for a chase camera means the aeroplane itself.
 //
-// 0.36, not the 0.58 the diagnostic app proposed. Measured on a moving camera, medians
-// over alternating rounds at 1600x900 (effective 2400x1350 at this pixel ratio):
+// 0.45, not the 0.58 the diagnostic app proposed. Cost tracks buffer PIXELS and climbs
+// steeply — measured on a moving camera, medians over alternating rounds:
 //   temporal 1/16      7.8 ms
-//   no history 0.35    9.2 ms   <- 1.2x, and visibly cleaner
+//   no history 0.35    9.2 ms   <- barely more than temporal
 //   no history 0.42   14.7 ms
 //   no history 0.58   24.0 ms   <- 3.1x, not worth it
-// The jump is steep because cost tracks buffer PIXELS, and 0.58 is 5x the pixel count
-// of the temporal buffer. Around 0.36 the extra raymarching is roughly paid for by
-// dropping the history resolve and reprojection passes.
+// Around 0.35 the extra raymarching is nearly paid for by dropping the history resolve
+// and reprojection passes. But 0.35 upscales almost 3x on a wide display and the
+// silhouettes go soft, which reads as "unresolved" — so 0.45 splits the difference.
 //
 // ?nohist=0 restores temporal reconstruction, ?cloudres= overrides the scale.
 const NO_HISTORY = PARAMS.get('nohist') !== '0';
 const CLOUD_RES = Math.min(1, Math.max(0.25,
-  +(PARAMS.get('cloudres')) || (NO_HISTORY ? 0.36 : 1)));
+  +(PARAMS.get('cloudres')) || (NO_HISTORY ? 0.45 : 1)));
 
 // our world: +X east, +Y up, -Z north (so +Z is south)
 // ECEF at lat 0 lon 0: +X is up through the surface, +Y east, +Z north
@@ -141,7 +141,10 @@ function applyIslandCap(renderer, weather, repeat) {
       uWarp: { value: 2400 },   // how far the edge wanders off a circle
       // CLUSTERING — see the note above the function.
       uQuiet: { value: 0.66 },   // how far a quiet district is held down (multiply)
-      uLift: { value: 0.52 },    // how far an active district is blended toward 1
+      // 0.64, up from 0.52. With no temporal averaging to blur it, a district of cells
+      // that only PARTLY merge reads as popcorn lace rather than cloud — dozens of
+      // separate little puffs at 5-15 km. Lifting harder finishes the merge.
+      uLift: { value: 0.64 },    // how far an active district is blended toward 1
       // Integer cells per tile so the lattice wraps seamlessly, sized for a ~10 km
       // district — two or three of them across the cap.
       uFreq: { value: Math.max(2, Math.round(capTileMetres(repeat) / 10000)) },
@@ -440,10 +443,13 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // stops being a cloud and becomes a curtain. Tops run 880/1040/1240 m off a
   // 620 m base: enough spread to see, flat enough to look right.
   //
-  // shapeDetailAmount is held low (0.4). The fine erosion noise is near the
-  // ray-step frequency, so at full strength it aliases into ribs on anything
-  // seen edge-on at distance — and the big smooth lumps are what actually read
-  // as cloud anyway. The bumps come from shapeRepeat above, not from detail.
+  // shapeDetailAmount is held DOWN TO 0.45 — and note the comment here used to claim
+  // 0.4 while the layers actually ran 0.85, which is how it escaped notice. The fine
+  // erosion noise is near the ray-step frequency, so at full strength it aliases into
+  // ribs on anything seen edge-on at distance, and it punches the cloud full of small
+  // holes: at 0.85 the deck reads as lace instead of mass once there is no temporal
+  // averaging to smear it. The big smooth lumps are what read as cloud anyway, and they
+  // come from shapeRepeat above, not from detail.
   // DENSITY MUST REACH ZERO AT THE CEILING. This is the one that kept producing
   // "sliced" clouds. A profile of (linear -0.6, constant 1.0) looks like a taper
   // and reads like one in the code, but it still leaves 0.4 density at the top of
@@ -508,7 +514,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // direction. At 0.60 the bar is 0.25 (weather > 0.46) against the sea's 0.07.
     { channel: 'r', altitude: 580, height: 460, densityScale: 0.44,
       weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.60,
-      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BASE_SOFT },
+      shapeAmount: 0.8, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
     // the strongest cells of that same field, building a little deeper
     // 2.1, not 2.8. Past about 2.2 this layer keeps so little of the field that
     // its surviving regions shrink to a couple of weather texels, and at that
@@ -517,7 +523,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // buying rectangles.
     { channel: 'r', altitude: 620, height: 1200, densityScale: 0.60,
       weatherExponent: 2.1, shapeAlteringBias: 0.55, coverageFilterWidth: 0.45,
-      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BASE_SOFT },
+      shapeAmount: 0.8, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
     // ceiling cuts it off — that gives every cloud a flat sliced top, and on a
@@ -542,7 +548,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // the way up is what lets these build.
     { channel: 'g', altitude: 680, height: 2300, densityScale: 0.82,
       weatherExponent: 1.25, shapeAlteringBias: 0.62, coverageFilterWidth: 0.64,
-      shapeAmount: 0.8, shapeDetailAmount: 0.85, shadow: true, profile: BOTH_TAPER },
+      shapeAmount: 0.8, shapeDetailAmount: 0.45, shadow: true, profile: BOTH_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
     // the top: the stock one sits at 0.25 density on the layer's floor, so the
     // veil was sliced off flat along its underside and squared off at the end of
