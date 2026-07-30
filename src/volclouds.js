@@ -377,6 +377,21 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   }
   clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
 
+  // WHAT THE UNDERLYING SHAPE ACTUALLY IS, since it took setting shapeAmount to zero to
+  // see it: the weather map is 2D. A cloud is that 2D footprint EXTRUDED vertically and
+  // cut top and bottom by the density profile — so before any erosion, every cloud is a
+  // prism. Round cell, cylinder; elongated cell, a long capsule; and the sides are
+  // vertical by construction. That is the "underlying shape inside which the clouds are
+  // rendered", and no layer parameter can change it, because it is the model.
+  //
+  // shapeAmount is the ONLY thing that breaks the prism — it is how much of the 3D shape
+  // noise is allowed to eat into the footprint. At 0 you see bare prisms; at 1.0 the
+  // vertical faces are chewed through. Measured on the straight-wall detector: 0.8 scores
+  // 85, 0.95 scores 67, 1.0 scores 66. So it runs at 1.0 now. The remaining structure is
+  // the prism showing through wherever the noise happens not to cut deep enough, and the
+  // real cure for that is a wider footprint (see WEATHER_REPEAT) so the prism is squat
+  // rather than tower-shaped.
+  //
   // CLOUD SHAPE — this is what stops them looking like carved boxes. The shape
   // noise that erodes the coverage volume into lobes defaults to a 3333 m
   // wavelength (repeat 0.0003), which is WIDER THAN A WHOLE CLOUD: it barely
@@ -547,7 +562,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // direction. At 0.60 the bar is 0.25 (weather > 0.46) against the sea's 0.07.
     { channel: 'r', altitude: 580, height: 460, densityScale: 0.44,
       weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.60,
-      shapeAmount: 0.8, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
+      shapeAmount: 1.0, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
     // the strongest cells of that same field, building a little deeper
     // 2.1, not 2.8. Past about 2.2 this layer keeps so little of the field that
     // its surviving regions shrink to a couple of weather texels, and at that
@@ -556,7 +571,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // buying rectangles.
     { channel: 'r', altitude: 620, height: 1200, densityScale: 0.60,
       weatherExponent: 2.1, shapeAlteringBias: 0.55, coverageFilterWidth: 0.45,
-      shapeAmount: 0.8, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
+      shapeAmount: 1.0, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
     // ceiling cuts it off — that gives every cloud a flat sliced top, and on a
@@ -581,7 +596,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // the way up is what lets these build.
     { channel: 'g', altitude: 680, height: 1800, densityScale: 0.82,
       weatherExponent: 1.25, shapeAlteringBias: 0.62, coverageFilterWidth: 0.64,
-      shapeAmount: 0.8, shapeDetailAmount: 0.45, shadow: true, profile: BOTH_TAPER },
+      shapeAmount: 1.0, shapeDetailAmount: 0.45, shadow: true, profile: BOTH_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
     // the top: the stock one sits at 0.25 density on the layer's floor, so the
     // veil was sliced off flat along its underside and squared off at the end of
