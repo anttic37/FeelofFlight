@@ -19,6 +19,12 @@ import { STBNLoader, DEFAULT_STBN_URL } from '@takram/three-geospatial';
 
 const EARTH_R = 6378137;
 
+// How many times the weather map wraps the globe. Declared up here because the
+// island cap has to be baked into that map at generation time, and it needs the
+// tile size in metres — so this value must be known BEFORE the map is rendered,
+// not set later alongside coverage.
+const WEATHER_REPEAT = 120;
+
 // our world: +X east, +Y up, -Z north (so +Z is south)
 // ECEF at lat 0 lon 0: +X is up through the surface, +Y east, +Z north
 function worldToECEF() {
@@ -28,6 +34,67 @@ function worldToECEF() {
     0, 0, -1, 0,        // world Z (south) -> ECEF -Z
     0, 0, 0, 1,
   );
+}
+
+// ---------------------------------------------------------------------------
+// ISLAND CLOUD CAP. Cumulus are thermal: they need a warm surface pumping air
+// upward, which land gives and cool open ocean does not. A tropical island
+// characteristically wears a cap of cloud while the sea around it stays clear —
+// so instead of one uniform deck to the horizon, the convective cloud lives over
+// the island and a little way out, and beyond that the sky opens up.
+//
+// It also happens to be the strongest available cure for the saturated slabs:
+// the "cuts" come from the BOUNDARY of regions where the ray fully attenuates,
+// and a deck that runs to the horizon guarantees enormous sightlines through
+// cloud. Ending the deck a few km offshore ends most of those sightlines.
+//
+// Implemented by multiplying the generated weather map, which is cheaper and
+// simpler than it sounds: a fullscreen quad with multiply blending
+// (blendSrc = DstColor, blendDst = Zero → dst * src) needs no read-back of a
+// 4096² texture and no second target. Only the r and g channels are masked;
+// b carries the high veil, and cirrus is synoptic rather than thermal, so it has
+// no business caring where the island is.
+function applyIslandCap(renderer, weather, repeat) {
+  const tileM = 2 * Math.PI * EARTH_R / repeat;
+  const scene = new THREE.Scene();
+  const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: {
+      uTileM: { value: tileM },
+      uFull: { value: 7600 },   // solid cover out to here (island radius + margin)
+      uFade: { value: 17000 },  // gone by here
+      uFloor: { value: 0.30 },  // a few strays offshore, not a hard wall of nothing
+      uVScale: { value: 1.0 },
+    },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+    fragmentShader: `
+      uniform float uTileM, uFull, uFade, uFloor, uVScale;
+      varying vec2 vUv;
+      void main() {
+        // The tile wraps AT the world origin, which is where the island sits, so
+        // the island straddles all four corners of the texture. Fold uv into
+        // [-0.5, 0.5] before scaling to metres or the cap lands in one corner.
+        vec2 p = vec2(vUv.x < 0.5 ? vUv.x : vUv.x - 1.0,
+                      vUv.y < 0.5 ? vUv.y : vUv.y - 1.0) * uTileM;
+        p.y *= uVScale;
+        float m = mix(1.0, uFloor, smoothstep(uFull, uFade, length(p)));
+        gl_FragColor = vec4(m, m, 1.0, 1.0);
+      }`,
+    blending: THREE.CustomBlending,
+    blendEquation: THREE.AddEquation,
+    blendSrc: THREE.DstColorFactor,
+    blendDst: THREE.ZeroFactor,
+    depthTest: false, depthWrite: false,
+  });
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat));
+  const prev = renderer.getRenderTarget();
+  const prevAutoClear = renderer.autoClear;
+  renderer.autoClear = false;               // must NOT wipe the weather we just made
+  renderer.setRenderTarget(weather.renderTarget);
+  renderer.render(scene, cam);
+  renderer.setRenderTarget(prev);
+  renderer.autoClear = prevAutoClear;
+  mat.dispose();
 }
 
 export async function createVolumetricClouds({ renderer, scene, camera, sunDir }) {
@@ -68,7 +135,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   const weather = new LocalWeather();
   weather.renderTarget.setSize(4096, 4096);
   weather.size = 4096;
-  weather.render(renderer, 0); clouds.localWeatherTexture = weather.texture; procedural.push(weather);
+  weather.render(renderer, 0);
+  applyIslandCap(renderer, weather, WEATHER_REPEAT);
+  clouds.localWeatherTexture = weather.texture; procedural.push(weather);
   const turb = new Turbulence(); turb.render(renderer, 0); clouds.turbulenceTexture = turb.texture; procedural.push(turb);
 
   // Blue noise drives the temporal sampling. Non-fatal if it fails to load —
@@ -99,11 +168,17 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // boundary of the saturated area becomes a visible edge, and with a continuous
   // deck that boundary follows a layer's footprint and reads as a rectangle.
   //
-  // Bigger AND sparser together gets both: 120 / 0.24 puts saturation back to
-  // about 9% while the clouds are noticeably larger and separated by real sky, so
-  // what saturation remains is cloud-shaped instead of slab-shaped.
-  clouds.coverage = 0.24;
-  clouds.localWeatherRepeat.set(120, 120);
+  // Bigger AND sparser together gets both: 120 / 0.24 put saturation back to
+  // about 9% while the clouds were noticeably larger and separated by real sky,
+  // so what saturation remained was cloud-shaped instead of slab-shaped.
+  //
+  // The island cap then did far more for the same problem than the sizing did —
+  // it ends the deck a few km offshore, which ends the long sightlines — so
+  // coverage goes back UP to 0.30. Over the island that is a proper cumulus cap
+  // rather than a thin scatter, and saturation still measures ~3% against the
+  // ~12% we started from.
+  clouds.coverage = 0.30;
+  clouds.localWeatherRepeat.set(WEATHER_REPEAT, WEATHER_REPEAT);
   clouds.localWeatherVelocity.set(0.00008, 0);
   clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
 
