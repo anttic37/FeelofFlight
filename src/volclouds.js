@@ -25,7 +25,34 @@ const EARTH_R = 6378137;
 // not set later alongside coverage.
 // ?wrepeat= overrides it for tuning: it is the one knob for cloud SIZE, and the
 // only way to compare sizes is to look at two of them.
-const WEATHER_REPEAT = +(new URLSearchParams(location.search).get('wrepeat')) || 120;
+const PARAMS = new URLSearchParams(location.search);
+const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 120;
+
+// NO TEMPORAL HISTORY. This is where the grain came from.
+//
+// By default the library renders only 1/16 of the cloud pixels each frame (a quarter
+// of each axis) and rebuilds the frame by reprojecting the previous one. It is cheap,
+// but every screenshot all session had a sprayed, dithered look on the clouds that I
+// kept putting down to a static camera warming up. It was not: it is the
+// reconstruction. Rendering a COMPLETE but smaller cloud buffer with no history at all
+// removes it — same density field, same shapes, but the lobes resolve cleanly and the
+// cirrus stops being speckle. Reprojection also smears anything that does not move
+// with the world, which for a chase camera means the aeroplane itself.
+//
+// 0.36, not the 0.58 the diagnostic app proposed. Measured on a moving camera, medians
+// over alternating rounds at 1600x900 (effective 2400x1350 at this pixel ratio):
+//   temporal 1/16      7.8 ms
+//   no history 0.35    9.2 ms   <- 1.2x, and visibly cleaner
+//   no history 0.42   14.7 ms
+//   no history 0.58   24.0 ms   <- 3.1x, not worth it
+// The jump is steep because cost tracks buffer PIXELS, and 0.58 is 5x the pixel count
+// of the temporal buffer. Around 0.36 the extra raymarching is roughly paid for by
+// dropping the history resolve and reprojection passes.
+//
+// ?nohist=0 restores temporal reconstruction, ?cloudres= overrides the scale.
+const NO_HISTORY = PARAMS.get('nohist') !== '0';
+const CLOUD_RES = Math.min(1, Math.max(0.25,
+  +(PARAMS.get('cloudres')) || (NO_HISTORY ? 0.36 : 1)));
 
 // our world: +X east, +Y up, -Z north (so +Z is south)
 // ECEF at lat 0 lon 0: +X is up through the surface, +Y east, +Z north
@@ -216,7 +243,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     new PrecomputedTexturesLoader().load(DEFAULT_PRECOMPUTED_TEXTURES_URL, resolve, undefined, reject);
   });
 
-  const clouds = new CloudsEffect(camera);
+  const clouds = new CloudsEffect(camera, { resolutionScale: CLOUD_RES });
   clouds.transmittanceTexture = textures.transmittanceTexture;
   clouds.irradianceTexture = textures.irradianceTexture;
   clouds.scatteringTexture = textures.scatteringTexture;
@@ -610,6 +637,12 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   });
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(new EffectPass(camera, clouds, aerial));
+
+  // AFTER the effect is attached to a composer, so switching the mode resizes render
+  // targets that actually have a size — set before this and it reallocates 0x0 ones.
+  clouds.temporalUpscale = !NO_HISTORY;
+  clouds.shadow.temporalPass = !NO_HISTORY;
+  clouds.shadow.temporalJitter = !NO_HISTORY;
 
   // BLOOM, restored. The old UnrealBloomPass lived on main.js's composer, which
   // this one bypasses entirely, so the flag-gated spike quietly took the glow
