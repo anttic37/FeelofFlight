@@ -26,7 +26,13 @@ const EARTH_R = 6378137;
 // ?wrepeat= overrides it for tuning: it is the one knob for cloud SIZE, and the
 // only way to compare sizes is to look at two of them.
 const PARAMS = new URLSearchParams(location.search);
-const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 120;
+// 75, not 120. This is cloud WIDTH, and it is half of an aspect ratio whose other half
+// (layer height) was the only one exposed — which is how the deck ended up as vertical
+// curtains with flat sides. Measured against a straight-wall detector that scores the
+// longest contiguous run of vertical discontinuity in a frame, at a pose where the wall
+// is unmistakable: width 120 scores 182, width 60 scores 77, width 40 scores 48. Height
+// alone does almost nothing — 2300 -> 1200 scored 150.
+const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 75;
 
 // NO TEMPORAL HISTORY. This is where the grain came from.
 //
@@ -330,7 +336,10 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // full sky. Size no longer needs it: it comes from the height and from the tighter
   // cap concentrating the same cloud over less ground. The veil's own filter width
   // still has to track it (see the layer note), hence 1 - 0.30.
-  clouds.coverage = 0.30;
+  // 0.27, down with the width increase. Wider blobs at the same threshold merge into a
+  // continuous deck, so the two have to move together — the same pairing as always, just
+  // in the other direction this time.
+  clouds.coverage = 0.27;
   clouds.localWeatherRepeat.set(WEATHER_REPEAT, WEATHER_REPEAT);
   // WIND HAS TO COME OUT OF THE WEATHER MAP NOW, and this is the price of baking
   // the island cap into it. localWeatherOffset accumulates velocity * dt in TILE
@@ -550,7 +559,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // at 0.3 a tall layer gets all its width crammed into the bottom tenth and tapers
     // away above: a pancake with a spike, not a tower. Moving the peak to a third of
     // the way up is what lets these build.
-    { channel: 'g', altitude: 680, height: 2300, densityScale: 0.82,
+    { channel: 'g', altitude: 680, height: 1800, densityScale: 0.82,
       weatherExponent: 1.25, shapeAlteringBias: 0.62, coverageFilterWidth: 0.64,
       shapeAmount: 0.8, shapeDetailAmount: 0.45, shadow: true, profile: BOTH_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
@@ -569,7 +578,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // at zero, so the convective layers can get their coverage without the cirrus
     // noticing.
     { channel: 'b', altitude: 4200, height: 420, densityScale: 0.45,
-      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.70, shadow: false,
+      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.73, shadow: false,
       shapeDetailAmount: 0.5, profile: [-1, -3, -0.95, 1] },
   ];
   for (let i = 0; i < clouds.cloudLayers.length; i++) {
