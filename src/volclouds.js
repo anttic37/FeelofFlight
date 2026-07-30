@@ -104,6 +104,24 @@ function capTileMetres(repeat) {
   return Math.SQRT2 * EARTH_R / repeat;
 }
 
+// PIN THE ISLAND TO ONE SPOT IN THE WEATHER TEXTURE.
+//
+// The world origin lands at texture uv fract(0.5 * repeat), which is 0 for an even repeat
+// and 0.5 for an odd one — so every single step of the width control dropped the island
+// somewhere completely different in the map, and how much cloud it got was a lottery.
+// Measured overhead cover against width, with no offset: 2.98, 2.51, 3.19, 3.84, 2.12,
+// 2.49, 2.25, 2.61, 1.79, 3.44, 1.01. No trend at all, just noise — which is why 45 gave
+// a sky and 40 gave almost nothing, and why the control was impossible to tune with.
+//
+// localWeatherOffset shifts where the origin samples, so choosing it per repeat makes the
+// island sit on the SAME piece of weather at every width. Changing width then zooms that
+// piece in and out, which is what the control was supposed to mean.
+const CAP_UV = 0.5;
+function weatherOffsetFor(repeat) {
+  const o = (CAP_UV - 0.5 * repeat) % 1;
+  return o < 0 ? o + 1 : o;
+}
+
 // THE FADE IS NOT AS SOFT AS IT LOOKS, because the mask lands upstream of a
 // nonlinear threshold. The library computes
 //   lw = pow(weather, weatherExponent)
@@ -122,12 +140,9 @@ function applyIslandCap(renderer, weather, repeat) {
   const mat = new THREE.ShaderMaterial({
     uniforms: {
       uTileM: { value: capTileMetres(repeat) },
-      // WHERE the island lands in the texture depends on the repeat count. The
-      // world origin sits at face uv 0.5, which the shader turns into texture uv
-      // fract(0.5 * repeat) — that is 0 for an even repeat, which is why folding
-      // around the texture corner worked at 120 and put the cap 82 km out to sea
-      // at 55, leaving the island under bare floor with one cloud on it.
-      uOrigin: { value: new THREE.Vector2().setScalar((0.5 * repeat) % 1) },
+      // The island is pinned to CAP_UV by localWeatherOffset (see weatherOffsetFor), so
+      // the mask goes there rather than wherever fract(0.5 * repeat) happened to land.
+      uOrigin: { value: new THREE.Vector2().setScalar(CAP_UV) },
       // TUCKED IN OVER THE ISLAND. The shore reaches RM_BASE * shapeS() + coast warp,
       // at most ~8 km on any seed (7200 * 1.0 classic, 5400 * 1.3 seeded). Full cover
       // deliberately stops SHORT of that at 5.5 km, so the outer coast sits in the
@@ -355,6 +370,11 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // shape-texture periods, so 0.0022 is about 1.5 m/s of internal motion.
   clouds.localWeatherVelocity.set(0, 0);
   clouds.shapeVelocity.set(0.0022, 0.0009, 0.0016);
+  // and the pin itself — must match what applyIslandCap baked at CAP_UV
+  {
+    const o = weatherOffsetFor(WEATHER_REPEAT);
+    clouds.localWeatherOffset.set(o, o);
+  }
   clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
 
   // CLOUD SHAPE — this is what stops them looking like carved boxes. The shape
@@ -697,6 +717,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // per frame, instant on mouse-up.
   const setWeatherRepeat = (repeat) => {
     clouds.localWeatherRepeat.set(repeat, repeat);
+    // pin first: the mask is baked at CAP_UV, so the offset has to put the island there
+    const o = weatherOffsetFor(repeat);
+    clouds.localWeatherOffset.set(o, o);
     weather.needsRender = true;              // LocalWeather renders once and latches
     weather.render(renderer, 0);
     if (PARAMS.get('cap') !== '0') applyIslandCap(renderer, weather, repeat);
