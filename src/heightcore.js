@@ -833,12 +833,24 @@ function generateIsland() {
   // ---- strip discovery: 4-8 sites found on the RAW terrain ----
   const used = new Set();
   const N = 4 + Math.floor(R1(120) * 4.999);
-  const sep2 = 1500 * 1500;
+  // 1200, down from 1500. Flat ground clusters — mostly the coastal plain — so a 1500 m
+  // exclusion around each strip was ruling out the very sites the flatness ranking had
+  // just picked out, and islands ended up with two strips instead of four.
+  const sep2 = 1200 * 1200;
   const farFromStrips = (x, z) => {
     for (const r of RUNWAYS) { const dx = x - r.x, dz = z - r.z; if (dx * dx + dz * dz < sep2) return false; }
     return true;
   };
-  const siteOK = (x, z, heading, len, maxDev) => {
+  // THE FOOTPRINT WAS NEVER THE PROBLEM. Every strip already measured dead flat at its
+  // declared elevation, because the platform grades it — the footprint test only decides
+  // how much grading that takes. What was never checked is the ground at the EDGE of the
+  // platform's blend, and there it ran up to 119 m away from strip elevation. A 300-400 m
+  // apron dragging a 119 m hillside down to runway level is the melted scar in front of
+  // the strips: the runway is flat, but it is a shelf cut into a mountainside.
+  //
+  // So the apron has to land on ground that is already close to level. That is a much
+  // stronger condition than a flat footprint and it is what "on a flat place" means.
+  const siteOK = (x, z, heading, len, maxDev, apron, apronDrop) => {
     if (CANYON_PATH.length > 1 && canyonLocate(x, z) && _cd < 950) return false; // off the gorge
     const fx = -Math.sin(heading), fz = -Math.cos(heading);
     let min = 1e9, max = -1e9;
@@ -848,11 +860,49 @@ function generateIsland() {
         if (h < min) min = h; if (h > max) max = h;
       }
     }
-    return min > 5 && (max - min) <= maxDev;
+    if (!(min > 5 && (max - min) <= maxDev)) return false;
+    if (apron) {
+      const h0 = genTerrainHeight(x, z);
+      // A COUNT, NOT A VETO. Requiring every bearing to be level demands a plateau
+      // ~900 m across, and on a 6 km island with mountains that left seed 1 with ONE
+      // strip instead of six. Real airfields sit in a flat spot with a hill on one
+      // side, so allow a few bearings to rise: it is a bowl or a valley floor that we
+      // want to reject, not a shoulder.
+      let bad = 0;
+      for (const rr of [apron * 0.62, apron]) {   // two rings: one can sit in a saddle
+        for (let k = 0; k < 12; k++) {
+          const a = k / 12 * TAU;
+          const h = genTerrainHeight(x + Math.sin(a) * rr, z + Math.cos(a) * rr);
+          if (Math.abs(h - h0) > apronDrop && ++bad > 5) return false;
+        }
+      }
+    }
+    return true;
+  };
+  // THE PAD ADAPTS TO THE SITE, and this is what finally bounds the scar. The platform
+  // drags surrounding ground to strip elevation across its whole reach, so on a steep
+  // site a generous pad melts the entire hillside — measured up to 319 m of vertical
+  // correction spread over 700 m, which is the smeared gouge in front of the strips.
+  // Ranking sites by flatness helps but cannot bound the worst case, because a
+  // mountainous island has no flat sites to rank.
+  //
+  // So: flat site, generous pad (a wide apron nobody notices); steep site, TIGHT pad —
+  // a compact bench cut into the slope, which is exactly what a real mountain airstrip
+  // is. The modified footprint shrinks from ~700 m to ~180 m on the worst sites and the
+  // terrain either side is left alone.
+  const padFor = (x, z, h0) => {
+    let worst = 0;
+    for (const rr of [190, 300]) {
+      for (let k = 0; k < 10; k++) {
+        const a = k / 10 * TAU;
+        worst = Math.max(worst, Math.abs(genTerrainHeight(x + Math.sin(a) * rr, z + Math.cos(a) * rr) - h0));
+      }
+    }
+    return Math.max(85, Math.min(300, Math.round(300 * 26 / Math.max(26, worst))));
   };
   const pushStrip = (name, x, z, heading, elev, len, wid) => RUNWAYS.push({
     name, x, z, heading, length: len, width: wid, elev,
-    m: 70 + Math.round(R1(200 + RUNWAYS.length) * 20), pad: 300 + Math.round(R1(210 + RUNWAYS.length) * 100),
+    m: 70 + Math.round(R1(200 + RUNWAYS.length) * 20), pad: padFor(x, z, elev),
   });
   // a runway end needs SPACE: terrain along both finals must stay under the
   // 6.5% obstacle ramp (a small knick is tolerable, a hillside is not) — if it
@@ -891,14 +941,22 @@ function generateIsland() {
   // case is the least-bad real candidate instead of a random one.
   {
     let best = null, bestOver = 1e9;
-    for (let k = 0; k < 60; k++) {
+    // 60 bearings x 3 radii, not 60 x 1. One ring at 0.84 of the shore radius is a thin
+    // slice of the island to look in, and when every bearing on it had a hill on final
+    // the strip was placed on the least-bad one anyway — measured 119 m of hillside on
+    // short final on seed 2. Letting the ring breathe in and out finds a clear approach
+    // on nearly every island instead.
+    for (let k = 0; k < 180; k++) {
       const a = R1(130) * TAU + k * 2.39996;
-      const rad = RM_BASE * shapeS(a) * 0.84;
+      const rad = RM_BASE * shapeS(a) * (0.74 + (k % 3) * 0.09);
       const x = Math.sin(a) * rad, z = Math.cos(a) * rad;
       const heading = Math.atan2(x, z) + jit(131 + k, 0.2);
       const hRaw = genTerrainHeight(x, z);
       if (hRaw < 6 || hRaw > 48) continue; // rolling ground raised the shore band
-      if (!siteOK(x, z, heading, 560, 48)) continue;
+      // the coastal strip SCORES rather than filters, so the apron is part of the score
+      // below rather than a hard reject — but a shore site on a cliff shoulder is still
+      // no use, so the gross cases go here
+      if (!siteOK(x, z, heading, 560, 48, 300, 40)) continue;
       // worst obstruction above the 6.5% ramp along either final
       let over = 0;
       for (const e of [-1, 1]) {
@@ -909,8 +967,16 @@ function generateIsland() {
           if (o > over) over = o;
         }
       }
-      if (over < bestOver) { bestOver = over; best = { x, z, heading, hRaw }; }
-      if (over <= 12) break; // clear enough — stop looking
+      // ...and how much apron the platform would have to melt, scored alongside the
+      // approach so a clear final over a cliff edge does not win on its own
+      let drop = 0;
+      for (let k = 0; k < 12; k++) {
+        const a2 = k / 12 * TAU;
+        drop = Math.max(drop, Math.abs(genTerrainHeight(x + Math.sin(a2) * 300, z + Math.cos(a2) * 300) - hRaw));
+      }
+      const score = Math.max(over, drop * 0.55);
+      if (score < bestOver) { bestOver = score; best = { x, z, heading, hRaw }; }
+      if (score <= 12) break; // clear enough — stop looking
     }
     if (best) {
       pushStrip(pickName('coast', used), best.x, best.z, best.heading,
@@ -936,33 +1002,81 @@ function generateIsland() {
       if (hh < 40) continue;
       const heading = b + Math.PI / 2 + jit(148 + k, 0.2);
       if (!approachOK(hx, hz, heading, 340, hh, 3, 55)) continue; // a shelf is expected to be tight
+      // A SHELF HAS TO ALREADY EXIST. This used to place a strip near the peak on
+      // whatever bearing had a clear final, and the platform then flattened a dome into
+      // the mountainside — a white golf-ball dimple with radial smears, the single worst
+      // looking thing on the island. Every bearing must be within 60 m for 280 m out, a
+      // max and not a count, so the strip only appears where the mountain genuinely has
+      // a bench. Most peaks do not, and those islands simply have no summit strip.
+      let shelf = true;
+      for (const rr of [170, 280]) {
+        for (let k = 0; k < 12 && shelf; k++) {
+          const a2 = k / 12 * TAU;
+          if (Math.abs(genTerrainHeight(hx + Math.sin(a2) * rr, hz + Math.cos(a2) * rr) - hh) > 60) shelf = false;
+        }
+      }
+      if (!shelf) continue;
       pushStrip(pickName('high', used), hx, hz, heading, Math.round(hh), 340, 20);
       break;
     }
   }
 
-  // 3) fill the rest by suitability search (two passes, second is lenient)
-  for (const maxDev of [30, 60]) { // rolling ground: platforms grade harder
-    let tries = 0;
-    while (RUNWAYS.length < N && tries < 160) {
-      tries++;
+  // 3) SCORE EVERY CANDIDATE, THEN TAKE THE FLATTEST. Filtering on apron flatness cannot
+  // work: tight enough to stop a hillside being melted left seed 1 with one strip
+  // instead of six, and loose enough to fill the island let a 110 m hill through. The
+  // two goals are not on the same axis, so ranking beats thresholding — sweep the whole
+  // island, score each site by how much terrain its platform would have to move, and
+  // spend the N slots on the best ones. Bad sites now only get used when there is
+  // genuinely nothing better, and they get used LAST.
+  {
+    const cands = [];
+    for (let tries = 1; tries <= 1800; tries++) {
       const a = R1(150) * TAU + tries * 2.39996;
-      const rFrac = 0.12 + ((R1(151) + tries * 0.618034) % 1) * 0.62;
+      // out to 0.92 of the shore radius, not 0.74. Surveying the island's own flatness
+      // showed the best sites by far are the coastal plain at 27-44 m, and the generator
+      // was never sampling that far out — so it kept offering interior hillsides and the
+      // placer had nothing good to rank.
+      const rFrac = 0.10 + ((R1(151) + tries * 0.618034) % 1) * 0.82;
       const p = place(a, rFrac);
       const heading = ((R1(152) + tries * 0.381966) % 1) * TAU;
       const len = 380 + Math.round(((R1(153) + tries * 0.7548) % 1) * 240);
-      if (!farFromStrips(p.x, p.z)) continue;
-      if (!siteOK(p.x, p.z, heading, len, maxDev)) continue;
+      if (!siteOK(p.x, p.z, heading, len, 60)) continue;   // footprint only; apron is scored
       const hRaw = genTerrainHeight(p.x, p.z);
-      // both finals need space. The first pass insists on genuinely clear
-      // approaches; the second accepts a rougher one rather than leave the
-      // island with too few strips to fly between.
-      if (!approachOK(p.x, p.z, heading, len, hRaw, 1, maxDev === 30 ? 30 : 55)) continue;
-      biomeWeightsGen(p.x, p.z);
-      const pool = hRaw > 260 ? 'high' : _wD > 0.45 ? 'desert' : _wF > 0.45 ? 'forest' : 'open';
-      pushStrip(pickName(pool, used), p.x, p.z, heading, Math.round(hRaw), len, 20 + Math.round(((R1(154) + tries * 0.29) % 1) * 10));
+      // hardMax 32, not 55. 55 was a concession from when good sites were scarce; now
+      // that the search reaches the coastal plain there are plenty to choose from, and
+      // 55 m of hill on short final is the thing the corridor then has to carve. 38 is
+      // where the strip count stops falling — at 32 the islands were down to two.
+      if (!approachOK(p.x, p.z, heading, len, hRaw, 1, 38)) continue;
+      // how far the platform would drag the surrounding ground, worst bearing and mean
+      let worst = 0, sum = 0, n = 0;
+      for (const rr of [190, 300]) {
+        for (let k = 0; k < 12; k++) {
+          const a2 = k / 12 * TAU;
+          const d = Math.abs(genTerrainHeight(p.x + Math.sin(a2) * rr, p.z + Math.cos(a2) * rr) - hRaw);
+          if (d > worst) worst = d;
+          sum += d; n++;
+        }
+      }
+      // the worst bearing is what shows as a gouge, so it dominates; the mean keeps a
+      // site that is merely lumpy all round from beating one with a single shoulder
+      cands.push({ p, heading, len, hRaw, score: worst + sum / n * 0.6, tries });
     }
-    if (RUNWAYS.length >= N) break;
+    cands.sort((u, v) => u.score - v.score);
+    for (const c of cands) {
+      if (RUNWAYS.length >= N) break;
+      // A QUALITY CEILING, not just a ranking. Ranking alone still fills the island with
+      // mountain sites once the good ones run out, and a strip whose platform has to move
+      // 250 m of rock is worse than no strip. A flat site scores under 30; 95 lets in
+      // undulating ground and keeps hillsides out. The floor is 2 — with the coastal
+      // strip that is two places to fly between, and it means a forced bad site only
+      // happens on an island that genuinely has nowhere flat.
+      if (c.score > 120 && RUNWAYS.length >= 2) break;
+      if (!farFromStrips(c.p.x, c.p.z)) continue;
+      biomeWeightsGen(c.p.x, c.p.z);
+      const pool = c.hRaw > 260 ? 'high' : _wD > 0.45 ? 'desert' : _wF > 0.45 ? 'forest' : 'open';
+      pushStrip(pickName(pool, used), c.p.x, c.p.z, c.heading, Math.round(c.hRaw), c.len,
+        20 + Math.round(((R1(154) + c.tries * 0.29) % 1) * 10));
+    }
   }
 }
 
