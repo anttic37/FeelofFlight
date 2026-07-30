@@ -122,6 +122,112 @@ function weatherOffsetFor(repeat) {
   return o < 0 ? o + 1 : o;
 }
 
+// ---------------------------------------------------------------------------
+// OUR OWN WEATHER MAP, replacing the library's generated one.
+//
+// The library's LocalWeather is a single-frequency CELLULAR noise: Voronoi cells that
+// tile the plane, all the same size, packed edge to edge. Everything wrong with the
+// cloud shapes traces back to it. Every cloud came out the same size because every cell
+// is; clouds sat shoulder to shoulder because Voronoi covers the plane with no gaps; and
+// the footprints were polygons, which extruded into the prisms with flat vertical sides
+// that read as walls.
+//
+// A cumulus field is not a tessellation. It is SPARSE, ISOLATED blobs of WIDELY VARYING
+// size on an empty background. So this builds exactly that: three octaves of scattered
+// round blobs, each octave a different size class, combined with max() rather than a sum.
+//
+// max() is the important part and the reason this is not just more fbm. Summing octaves
+// makes every blob a lumpy version of the same average size and fills the gaps between
+// them; taking the max keeps each blob its own size and leaves the background at zero, so
+// a small puff next to a big mass stays a small puff instead of merging into grey soup.
+function renderWeatherMap(renderer, target, seed) {
+  const scene = new THREE.Scene();
+  const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: { uSeed: { value: seed } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
+    fragmentShader: `
+      uniform float uSeed;
+      varying vec2 vUv;
+
+      // hash on a lattice that WRAPS at per, so the whole map tiles
+      vec3 hash33(vec2 p, float per, float s) {
+        p = mod(p, vec2(per));
+        vec3 q = fract(vec3(p.x, p.y, p.x + p.y) * vec3(0.1031, 0.1030, 0.0973) + s);
+        q += dot(q, q.yzx + 33.33);
+        return fract((q.xxy + q.yzz) * q.zyx);
+      }
+
+      // Scattered blobs: one per lattice cell, jittered off the lattice so the grid does
+      // not show, and each with its OWN radius. cover decides how many cells carry a blob
+      // at all — that is what leaves real gaps between clouds.
+      float blobs(vec2 uv, float freq, float s, float cover, float rMin, float rMax) {
+        vec2 p = uv * freq;
+        vec2 i = floor(p), f = fract(p);
+        float m = 0.0;
+        for (int y = -1; y <= 1; ++y) {
+          for (int x = -1; x <= 1; ++x) {
+            vec2 g = vec2(float(x), float(y));
+            vec3 h = hash33(i + g, freq, s);
+            if (h.z > cover) continue;                  // empty cell: real sky
+            vec2 c = g + 0.15 + h.xy * 0.7;             // jittered centre
+            float r = mix(rMin, rMax, fract(h.z * 7.31));
+            float d = length(f - c) / r;
+            m = max(m, 1.0 - smoothstep(0.35, 1.0, d)); // soft round falloff
+          }
+        }
+        return m;
+      }
+
+      // low-frequency warp, so blob outlines are organic rather than circular
+      float vn(vec2 p, float per) {
+        vec2 i = floor(p), f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+        float a = hash33(i, per, 3.7).x, b = hash33(i + vec2(1,0), per, 3.7).x;
+        float c = hash33(i + vec2(0,1), per, 3.7).x, d = hash33(i + vec2(1,1), per, 3.7).x;
+        return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+      }
+
+      void main() {
+        vec2 uv = vUv;
+        // warp amplitude is in uv, kept small so blobs deform rather than tear apart
+        vec2 w = vec2(vn(uv * 12.0, 12.0), vn(uv * 12.0 + 5.3, 12.0)) - 0.5;
+        vec2 q = uv + w * 0.045;
+
+        // THREE SIZE CLASSES, max-combined. Frequencies are integers so each octave wraps
+        // with the texture, and they stay tied to the TILE rather than to metres — that is
+        // what keeps the width control meaningful, since widening the tile widens every
+        // class together. At the default 75 (a 120 km tile) these are roughly 4 km, 2 km
+        // and 1 km blobs. Getting this wrong is dramatic: the first attempt used 14, which
+        // is an 8.6 km blob, and the camera simply ended up inside one.
+        float big   = blobs(q, 30.0,  uSeed + 0.11, 0.26, 0.40, 0.85);
+        float mid   = blobs(q, 60.0,  uSeed + 0.37, 0.30, 0.32, 0.68);
+        float small = blobs(q, 120.0, uSeed + 0.73, 0.34, 0.26, 0.55);
+        float r = max(max(big * 1.00, mid * 0.90), small * 0.78);
+
+        // g: the big-mass channel — the same field biased hard toward the large class,
+        // so layer 3 draws on genuinely bigger footprints instead of the same ones
+        float g = max(big * 1.00, mid * 0.55);
+
+        // b: cirrus. Smooth and broad, stretched along one axis so it streaks.
+        float b = vn(vec2(q.x * 5.0, q.y * 17.0), 17.0) * 0.6
+                + vn(vec2(q.x * 11.0, q.y * 31.0), 31.0) * 0.4;
+
+        gl_FragColor = vec4(r, g, b, 1.0);
+      }`,
+    depthTest: false, depthWrite: false,
+  });
+  scene.add(new THREE.Mesh(new THREE.PlaneGeometry(2, 2), mat));
+  const prev = renderer.getRenderTarget();
+  const prevAutoClear = renderer.autoClear;
+  renderer.autoClear = true;              // this pass OWNS the map, unlike the bakes
+  renderer.setRenderTarget(target);
+  renderer.render(scene, cam);
+  renderer.setRenderTarget(prev);
+  renderer.autoClear = prevAutoClear;
+  mat.dispose();
+}
+
 // THE FADE IS NOT AS SOFT AS IT LOOKS, because the mask lands upstream of a
 // nonlinear threshold. The library computes
 //   lw = pow(weather, weatherExponent)
@@ -296,13 +402,23 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // then had surviving regions just two or three texels across. A few texels of a
   // thresholded bilinear field IS a rectangle, extruded into a literal cube of
   // cloud. 4096 puts it back to 65 m and the cubes go with it.
+  // LocalWeather is still constructed, but only for its render target and texture — the
+  // wrapping, filtering and mipmaps are already set up correctly on it. What goes INTO
+  // that target is ours now (see renderWeatherMap). ?libweather=1 puts the library's
+  // cellular field back, for comparison.
   const weather = new LocalWeather();
   weather.renderTarget.setSize(4096, 4096);
   weather.size = 4096;
-  weather.render(renderer, 0);
-  // ?cap=0 skips the island mask entirely — the mask boundary is a prime suspect for the
-  // straight cuts, and it is baked into the map so there is no other way to A/B it
-  if (PARAMS.get('cap') !== '0') applyIslandCap(renderer, weather, WEATHER_REPEAT);
+  const USE_LIB_WEATHER = PARAMS.get('libweather') === '1';
+  const bakeWeather = (repeat) => {
+    if (USE_LIB_WEATHER) { weather.needsRender = true; weather.render(renderer, 0); }
+    else renderWeatherMap(renderer, weather.renderTarget, 0.37);
+    // ?cap=0 skips the island mask entirely — the mask boundary was a suspect for the
+    // straight cuts, and it is baked into the map so there is no other way to A/B it
+    if (PARAMS.get('cap') !== '0') applyIslandCap(renderer, weather, repeat);
+    weather.texture.needsUpdate = true;
+  };
+  bakeWeather(WEATHER_REPEAT);
   clouds.localWeatherTexture = weather.texture; procedural.push(weather);
   const turb = new Turbulence(); turb.render(renderer, 0); clouds.turbulenceTexture = turb.texture; procedural.push(turb);
 
@@ -351,10 +467,12 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // full sky. Size no longer needs it: it comes from the height and from the tighter
   // cap concentrating the same cloud over less ground. The veil's own filter width
   // still has to track it (see the layer note), hence 1 - 0.30.
-  // 0.27, down with the width increase. Wider blobs at the same threshold merge into a
-  // continuous deck, so the two have to move together — the same pairing as always, just
-  // in the other direction this time.
-  clouds.coverage = 0.27;
+  // 0.20 for OUR weather map. The threshold has to be re-tuned from scratch whenever the
+  // field changes, and this one is sparse where the library's tessellated the plane: its
+  // blobs sit on empty background, so the same coverage that gave a fair-weather sky
+  // before now puts the camera inside a cloud. Re-tuned by sweeping: 0.20 gives rounded,
+  // varied, well-separated cumulus; 0.27 starts closing the gaps; 0.34 is overcast.
+  clouds.coverage = 0.20;
   clouds.localWeatherRepeat.set(WEATHER_REPEAT, WEATHER_REPEAT);
   // WIND HAS TO COME OUT OF THE WEATHER MAP NOW, and this is the price of baking
   // the island cap into it. localWeatherOffset accumulates velocity * dt in TILE
@@ -613,7 +731,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // at zero, so the convective layers can get their coverage without the cirrus
     // noticing.
     { channel: 'b', altitude: 4200, height: 420, densityScale: 0.45,
-      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.73, shadow: false,
+      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.80, shadow: false,
       shapeDetailAmount: 0.5, profile: [-1, -3, -0.95, 1] },
   ];
   for (let i = 0; i < clouds.cloudLayers.length; i++) {
@@ -735,9 +853,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // pin first: the mask is baked at CAP_UV, so the offset has to put the island there
     const o = weatherOffsetFor(repeat);
     clouds.localWeatherOffset.set(o, o);
-    weather.needsRender = true;              // LocalWeather renders once and latches
-    weather.render(renderer, 0);
-    if (PARAMS.get('cap') !== '0') applyIslandCap(renderer, weather, repeat);
+    bakeWeather(repeat);
     return repeat;
   };
 
