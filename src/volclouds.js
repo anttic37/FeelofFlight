@@ -140,11 +140,13 @@ function applyIslandCap(renderer, weather, repeat) {
       uFloor: { value: 0.08 },
       uWarp: { value: 2400 },   // how far the edge wanders off a circle
       // CLUSTERING — see the note above the function.
-      uQuiet: { value: 0.66 },   // how far a quiet district is held down (multiply)
+      // ?cluster=0 switches the district field off, because it is baked into the weather
+      // map and there is otherwise no way to A/B it at runtime
+      uQuiet: { value: PARAMS.get('cluster') === '0' ? 1 : 0.66 },   // quiet districts held down
       // 0.64, up from 0.52. With no temporal averaging to blur it, a district of cells
       // that only PARTLY merge reads as popcorn lace rather than cloud — dozens of
       // separate little puffs at 5-15 km. Lifting harder finishes the merge.
-      uLift: { value: 0.64 },    // how far an active district is blended toward 1
+      uLift: { value: PARAMS.get('cluster') === '0' ? 0 : 0.64 },   // active districts blended toward 1
       // Integer cells per tile so the lattice wraps seamlessly, sized for a ~10 km
       // district — two or three of them across the cap.
       uFreq: { value: Math.max(2, Math.round(capTileMetres(repeat) / 10000)) },
@@ -277,7 +279,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   weather.renderTarget.setSize(4096, 4096);
   weather.size = 4096;
   weather.render(renderer, 0);
-  applyIslandCap(renderer, weather, WEATHER_REPEAT);
+  // ?cap=0 skips the island mask entirely — the mask boundary is a prime suspect for the
+  // straight cuts, and it is baked into the map so there is no other way to A/B it
+  if (PARAMS.get('cap') !== '0') applyIslandCap(renderer, weather, WEATHER_REPEAT);
   clouds.localWeatherTexture = weather.texture; procedural.push(weather);
   const turb = new Turbulence(); turb.render(renderer, 0); clouds.turbulenceTexture = turb.texture; procedural.push(turb);
 
