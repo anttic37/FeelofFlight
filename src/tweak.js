@@ -21,7 +21,7 @@ const FMT = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toF
 // each slider tick grew the canvas 1.5x — 1920 to 2880 to 4320 px wide — with the CSS
 // size ballooning past the window, so the viewport showed a corner of a giant canvas.
 // It never showed up here because this browser reports a ratio of 1.
-export function initTweakPanel({ clouds, bloom, applyResize }) {
+export function initTweakPanel({ clouds, bloom, applyResize, setWeatherRepeat }) {
   if (!clouds) return null;
 
   const root = document.createElement('div');
@@ -61,7 +61,9 @@ export function initTweakPanel({ clouds, bloom, applyResize }) {
     }
   };
 
-  const slider = (label, get, set, min, max, step) => {
+  // onChange sliders fire on MOUSE-UP, not while dragging — for anything too expensive
+  // to run per pixel of travel, like re-rendering the weather map.
+  const slider = (label, get, set, min, max, step, onRelease) => {
     const wrap = document.createElement('label');
     wrap.style.cssText = 'display: grid; grid-template-columns: 118px 1fr 46px; gap: 5px; align-items: center; margin: 1px 0;';
     const name = document.createElement('span');
@@ -74,7 +76,13 @@ export function initTweakPanel({ clouds, bloom, applyResize }) {
     num.style.cssText = 'text-align: right; color: #8fd0ff;';
     const row = { get, set, def: get(), el: input, num, path: curSection + ' / ' + label };
     const sync = () => { const v = get(); input.value = v; num.textContent = FMT(v); };
-    input.addEventListener('input', () => { set(parseFloat(input.value)); num.textContent = FMT(parseFloat(input.value)); });
+    if (onRelease) {
+      // show the number while dragging, but only do the expensive work on release
+      input.addEventListener('input', () => { num.textContent = FMT(parseFloat(input.value)); });
+      input.addEventListener('change', () => { set(parseFloat(input.value)); sync(); });
+    } else {
+      input.addEventListener('input', () => { set(parseFloat(input.value)); num.textContent = FMT(parseFloat(input.value)); });
+    }
     row.sync = sync;
     sync();
     wrap.append(name, input, num);
@@ -112,8 +120,17 @@ export function initTweakPanel({ clouds, bloom, applyResize }) {
   root.appendChild(perf);
 
   // ---- global -------------------------------------------------------------
-  section('Coverage & scale');
+  section('Coverage & size', 'cloud WIDTH is the tile — release to rebuild');
   slider('coverage', ...num(clouds, 'coverage'), 0.10, 0.60, 0.005);
+  // THE MISSING CONTROL. Nothing in the layer settings says how wide a cloud is: height
+  // is a layer field, width comes from the blob size in the weather map, i.e. the tile.
+  // Smaller number = bigger tile in world terms = wider clouds. A layer is only a slab
+  // with flat vertical sides when its height outruns its width, so this is the other
+  // half of the aspect ratio.
+  if (setWeatherRepeat) {
+    slider('cloud width', () => clouds.localWeatherRepeat.x, v => setWeatherRepeat(Math.round(v)),
+      30, 260, 5, true);
+  }
   // resolutionScale only re-derives the targets on a resize, so nudge the game's own
   // resize path — never composer.setSize with hand-computed dimensions (see the note
   // above the function)

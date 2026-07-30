@@ -194,6 +194,7 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
           clouds: v.clouds, bloom: window.__vc.bloom,
           // the game's own resize path, so the panel never computes sizes itself
           applyResize: () => v.setSize(window.innerWidth, window.innerHeight),
+          setWeatherRepeat: v.setWeatherRepeat,
         });
       });
     })

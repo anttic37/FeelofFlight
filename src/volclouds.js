@@ -678,10 +678,27 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   composer.addPass(new EffectPass(camera, bloom,
     new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC })));
 
-  window.__vc = { clouds, aerial, composer, textures, bloom }; // tuning handle, same idea as __ff
+  // CLOUD WIDTH, made adjustable without a reload. This is the control that has been
+  // out of reach all along: nothing in the layer settings sets how WIDE a cloud is.
+  // Height is a layer field, but width comes from the size of the blobs in the weather
+  // map, which is the tile size — and the tile is baked, so it needed a page reload and
+  // could never be compared against anything. That is how a layer ended up 2300 m tall
+  // on a footprint too narrow to carry it, which is what a vertical slab with flat sides
+  // IS. Re-rendering the map is a 4096 square pass plus the two bake passes: far too slow
+  // per frame, instant on mouse-up.
+  const setWeatherRepeat = (repeat) => {
+    clouds.localWeatherRepeat.set(repeat, repeat);
+    weather.needsRender = true;              // LocalWeather renders once and latches
+    weather.render(renderer, 0);
+    if (PARAMS.get('cap') !== '0') applyIslandCap(renderer, weather, repeat);
+    return repeat;
+  };
+
+  window.__vc = { clouds, aerial, composer, textures, bloom, setWeatherRepeat }; // tuning handle, same idea as __ff
 
   return {
     clouds,
+    setWeatherRepeat,
     render: () => composer.render(),
     setSize: (w, h) => composer.setSize(w, h),
     dispose: () => { procedural.forEach(p => p.dispose && p.dispose()); composer.dispose(); },
