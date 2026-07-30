@@ -14,7 +14,14 @@
 
 const FMT = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(2) : v.toFixed(4));
 
-export function initTweakPanel({ clouds, bloom, composer, renderer, camera }) {
+// applyResize must be the game's OWN resize path. Two controls here reallocate render
+// targets and have to re-derive the sizes afterwards, and getting that wrong is how the
+// screen went black: passing renderer.domElement.width to composer.setSize hands it the
+// DRAWING BUFFER size, which it multiplies by the pixel ratio again. On a 1.5x display
+// each slider tick grew the canvas 1.5x — 1920 to 2880 to 4320 px wide — with the CSS
+// size ballooning past the window, so the viewport showed a corner of a giant canvas.
+// It never showed up here because this browser reports a ratio of 1.
+export function initTweakPanel({ clouds, bloom, applyResize }) {
   if (!clouds) return null;
 
   const root = document.createElement('div');
@@ -107,10 +114,12 @@ export function initTweakPanel({ clouds, bloom, composer, renderer, camera }) {
   // ---- global -------------------------------------------------------------
   section('Coverage & scale');
   slider('coverage', ...num(clouds, 'coverage'), 0.10, 0.60, 0.005);
-  // resolutionScale only re-derives the targets on a resize, so nudge the composer
+  // resolutionScale only re-derives the targets on a resize, so nudge the game's own
+  // resize path — never composer.setSize with hand-computed dimensions (see the note
+  // above the function)
   slider('cloud res', () => clouds.resolutionScale, v => {
     clouds.resolutionScale = v;
-    composer.setSize(renderer.domElement.width, renderer.domElement.height);
+    applyResize();
   }, 0.25, 1.0, 0.01);
   slider('turbulence', ...num(clouds, 'turbulenceDisplacement'), 0, 400, 5);
 
@@ -153,7 +162,7 @@ export function initTweakPanel({ clouds, bloom, composer, renderer, camera }) {
   toggle('temporal', () => clouds.temporalUpscale, v => {
     clouds.temporalUpscale = v;
     clouds.shadow.temporalPass = v; clouds.shadow.temporalJitter = v;
-    composer.setSize(renderer.domElement.width, renderer.domElement.height);
+    applyResize();
   });
 
   if (bloom) {

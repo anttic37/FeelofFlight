@@ -190,8 +190,11 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
       // the panel needs the live effect objects, so it can only be built once the
       // clouds have actually landed
       return import('./tweak.js').then(t => {
-        tweak = t.initTweakPanel({ clouds: v.clouds, bloom: window.__vc.bloom,
-          composer: window.__vc.composer, renderer, camera });
+        tweak = t.initTweakPanel({
+          clouds: v.clouds, bloom: window.__vc.bloom,
+          // the game's own resize path, so the panel never computes sizes itself
+          applyResize: () => v.setSize(window.innerWidth, window.innerHeight),
+        });
       });
     })
     .catch(e => console.error('[flighfeel] volumetric clouds failed:', e));
