@@ -207,19 +207,36 @@ function renderWeatherMap(renderer, target, seed, smooth = SMOOTH_K) {
       // Scattered blobs: one per lattice cell, jittered off the lattice so the grid does
       // not show, and each with its OWN radius. cover decides how many cells carry a blob
       // at all — that is what leaves real gaps between clouds.
+      // THREE CANDIDATE BLOBS PER CELL, NOT ONE. Flying high with shapeAmount at 0 strips
+      // off the noise that normally hides the geometry, and the raw field turned out to be
+      // laid out in visible REGULAR ROWS. One blob per lattice cell, jittered over only
+      // 0.7 of a cell, quantises the spacing to the grid — no amount of coverage or
+      // density hides a rhythm, and the eye finds it instantly.
+      //
+      // Three independent draws per cell, each with its own hash and its own accept roll,
+      // and full-cell jitter, gets close to Poisson placement: cells can hold nothing,
+      // one, or a tight pair, and the spacing histogram stops having a spike at the cell
+      // pitch. cover is per DRAW, so it is a third of what it was for the same total.
+      //
+      // The 5x5 neighbourhood is not optional with full jitter — a blob centred at 0.95
+      // with radius 0.85 reaches 1.8 cells, so a 3x3 search clips blobs at the cell
+      // boundary and puts back straight edges of a different kind. Cost is irrelevant:
+      // this bakes once into a 4096 texture, it is not a per-frame path.
       float blobs(vec2 uv, float freq, float s, float cover, float rMin, float rMax) {
         vec2 p = uv * freq;
         vec2 i = floor(p), f = fract(p);
         float m = 0.0;
-        for (int y = -1; y <= 1; ++y) {
-          for (int x = -1; x <= 1; ++x) {
+        for (int y = -2; y <= 2; ++y) {
+          for (int x = -2; x <= 2; ++x) {
             vec2 g = vec2(float(x), float(y));
-            vec3 h = hash33(i + g, vec2(freq), s);
-            if (h.z > cover) continue;                  // empty cell: real sky
-            vec2 c = g + 0.15 + h.xy * 0.7;             // jittered centre
-            float r = mix(rMin, rMax, fract(h.z * 7.31));
-            float d = length(f - c) / r;
-            m = smax(m, 1.0 - smoothstep(0.35, 1.0, d), 0.12); // soft round falloff
+            for (int k = 0; k < 3; ++k) {
+              vec3 h = hash33(i + g, vec2(freq), s + float(k) * 19.73);
+              if (h.z > cover) continue;                // empty draw: real sky
+              vec2 c = g + 0.05 + h.xy * 0.9;           // jittered centre, full cell
+              float r = mix(rMin, rMax, fract(h.z * 7.31 + float(k) * 0.41));
+              float d = length(f - c) / r;
+              m = smax(m, 1.0 - smoothstep(0.35, 1.0, d), 0.12); // soft round falloff
+            }
           }
         }
         return m;
@@ -246,9 +263,11 @@ function renderWeatherMap(renderer, target, seed, smooth = SMOOTH_K) {
         // class together. At the default 75 (a 120 km tile) these are roughly 4 km, 2 km
         // and 1 km blobs. Getting this wrong is dramatic: the first attempt used 14, which
         // is an 8.6 km blob, and the camera simply ended up inside one.
-        float big   = blobs(q, 30.0,  uSeed + 0.11, 0.26, 0.40, 0.85);
-        float mid   = blobs(q, 60.0,  uSeed + 0.37, 0.30, 0.32, 0.68);
-        float small = blobs(q, 120.0, uSeed + 0.73, 0.34, 0.26, 0.55);
+        // cover is now per DRAW and there are three draws per cell, so these are a third
+        // of the old 0.26 / 0.30 / 0.34 — same amount of sky covered, placed irregularly.
+        float big   = blobs(q, 30.0,  uSeed + 0.11, 0.087, 0.40, 0.85);
+        float mid   = blobs(q, 60.0,  uSeed + 0.37, 0.100, 0.32, 0.68);
+        float small = blobs(q, 120.0, uSeed + 0.73, 0.113, 0.26, 0.55);
         float r = smax(smax(big * 1.00, mid * 0.90, 0.14), small * 0.78, 0.14);
 
         // g: the big-mass channel — the same field biased hard toward the large class,
