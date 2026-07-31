@@ -260,7 +260,19 @@ function renderWeatherMap(renderer, target, seed, smooth = SMOOTH_K) {
         float b = vn(vec2(q.x * 5.0,  q.y * 17.0), vec2(5.0,  17.0)) * 0.6
                 + vn(vec2(q.x * 11.0, q.y * 31.0), vec2(11.0, 31.0)) * 0.4;
 
-        gl_FragColor = vec4(r, g, b, 1.0);
+        // a: PER-COLUMN CLOUD TOP, and the alpha channel exists for exactly this.
+        // The library's maxLayerHeights is a vec4 — ONE top per layer, globally. Since
+        // the weather map is 2D, density is weather(x,z) * profile(height), so the
+        // surface where density crosses the coverage threshold solves to height =
+        // constant. A flat lid, guaranteed by construction, on every cloud in the sky.
+        // This channel is read back in the patched sampleWeather (see patchLayerTops)
+        // to scale each column's top independently, which is the only thing that turns
+        // that lid into a surface. Low frequency on purpose: cloud tops vary over
+        // kilometres, not metres, and high frequency here would just read as noise.
+        float a = vn(q * 7.0,  vec2(7.0))  * 0.65
+                + vn(q * 17.0, vec2(17.0)) * 0.35;
+
+        gl_FragColor = vec4(r, g, b, a);
       }`,
     depthTest: false, depthWrite: false,
   });
@@ -287,6 +299,72 @@ function renderWeatherMap(renderer, target, seed, smooth = SMOOTH_K) {
 // for the sharpest layer and ~70% for the softest, and the fade has to be spread
 // wide for the transition to read. The upside is that the layers then die at
 // different radii, which feathers the edge instead of ending it all at once.
+// ---------------------------------------------------------------------------
+// PER-COLUMN CLOUD TOPS. The one structural fix for the flat lid.
+//
+// The library declares minLayerHeights / maxLayerHeights as vec4 uniforms — a single
+// top per LAYER, shared by the whole sky. Combined with a 2D weather map that makes
+// density = weather(x, z) * profile(height), the surface where density crosses the
+// coverage threshold solves to height = constant. Every cloud gets a dead flat lid and
+// a dead flat base, and no parameter can change that because none of them are functions
+// of horizontal position.
+//
+// Measured before writing this, on three flight poses, with a straightness metric and a
+// grain metric side by side: coverageFilterWidth and shapeAlteringBias DO reduce the
+// straight edges, but they buy every point of it with speckle, near enough one for one
+// (-57% wall / +95% grain, -41% / +89%, -26% / +107%). They are not a fix, they are a
+// trade. Setting shapeAmount to 0 makes the walls twice as bad, which confirms the 3D
+// shape noise was the only thing breaking the lid at all.
+//
+// So: patch sampleWeather to read a per-column top out of the weather map's alpha
+// channel and scale each column's ceiling with it. Nothing else in the shader changes.
+// Done through onBeforeCompile rather than by forking the package, so a version bump
+// only breaks the string match — which throws loudly here instead of silently doing
+// nothing. ?lidvary=0 disables it for comparison.
+const LID_VARY = PARAMS.get('lidvary') != null ? +PARAMS.get('lidvary') : 0.5;
+
+const LID_TARGET =
+  'weather.heightFraction = remapClamped(vec4(height), minLayerHeights, maxLayerHeights);';
+
+function patchLayerTops(clouds, amount) {
+  // BOTH ends move, and the base is the one that matters most. The first version varied
+  // only the ceiling and bought a mere -12% on the worst pose, because the worst poses
+  // are underneath a deck looking at its FLOOR, which was still perfectly flat. The
+  // second sample is the same channel read at a shifted uv, which decorrelates it from
+  // the ceiling for free rather than spending another texture.
+  //
+  // The base moves far less than the top on purpose: a real cumulus field has a genuinely
+  // flat base, because the lifting condensation level is the same for the whole airmass.
+  // Flat is correct there; a razor edge is not. The top has no such excuse.
+  const replacement = `
+  vec2 ffUv = uv * localWeatherRepeat + localWeatherOffset;
+  float ffTop = textureLod(localWeatherTexture, ffUv, mipLevel).a;
+  float ffBot = textureLod(localWeatherTexture, ffUv + vec2(0.37, 0.19), mipLevel).a;
+  vec4 ffSpan = maxLayerHeights - minLayerHeights;
+  vec4 ffMin = minLayerHeights + ffSpan * (${(amount * 0.34).toFixed(3)} * ffBot);
+  vec4 ffMax = minLayerHeights + ffSpan * mix(${(1 - amount).toFixed(3)}, 1.0, ffTop);
+  weather.heightFraction = remapClamped(vec4(height), ffMin, max(ffMax, ffMin + 1.0));`;
+
+  const seen = new WeakSet();
+  let patched = 0, candidates = 0;
+  const visit = (m) => {
+    if (!m || !m.isMaterial || seen.has(m)) return;
+    seen.add(m);
+    if (typeof m.fragmentShader !== 'string' || !m.fragmentShader.includes('sampleWeather')) return;
+    candidates++;
+    if (!m.fragmentShader.includes(LID_TARGET)) return;
+    m.fragmentShader = m.fragmentShader.split(LID_TARGET).join(replacement);
+    m.needsUpdate = true;
+    patched++;
+  };
+  for (const pass of [clouds.cloudsPass, clouds.shadowPass]) {
+    if (!pass) continue;
+    for (const k of Object.keys(pass)) { const v = pass[k]; if (v && v.isMaterial) visit(v); }
+    visit(pass.currentMaterial);
+  }
+  return { patched, candidates };
+}
+
 function applyIslandCap(renderer, weather, repeat) {
   const scene = new THREE.Scene();
   const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
@@ -381,7 +459,10 @@ function applyIslandCap(renderer, weather, repeat) {
           ? m * t
           // MULTIPLY by (1 - t), and hold the quiet districts down while we are here.
           : m * (1.0 - t) * mix(uQuiet, 1.0, smoothstep(0.0, 0.58, cl));
-        gl_FragColor = vec4(v, v, uAdd > 0.5 ? 0.0 : 1.0, 1.0); // b (veil) left alone by both
+        // b (veil) left alone by both passes, and so is a (per-column cloud top) — the
+        // add pass MUST write 0 there or dst + 1.0 saturates the channel to white and
+        // every column gets the same top again, silently undoing the lid fix.
+        gl_FragColor = vec4(v, v, uAdd > 0.5 ? 0.0 : 1.0, uAdd > 0.5 ? 0.0 : 1.0);
       }`,
     depthTest: false, depthWrite: false,
     blending: THREE.CustomBlending,
@@ -466,6 +547,15 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     weather.texture.needsUpdate = true;
   };
   bakeWeather(WEATHER_REPEAT);
+
+  // Patch the library's sampleWeather so each column gets its own ceiling. Loud on
+  // failure: if a package bump moves that line, silence here would look exactly like
+  // the fix working badly, and I would spend the debugging on the wrong thing.
+  if (LID_VARY > 0) {
+    const r = patchLayerTops(clouds, LID_VARY);
+    if (r.patched === 0) console.error('[volclouds] layer-top patch MISSED —',
+      r.candidates, 'cloud materials seen, none matched. Lid fix is NOT active.');
+  }
   clouds.localWeatherTexture = weather.texture; procedural.push(weather);
   const turb = new Turbulence(); turb.render(renderer, 0); clouds.turbulenceTexture = turb.texture; procedural.push(turb);
 
