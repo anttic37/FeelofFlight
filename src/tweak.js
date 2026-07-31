@@ -26,8 +26,10 @@ export function initTweakPanel({ clouds, bloom, applyResize, setWeatherRepeat })
 
   const root = document.createElement('div');
   root.id = 'tweak';
+  // 372 wide with a 62 px value column: at 330/46 the numbers were clipped, so a value
+  // like 0.0015 showed as "0.00" and the panel could not be read back or reported.
   root.style.cssText = `
-    position: fixed; top: 0; right: 0; bottom: 0; width: 330px; overflow-y: auto;
+    position: fixed; top: 0; right: 0; bottom: 0; width: 372px; overflow-y: auto;
     background: rgba(8,16,26,0.88); border-left: 1px solid rgba(160,210,255,0.22);
     backdrop-filter: blur(4px); color: #dceaf8; z-index: 50; display: none;
     font: 11px/1.5 ui-monospace, Consolas, monospace; padding: 8px 10px 40px;`;
@@ -65,7 +67,7 @@ export function initTweakPanel({ clouds, bloom, applyResize, setWeatherRepeat })
   // to run per pixel of travel, like re-rendering the weather map.
   const slider = (label, get, set, min, max, step, onRelease) => {
     const wrap = document.createElement('label');
-    wrap.style.cssText = 'display: grid; grid-template-columns: 118px 1fr 46px; gap: 5px; align-items: center; margin: 1px 0;';
+    wrap.style.cssText = 'display: grid; grid-template-columns: 118px 1fr 62px; gap: 5px; align-items: center; margin: 1px 0;';
     const name = document.createElement('span');
     name.textContent = label;
     name.style.cssText = 'white-space: nowrap; overflow: hidden; text-overflow: ellipsis;';
@@ -209,7 +211,40 @@ export function initTweakPanel({ clouds, bloom, applyResize, setWeatherRepeat })
   };
   const syncAll = () => rows.forEach(r => r.sync());
 
+  // PERSIST THE TUNING. Reaching a sky you like and losing it to a reload is the fastest
+  // way to stop tuning altogether. Only the diff from the code defaults is stored, keyed
+  // by section and label, so a slider that is later renamed or removed is simply skipped
+  // rather than restoring garbage into whatever now sits at that index.
+  const KEY = 'flighfeel-tweak';
+  const save = () => {
+    const diff = {};
+    rows.forEach(r => { const v = r.get(); if (v !== r.def) diff[r.path] = v; });
+    try { localStorage.setItem(KEY, JSON.stringify(diff)); } catch {}
+  };
+  const restore = () => {
+    let diff;
+    try { diff = JSON.parse(localStorage.getItem(KEY) || 'null'); } catch { return 0; }
+    if (!diff) return 0;
+    let n = 0;
+    // cloud width rebuilds the weather map, so apply it last and only once
+    for (const r of rows) {
+      if (!(r.path in diff) || /cloud width/.test(r.path)) continue;
+      r.set(diff[r.path]); n++;
+    }
+    const wr = rows.find(r => /cloud width/.test(r.path));
+    if (wr && (wr.path in diff)) { wr.set(diff[wr.path]); n++; }
+    syncAll();
+    return n;
+  };
+  // every control saves after it acts
+  rows.forEach(r => { const set = r.set; r.set = (v) => { set(v); save(); }; });
+  for (const el of root.querySelectorAll('input')) {
+    el.addEventListener('change', save);
+  }
+
   mkBtn('Reset', () => { rows.forEach(r => r.set(r.def)); syncAll(); });
+  mkBtn('Forget saved', () => { try { localStorage.removeItem(KEY); } catch {}
+    rows.forEach(r => r.set(r.def)); syncAll(); });
 
   // The point of this button: it prints ONLY what you actually moved, as JSON, so the
   // changes can be handed over verbatim instead of described from memory.
@@ -241,8 +276,13 @@ export function initTweakPanel({ clouds, bloom, applyResize, setWeatherRepeat })
     }
   };
 
+  // apply saved tuning once every control exists
+  const restored = restore();
+  if (restored) console.log(`[flighfeel] tuning panel restored ${restored} saved values`);
+
   let open = false;
   return {
+    restored,
     toggle() {
       open = !open;
       root.style.display = open ? 'block' : 'none';
