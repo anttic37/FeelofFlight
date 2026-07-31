@@ -32,7 +32,7 @@ const PARAMS = new URLSearchParams(location.search);
 // longest contiguous run of vertical discontinuity in a frame, at a pose where the wall
 // is unmistakable: width 120 scores 182, width 60 scores 77, width 40 scores 48. Height
 // alone does almost nothing — 2300 -> 1200 scored 150.
-const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 75;
+const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 80;
 
 // NO TEMPORAL HISTORY. This is where the grain came from.
 //
@@ -45,20 +45,26 @@ const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 75;
 // cirrus stops being speckle. Reprojection also smears anything that does not move
 // with the world, which for a chase camera means the aeroplane itself.
 //
-// 0.45, not the 0.58 the diagnostic app proposed. Cost tracks buffer PIXELS and climbs
-// steeply — measured on a moving camera, medians over alternating rounds:
+// 0.75, CHOSEN FOR LOOK AND EXPENSIVE. Cost tracks buffer pixels and climbs steeply —
+// measured on a moving camera, medians over alternating rounds:
 //   temporal 1/16      7.8 ms
 //   no history 0.35    9.2 ms   <- barely more than temporal
 //   no history 0.42   14.7 ms
-//   no history 0.58   24.0 ms   <- 3.1x, not worth it
-// Around 0.35 the extra raymarching is nearly paid for by dropping the history resolve
-// and reprojection passes. But 0.35 upscales almost 3x on a wide display and the
-// silhouettes go soft, which reads as "unresolved" — so 0.45 splits the difference.
+//   no history 0.58   24.0 ms
+// 0.75 is past the end of that table. Re-measured against 0.45 on the four-level sky,
+// five poses at 1920x1000, interleaved so thermal drift hits both equally:
+//   0.45   7.8  9.2 10.5 12.9 10.4 ms
+//   0.75  15.7 18.6 21.8 25.9 21.7 ms
+// A flat 2.1x, i.e. roughly 40-64 fps where 0.45 gives 78-128. That is a deliberate
+// trade for sharper silhouettes, not an oversight: at 0.45 the buffer upscales nearly
+// 3x on a wide display and the edges go soft. Turn it down first if the frame rate
+// matters more than the edges — it is by far the most expensive single number here.
 //
-// ?nohist=0 restores temporal reconstruction, ?cloudres= overrides the scale.
+// ?nohist=0 restores temporal reconstruction, ?cloudres= overrides the scale, and the
+// tuning panel (P) has it as the "cloud res" slider.
 const NO_HISTORY = PARAMS.get('nohist') !== '0';
 const CLOUD_RES = Math.min(1, Math.max(0.25,
-  +(PARAMS.get('cloudres')) || (NO_HISTORY ? 0.45 : 1)));
+  +(PARAMS.get('cloudres')) || (NO_HISTORY ? 0.75 : 1)));
 
 // our world: +X east, +Y up, -Z north (so +Z is south)
 // ECEF at lat 0 lon 0: +X is up through the surface, +Y east, +Z north
@@ -478,7 +484,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // blobs sit on empty background, so the same coverage that gave a fair-weather sky
   // before now puts the camera inside a cloud. Re-tuned by sweeping: 0.20 gives rounded,
   // varied, well-separated cumulus; 0.27 starts closing the gaps; 0.34 is overcast.
-  clouds.coverage = 0.20;
+  clouds.coverage = 0.215;
   clouds.localWeatherRepeat.set(WEATHER_REPEAT, WEATHER_REPEAT);
   // WIND HAS TO COME OUT OF THE WEATHER MAP NOW, and this is the price of baking
   // the island cap into it. localWeatherOffset accumulates velocity * dt in TILE
@@ -499,7 +505,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     const o = weatherOffsetFor(WEATHER_REPEAT);
     clouds.localWeatherOffset.set(o, o);
   }
-  clouds.turbulenceDisplacement = 120; // 350 frays the edges into spray
+  clouds.turbulenceDisplacement = 0; // tuned off — 120 frayed the edges, 350 sprayed them
 
   // WHAT THE UNDERLYING SHAPE ACTUALLY IS, since it took setting shapeAmount to zero to
   // see it: the weather map is 2D. A cloud is that 2D footprint EXTRUDED vertically and
@@ -544,7 +550,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // directions. That is why clouds kept showing hard vertical sides no matter
   // what the coverage was doing. Noise at ~600 m breaks those edges up. Much
   // finer than ~450 m and it stops shaping and starts dissolving.
-  clouds.shapeRepeat.set(0.0015, 0.0019, 0.0014); // ~667 / 526 / 714 m
+  clouds.shapeRepeat.set(0.0007, 0.0006, 0.0006); // ~1429 / 1667 / 1667 m
 
   // RAYMARCH RANGE — this is what makes the distant clouds hold together.
   // The stock march is sized for a geospatial viewer looking at weather 100+ km
@@ -671,13 +677,15 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // above it but cirrus. Spreading them out gives four things to fly between and
     // through, and it is what a real sky does once there is more than one airmass in it:
     //
-    //   440-900     small puffs, right down at circuit height
-    //   910-2110    the strong cells
-    //   2420-4220   big masses, a genuinely separate deck above
-    //   4400-5200   cirrus
+    //   850-1400    small puffs, the layer you climb through
+    //   2500-2960   a thin sheet well above them
+    //   3960-6450   big masses, the deep one
+    //   6000-6890   cirrus, overlapping the tops of the masses
     //
-    // The gap between 2110 and 2420 is the important one — it is what makes the upper
-    // deck read as another layer rather than the top of the same one.
+    // The DENSITIES came down hard with this spread — 0.20 / 0.13 / 0.15 / 0.32 against
+    // 0.44 / 0.60 / 0.82 / 0.45 before. That is the necessary counterpart: four decks
+    // stacked over 6 km means far more of them along any given ray, so each has to be
+    // thinner or the sky closes up into an overcast wall.
     // SIZE COMES FROM THE PER-LAYER BAR, not from global coverage and not from
     // localWeatherRepeat. Rearranging the library's threshold, a layer produces
     // nothing unless weather^exponent > (1 - cfw - coverage*heightScale)/(1 - cfw),
@@ -697,17 +705,17 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // whole horizon at cloud-base height: a full-width straight edge, the exact
     // artifact this has been chasing for days, arriving from a completely new
     // direction. At 0.60 the bar is 0.25 (weather > 0.46) against the sea's 0.07.
-    { channel: 'r', altitude: 440, height: 460, densityScale: 0.44,
-      weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.60,
-      shapeAmount: 1.0, shapeDetailAmount: 1.0, shadow: true, profile: BASE_SOFT },
+    { channel: 'r', altitude: 850, height: 550, densityScale: 0.20,
+      weatherExponent: 2.35, shapeAlteringBias: 0.36, coverageFilterWidth: 0.61,
+      shapeAmount: 0.83, shapeDetailAmount: 1.0, shadow: true, profile: BASE_SOFT },
     // the strongest cells of that same field, building a little deeper
     // 2.1, not 2.8. Past about 2.2 this layer keeps so little of the field that
     // its surviving regions shrink to a couple of weather texels, and at that
     // size they take the texel grid's shape instead of their own — isolated
     // rectangular clouds. The exponent buys separation right up until it starts
     // buying rectangles.
-    { channel: 'r', altitude: 910, height: 1200, densityScale: 0.60,
-      weatherExponent: 2.1, shapeAlteringBias: 0.55, coverageFilterWidth: 0.45,
+    { channel: 'r', altitude: 2500, height: 460, densityScale: 0.13,
+      weatherExponent: 1.15, shapeAlteringBias: 0.49, coverageFilterWidth: 0.45,
       shapeAmount: 1.0, shapeDetailAmount: 1.0, shadow: true, profile: BASE_SOFT },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
@@ -731,7 +739,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // at 0.3 a tall layer gets all its width crammed into the bottom tenth and tapers
     // away above: a pancake with a spike, not a tower. Moving the peak to a third of
     // the way up is what lets these build.
-    { channel: 'g', altitude: 2420, height: 1800, densityScale: 0.82,
+    { channel: 'g', altitude: 3960, height: 2490, densityScale: 0.15,
       weatherExponent: 1.25, shapeAlteringBias: 0.62, coverageFilterWidth: 0.64,
       shapeAmount: 1.0, shapeDetailAmount: 1.0, shadow: true, profile: BOTH_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
@@ -754,9 +762,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // cirrus streaks across the whole sky instead of a barely-there wash. Worth knowing
     // that this one is deliberately near an edge: push coverage up without pulling cfw
     // down and the upper sky goes to mush quickly.
-    { channel: 'b', altitude: 4400, height: 800, densityScale: 0.45,
-      weatherExponent: 3.5, shapeAlteringBias: 0.53, coverageFilterWidth: 0.86, shadow: false,
-      shapeDetailAmount: 1.0, profile: [-1, -3, -0.95, 1] },
+    { channel: 'b', altitude: 6000, height: 890, densityScale: 0.32,
+      weatherExponent: 4.0, shapeAlteringBias: 0.68, coverageFilterWidth: 0.79, shadow: false,
+      shapeAmount: 0.87, shapeDetailAmount: 1.0, profile: [-1, -3, -0.95, 1] },
   ];
   for (let i = 0; i < clouds.cloudLayers.length; i++) {
     const layer = clouds.cloudLayers[i], spec = LAYERS[i];
