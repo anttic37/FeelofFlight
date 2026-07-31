@@ -56,6 +56,7 @@ export function createWater(scene, heightAt) {
     uHazeNear: { value: 1800.0 },
     uHazeFar: { value: 15000.0 },
     uChop: { value: 1.0 },
+    uCaps: { value: 0.22 },
   };
 
   // FOG OFF, deliberately. The shared aerial perspective fades everything to hazeAway /
@@ -94,25 +95,32 @@ vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
       .replace('#include <common>', `#include <common>
 uniform float uTime;
 uniform vec3 uSunDir, uZenith, uHorizon, uDeep, uMid, uShallow, uHaze;
-uniform float uGlint, uChop, uHazeNear, uHazeFar;
+uniform float uGlint, uChop, uHazeNear, uHazeFar, uCaps;
 varying float vShoreDepth;
 varying vec3 vWorldPos;
 
 // Value noise. Unlike products of sines it never forms a repeating lattice, which is
 // what made the previous ripple shading moire.
+//
+// QUINTIC interpolation, not cubic. Cubic smoothstep is C1: its second derivative jumps
+// at every cell boundary, and since the surface normal here IS a derivative of this
+// noise, that jump shows up directly as diamond-shaped facets on the water. Quintic is
+// C2, so the normal field is smooth across cells.
 float wnoise(vec2 p) {
   vec2 i = floor(p), f = fract(p);
-  f = f * f * (3.0 - 2.0 * f);
+  f = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
   float a = fract(sin(dot(i, vec2(127.1, 311.7))) * 43758.5453);
   float b = fract(sin(dot(i + vec2(1.0, 0.0), vec2(127.1, 311.7))) * 43758.5453);
   float c = fract(sin(dot(i + vec2(0.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
   float d = fract(sin(dot(i + vec2(1.0, 1.0), vec2(127.1, 311.7))) * 43758.5453);
   return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
 }
-// gradient of the noise, which is the surface slope — two extra taps per octave
-vec2 wgrad(vec2 p, float e) {
-  float n = wnoise(p);
-  return vec2(wnoise(p + vec2(e, 0.0)) - n, wnoise(p + vec2(0.0, e)) - n);
+// Surface slope. CENTRAL difference, not forward: a forward difference is biased half a
+// step in +x/+z, which tilts every wave the same way and reads as a directional sheen.
+vec2 wgrad(vec2 p) {
+  const float e = 0.09;
+  return vec2(wnoise(p + vec2(e, 0.0)) - wnoise(p - vec2(e, 0.0)),
+              wnoise(p + vec2(0.0, e)) - wnoise(p - vec2(0.0, e)));
 }
 // The sky this water reflects. Same gradient the dome draws, so the two agree where
 // they meet — a reflected constant shows up immediately as a mismatch at the horizon.
@@ -127,16 +135,28 @@ vec3 skyAt(vec3 d) {
 vec3 V = normalize(cameraPosition - vWorldPos);
 float viewDist = length(cameraPosition - vWorldPos);
 
-// ── surface normal: three octaves, each fading as it approaches sub-pixel ──
-float fFine  = 1.0 - smoothstep(120.0, 1100.0, viewDist);
+// ── surface normal: four octaves, each fading as it approaches sub-pixel ──
+// AMPLITUDES ARE SMALL ON PURPOSE. The previous set produced slopes around 45 degrees;
+// open water sits nearer 5-15, and everything above that reads as crumpled foil rather
+// than sea. It also drove the whitecap term, which was firing across the whole near
+// field and painting the white blotches.
+//
+// There is a fourth octave at ~2.4 m now. The old set bottomed out at 8.7 m, so close
+// water had nothing finer than a car-length and looked like slow blobs; wind chop is
+// what makes the surface near the aircraft read as water at all.
+float fChop  = 1.0 - smoothstep(30.0, 260.0, viewDist);
+float fFine  = 1.0 - smoothstep(160.0, 1400.0, viewDist);
 float fMid   = 1.0 - smoothstep(900.0, 9000.0, viewDist);
 float fSwell = 1.0 - smoothstep(6000.0, 52000.0, viewDist);
-vec2 p1 = vWorldPos.xz * 0.115 + vec2(uTime * 0.21, uTime * 0.13);
-vec2 p2 = vWorldPos.xz * 0.034 + vec2(-uTime * 0.075, uTime * 0.052);
-vec2 p3 = vWorldPos.xz * 0.0082 + vec2(uTime * 0.021, -uTime * 0.016);
-vec2 g = wgrad(p1, 0.18) * (2.30 * fFine)
-       + wgrad(p2, 0.15) * (1.55 * fMid)
-       + wgrad(p3, 0.13) * (1.15 * fSwell);
+vec2 p0 = vWorldPos.xz * 0.415  + vec2(uTime * 0.55, uTime * 0.31);
+vec2 p1 = vWorldPos.xz * 0.132  + vec2(uTime * 0.21, uTime * 0.13);
+vec2 p2 = vWorldPos.xz * 0.040  + vec2(-uTime * 0.075, uTime * 0.052);
+vec2 p3 = vWorldPos.xz * 0.0098 + vec2(uTime * 0.021, -uTime * 0.016);
+vec2 g2 = wgrad(p2), g3 = wgrad(p3);      // kept: the whitecap term reuses these
+vec2 g = wgrad(p0) * (0.85 * fChop)
+       + wgrad(p1) * (1.05 * fFine)
+       + g2 * (0.95 * fMid)
+       + g3 * (0.80 * fSwell);
 g *= uChop;
 // flatten right at the shore so the foam band does not crawl
 g *= smoothstep(0.0, 1.2, vShoreDepth);
@@ -159,10 +179,14 @@ R.y = abs(R.y);                       // never sample below the horizon
 vec3 refl = skyAt(R);
 diffuseColor.rgb = mix(body, refl, F);
 
-// ── whitecaps on the steepest water, thinning with distance ──
-float steep = smoothstep(0.55, 1.15, length(g)) * (0.35 + 0.65 * fMid);
-float capMask = smoothstep(6.0, 20.0, vShoreDepth);
-diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), steep * capMask * 0.5);
+// ── whitecaps, on the SWELL only and genuinely rare ──
+// Driven by the large octave rather than by total slope: total slope is dominated by the
+// fine chop, which is present everywhere, so keying off it whitewashed the entire near
+// field. A whitecap is a big wave breaking, not a ripple.
+float swellSteep = length(g3 * fSwell + g2 * 0.6 * fMid);
+float steep = smoothstep(0.34, 0.62, swellSteep);
+float capMask = smoothstep(8.0, 24.0, vShoreDepth);
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), steep * capMask * uCaps);
 
 // ── shoreline foam ──
 float foamBand = 1.0 - smoothstep(0.0, 2.4, vShoreDepth);
