@@ -181,24 +181,14 @@ if (new URLSearchParams(location.search).get('bloom') !== '0') {
 let volClouds = null;
 let tweak = null;   // live tuning panel (P), built once the clouds land
 if (new URLSearchParams(location.search).get('vclouds') !== '0') {
-  import('./volclouds.js')
-    .then(m => m.createVolumetricClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
+  import('./skyclouds.js')
+    .then(m => m.createSkyClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
     .then(v => {
       volClouds = v;
       v.setSize(window.innerWidth, window.innerHeight);
-      console.log('[flighfeel] volumetric clouds active');
-      // the panel needs the live effect objects, so it can only be built once the
-      // clouds have actually landed
-      return import('./tweak.js').then(t => {
-        tweak = t.initTweakPanel({
-          clouds: v.clouds, bloom: window.__vc.bloom,
-          // the game's own resize path, so the panel never computes sizes itself
-          applyResize: () => v.setSize(window.innerWidth, window.innerHeight),
-          setWeatherRepeat: v.setWeatherRepeat,
-        });
-      });
+      console.log('[flighfeel] sky clouds active');
     })
-    .catch(e => console.error('[flighfeel] volumetric clouds failed:', e));
+    .catch(e => console.error('[flighfeel] sky clouds failed:', e));
 }
 const draw = () => (volClouds ? volClouds.render()
   : composer ? composer.render() : renderer.render(scene, camera));
