@@ -187,6 +187,15 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
       volClouds = v;
       v.setSize(window.innerWidth, window.innerHeight);
       console.log('[flighfeel] sky clouds active');
+      // the panel binds to the live params object, so it can only be built once the
+      // clouds have actually landed
+      return import('./tweak.js').then(t => {
+        tweak = t.initTweakPanel({
+          sc: v,
+          // the game's own resize path, so the panel never computes sizes itself
+          applyResize: () => v.setSize(window.innerWidth, window.innerHeight),
+        });
+      });
     })
     .catch(e => console.error('[flighfeel] sky clouds failed:', e));
 }
@@ -322,7 +331,8 @@ renderer.setAnimationLoop(() => {
   world.update(chase.free ? chase.camera.position : phys.pos, simTime);
   sound.update(dt, phys);
   hud.update(phys, input);
-  if (tweak && tweak.open) tweak.tick();
+  // the panel needs no per-frame tick: every control writes into the params object the
+  // cloud pass already re-reads each frame
 
   draw();
 });

@@ -19,9 +19,9 @@ import { Pass, FullScreenQuad } from 'three/addons/postprocessing/Pass.js';
 // coordinates, so the class of artefact does not exist to be fixed.
 //
 // THE ONE DELIBERATE DEPARTURE from the skill's shader: its noise is analytic sin-hash,
-// roughly 270 sin() per density sample. The march takes ~80 steps, each needing density
-// once, six more for the light march and one for the silver lining — about 640 density
-// samples per pixel, so ~170k sin() per pixel. That does not run. The same Perlin and
+// roughly 270 sin() per density sample. The march takes 64 steps, each needing density
+// once, six more for the light march and one for the silver lining — about 450 density
+// samples per pixel, so ~120k sin() per pixel. That does not run. The same Perlin and
 // Worley fields are baked once into 3D textures here and sampled instead, which is what
 // the skill's own performance notes call for.
 
@@ -31,8 +31,9 @@ const num = (k, d) => (PARAMS.get(k) != null ? +PARAMS.get(k) : d);
 // Render scale for the cloud buffer. Cost is close to quadratic in this, and it is by
 // far the most expensive number in the file.
 const CLOUD_RES = Math.min(1, Math.max(0.2, num('cloudres', 0.7)));
-const MAX_STEPS = Math.round(num('steps', 64));
+const MAX_STEPS = Math.round(num('steps', 72));
 const LIGHT_STEPS = Math.round(num('lsteps', 6));
+const NLAYERS = 3;
 
 // ---------------------------------------------------------------------------
 // 3D NOISE, baked on the CPU into tiling textures.
@@ -46,7 +47,8 @@ function hash3i(x, y, z, seed) {
 }
 
 // Value noise on a lattice that WRAPS at per, so every texture tiles seamlessly in all
-// three axes. A non-tiling 3D noise shows as a repeating hard plane every period.
+// three axes. A non-tiling 3D noise shows as a repeating hard plane every period, which
+// would put straight edges back in by a different route.
 function vnoise3(x, y, z, per, seed) {
   const ix = Math.floor(x), iy = Math.floor(y), iz = Math.floor(z);
   const fx = x - ix, fy = y - iy, fz = z - iz;
@@ -80,10 +82,9 @@ function worley3(x, y, z, freq, seed) {
   for (let dy = -1; dy <= 1; dy++)
   for (let dx = -1; dx <= 1; dx++) {
     const cx = m(ix + dx), cy = m(iy + dy), cz = m(iz + dz);
-    const ox = hash3i(cx, cy, cz, seed);
-    const oy = hash3i(cx, cy, cz, seed + 101);
-    const oz = hash3i(cx, cy, cz, seed + 211);
-    const ddx = dx + ox - fx, ddy = dy + oy - fy, ddz = dz + oz - fz;
+    const ddx = dx + hash3i(cx, cy, cz, seed) - fx;
+    const ddy = dy + hash3i(cx, cy, cz, seed + 101) - fy;
+    const ddz = dz + hash3i(cx, cy, cz, seed + 211) - fz;
     const d = ddx * ddx + ddy * ddy + ddz * ddz;
     if (d < best) best = d;
   }
@@ -91,7 +92,8 @@ function worley3(x, y, z, freq, seed) {
 }
 
 // Base shape, 64^3. R = fbm, G = inverted Worley (low), B = inverted Worley (high).
-// The shader mixes them, so the balance stays tunable without a rebake.
+// The shader mixes them per layer, so a cumulus can be billowy and a veil smooth off
+// the same texture without a rebake.
 function makeShapeTexture(N = 64) {
   const data = new Uint8Array(N * N * N * 4);
   const s = 1 / N;
@@ -99,13 +101,10 @@ function makeShapeTexture(N = 64) {
   for (let y = 0; y < N; y++)
   for (let x = 0; x < N; x++) {
     const u = x * s, v = y * s, w = z * s;
-    const f = fbm3(u * 4, v * 4, w * 4, 4, 7, 4);
-    const w1 = 1 - worley3(u, v, w, 4, 31);
-    const w2 = 1 - worley3(u, v, w, 8, 57);
     const i = (((z * N) + y) * N + x) * 4;
-    data[i] = Math.max(0, Math.min(255, f * 255));
-    data[i + 1] = Math.max(0, Math.min(255, w1 * 255));
-    data[i + 2] = Math.max(0, Math.min(255, w2 * 255));
+    data[i]     = Math.max(0, Math.min(255, fbm3(u * 4, v * 4, w * 4, 4, 7, 4) * 255));
+    data[i + 1] = Math.max(0, Math.min(255, (1 - worley3(u, v, w, 4, 31)) * 255));
+    data[i + 2] = Math.max(0, Math.min(255, (1 - worley3(u, v, w, 8, 57)) * 255));
     data[i + 3] = 255;
   }
   const t = new THREE.Data3DTexture(data, N, N, N);
@@ -152,23 +151,39 @@ uniform sampler2D sceneDepth;
 uniform vec3  cameraPos;
 uniform mat4  invProjection;
 uniform mat4  invView;
+uniform vec3  camForward;
 uniform vec3  sunDir;
 uniform vec3  sunColor;
 uniform vec3  ambientSky;
 uniform float time;
 
-uniform float cloudBase;
-uniform float cloudTop;
-uniform float coverage;
-uniform float shapeScale;
-uniform float detailScale;
-uniform float detailStrength;
-uniform float worleyMix;
+// per layer
+uniform float lBase[NLAYERS];
+uniform float lTop[NLAYERS];
+uniform float lCoverage[NLAYERS];
+uniform float lShapeScale[NLAYERS];
+uniform float lDetailScale[NLAYERS];
+uniform float lDetailStrength[NLAYERS];
+uniform float lWorleyMix[NLAYERS];
+uniform float lDensity[NLAYERS];
+uniform float lFlatBase[NLAYERS];
+
+uniform float slabMin;
+uniform float slabMax;
+
+// island cap
+uniform vec2  islandCenter;
+uniform float islandFull;   // full cover out to this radius, metres
+uniform float islandFade;   // fade over this many further metres
+uniform float islandFloor;  // density multiplier far out to sea (0 = clear)
+uniform float islandWarp;   // how far the edge wanders, metres
+
 uniform float absorptionCoeff;
-uniform float densityScale;
 uniform float maxDist;
 uniform float baseDarken;
 uniform float silverStrength;
+uniform float sunBoost;
+uniform float ambientBoost;
 uniform vec2  windDirection;
 uniform float windSpeed;
 uniform float cameraNear;
@@ -182,38 +197,60 @@ float remap(float v, float lo, float hi, float nlo, float nhi) {
   return nlo + (clamp(v, lo, hi) - lo) / max(hi - lo, 1e-5) * (nhi - nlo);
 }
 
+// ─── Island cap ─────────────────────────────────────
+// Cumulus are thermal: they need warm ground pumping air up, which an island gives and
+// cool open ocean does not. So the deck lives over the island and a little way out, and
+// the sea beyond stays clear. Also the cheapest way to stop the sky being a uniform
+// ceiling to the horizon in every direction.
+//
+// The edge is warped by the shape noise so it is a weather boundary rather than a drawn
+// circle — a clean radial smoothstep reads as exactly what it is from the air.
+float islandMask(vec3 p) {
+  float d = length(p.xz - islandCenter);
+  d += (texture(shapeTex, vec3(p.xz * 0.000045, 0.37)).r - 0.5) * islandWarp;
+  float m = 1.0 - smoothstep(islandFull, islandFull + islandFade, d);
+  return mix(islandFloor, 1.0, m);
+}
+
 // ─── Density ────────────────────────────────────────
-// A genuine function of all three coordinates. The vertical envelope multiplies a 3D
-// field rather than a 2D one, so the top and the sides are surfaces, not planes.
+// A genuine function of all three coordinates, summed over layers. The vertical
+// envelope multiplies a 3D field rather than a 2D one, so the top and the sides are
+// surfaces, not planes.
 float cloudDensity(vec3 p, float lod) {
-  float altNorm = (p.y - cloudBase) / (cloudTop - cloudBase);
-  if (altNorm < 0.0 || altNorm > 1.0) return 0.0;
-
+  if (p.y < slabMin || p.y > slabMax) return 0.0;
   vec3 wind = vec3(windDirection.x, 0.0, windDirection.y) * windSpeed * time;
-  vec3 sp = (p + wind) * shapeScale;
+  float total = 0.0;
 
-  vec4 s = texture(shapeTex, sp);
-  float base = mix(s.r, s.g * 0.65 + s.b * 0.35, worleyMix);
+  for (int i = 0; i < NLAYERS; i++) {
+    if (lDensity[i] <= 0.0) continue;
+    float span = lTop[i] - lBase[i];
+    if (span <= 0.0) continue;
+    float a = (p.y - lBase[i]) / span;
+    if (a < 0.0 || a > 1.0) continue;
 
-  // Altitude envelope: soft in at the base, tapering out toward the top.
-  float altEnv = smoothstep(0.0, 0.12, altNorm) * smoothstep(1.0, 0.62, altNorm);
+    vec3 sp = (p + wind) * lShapeScale[i];
+    vec4 s = texture(shapeTex, sp);
+    float base = mix(s.r, s.g * 0.65 + s.b * 0.35, lWorleyMix[i]);
 
-  // Coverage threshold. The remap is against a HEIGHT-VARYING bar, so the crossing is
-  // not an iso-height surface — this is the part that keeps the top from going flat.
-  float bar = 1.0 - coverage * altEnv;
-  float shape = remap(base, bar, min(bar + 0.32, 1.0), 0.0, 1.0);
-  if (shape <= 0.0) return 0.0;
+    // Altitude envelope. flatBase pushes the lower shoulder tight, which is what makes a
+    // cumulus sit on a crisp condensation level instead of fading in from nothing.
+    float lo = mix(0.30, 0.04, lFlatBase[i]);
+    float altEnv = smoothstep(0.0, lo, a) * smoothstep(1.0, 0.60, a);
 
-  // Detail erosion, skipped at distance where it would only alias.
-  if (lod < 0.5) {
-    vec3 dp = (p + wind * 2.0) * detailScale;
-    float d = texture(detailTex, dp).r;
-    // whippy at the base, fluffy at the top
-    float dm = mix(d, 1.0 - d, smoothstep(0.25, 0.75, altNorm));
-    shape = remap(shape, dm * detailStrength, 1.0, 0.0, 1.0);
+    // Coverage threshold against a HEIGHT-VARYING bar, so the crossing is not an
+    // iso-height surface — this is what keeps the top from going flat.
+    float bar = 1.0 - lCoverage[i] * altEnv;
+    float shape = remap(base, bar, min(bar + 0.32, 1.0), 0.0, 1.0);
+    if (shape <= 0.0) continue;
+
+    if (lod < 0.5) {
+      float d = texture(detailTex, (p + wind * 2.0) * lDetailScale[i]).r;
+      float dm = mix(d, 1.0 - d, smoothstep(0.25, 0.75, a));   // whippy low, fluffy high
+      shape = remap(shape, dm * lDetailStrength[i], 1.0, 0.0, 1.0);
+    }
+    total += max(shape, 0.0) * altEnv * lDensity[i];
   }
-
-  return max(shape, 0.0) * altEnv * densityScale;
+  return total * islandMask(p);
 }
 
 // ─── Phase ──────────────────────────────────────────
@@ -223,9 +260,8 @@ float hg(float c, float g) {
 }
 float cloudPhase(float c) { return hg(c, 0.62) * 0.7 + hg(c, -0.3) * 0.3; }
 
-// ─── Light march ────────────────────────────────────
 float lightMarch(vec3 p) {
-  float stepL = (cloudTop - cloudBase) / float(LIGHT_STEPS) * 0.7;
+  float stepL = (slabMax - slabMin) / float(LIGHT_STEPS) * 0.55;
   float accum = 0.0;
   for (int i = 0; i < LIGHT_STEPS; i++) {
     p += sunDir * stepL;
@@ -257,14 +293,13 @@ void main() {
   vec3 rd = normalize((invView * vec4(view.xyz, 0.0)).xyz);
   vec3 ro = cameraPos;
 
-  vec2 slab = intersectSlab(ro, rd, cloudBase, cloudTop);
+  vec2 slab = intersectSlab(ro, rd, slabMin, slabMax);
   slab.y = min(slab.y, maxDist);
 
   // Do not draw cloud in front of terrain. Without this the deck paints over mountains.
   float dz = texture(sceneDepth, vUv).r;
   if (dz < 1.0) {
-    float sceneT = linearDepth(dz) / max(dot(rd, normalize((invView * vec4(0,0,-1,0)).xyz)), 1e-4);
-    slab.y = min(slab.y, sceneT);
+    slab.y = min(slab.y, linearDepth(dz) / max(dot(rd, camForward), 1e-4));
   }
   if (slab.x >= slab.y) { gl_FragColor = vec4(0.0); return; }
 
@@ -279,21 +314,19 @@ void main() {
   for (int i = 0; i < MAX_STEPS; i++) {
     if (result.a > 0.985 || t > slab.y) break;
     vec3 p = ro + rd * t;
-    float lodT = t > 22000.0 ? 1.0 : 0.0;
-    float density = cloudDensity(p, lodT);
+    float density = cloudDensity(p, t > 22000.0 ? 1.0 : 0.0);
 
     if (density > 0.002) {
       float light = lightMarch(p);
-      vec3 col = sunColor * light * phase * 7.5 + ambientSky * 0.55;
+      vec3 col = sunColor * light * phase * sunBoost + ambientSky * ambientBoost;
 
-      // Silver lining: bright rim where the sun is behind a thin edge.
       float edge = cloudDensity(p + sunDir * 220.0, 1.0);
       float silver = pow(max(1.0 - edge, 0.0), 3.0) * pow(max(-cosT, 0.0), 3.0);
       col += sunColor * silver * silverStrength;
 
       // Bases sit in their own shadow.
-      float altNorm = (p.y - cloudBase) / (cloudTop - cloudBase);
-      col *= mix(baseDarken, 1.0, smoothstep(0.0, 0.75, altNorm));
+      float a = clamp((p.y - slabMin) / max(slabMax - slabMin, 1.0), 0.0, 1.0);
+      col *= mix(baseDarken, 1.0, smoothstep(0.0, 0.7, a));
 
       float alpha = 1.0 - exp(-density * stepSize * absorptionCoeff);
       result.rgb += col * alpha * (1.0 - result.a);
@@ -301,7 +334,6 @@ void main() {
     }
     t += stepSize;
   }
-
   gl_FragColor = clamp(result, 0.0, 64.0);
 }
 `;
@@ -330,40 +362,41 @@ class CloudPass extends Pass {
     this.needsSwap = true;
     this.camera = camera;
     this.params = params;
+    this._fwd = new THREE.Vector3();
+    this.resScale = params.cloudRes;
+    this._size = new THREE.Vector2(1, 1);
 
     this.target = new THREE.WebGLRenderTarget(1, 1, {
       type: THREE.HalfFloatType, format: THREE.RGBAFormat,
       minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false,
     });
 
+    const arr = (v) => ({ value: new Float32Array(NLAYERS).fill(v) });
     this.march = new THREE.ShaderMaterial({
-      defines: { MAX_STEPS: MAX_STEPS, LIGHT_STEPS: LIGHT_STEPS },
+      defines: { MAX_STEPS, LIGHT_STEPS, NLAYERS },
       uniforms: {
         shapeTex: { value: shapeTex }, detailTex: { value: detailTex },
         sceneDepth: { value: null },
         cameraPos: { value: new THREE.Vector3() },
         invProjection: { value: new THREE.Matrix4() },
         invView: { value: new THREE.Matrix4() },
+        camForward: { value: new THREE.Vector3() },
         sunDir: { value: sunDir.clone() },
         sunColor: { value: new THREE.Color(1.0, 0.97, 0.92) },
         ambientSky: { value: new THREE.Color(0.58, 0.70, 0.90) },
         time: { value: 0 },
-        cloudBase: { value: params.cloudBase },
-        cloudTop: { value: params.cloudTop },
-        coverage: { value: params.coverage },
-        shapeScale: { value: params.shapeScale },
-        detailScale: { value: params.detailScale },
-        detailStrength: { value: params.detailStrength },
-        worleyMix: { value: params.worleyMix },
-        absorptionCoeff: { value: params.absorptionCoeff },
-        densityScale: { value: params.densityScale },
-        maxDist: { value: params.maxDist },
-        baseDarken: { value: params.baseDarken },
-        silverStrength: { value: params.silverStrength },
-        windDirection: { value: new THREE.Vector2(params.windX, params.windZ) },
-        windSpeed: { value: params.windSpeed },
-        cameraNear: { value: camera.near },
-        cameraFar: { value: camera.far },
+        lBase: arr(0), lTop: arr(0), lCoverage: arr(0), lShapeScale: arr(0),
+        lDetailScale: arr(0), lDetailStrength: arr(0), lWorleyMix: arr(0),
+        lDensity: arr(0), lFlatBase: arr(0),
+        slabMin: { value: 0 }, slabMax: { value: 1 },
+        islandCenter: { value: new THREE.Vector2() },
+        islandFull: { value: 0 }, islandFade: { value: 1 },
+        islandFloor: { value: 0 }, islandWarp: { value: 0 },
+        absorptionCoeff: { value: 0.055 }, maxDist: { value: 46000 },
+        baseDarken: { value: 0.55 }, silverStrength: { value: 1.1 },
+        sunBoost: { value: 7.5 }, ambientBoost: { value: 0.55 },
+        windDirection: { value: new THREE.Vector2() }, windSpeed: { value: 0 },
+        cameraNear: { value: camera.near }, cameraFar: { value: camera.far },
       },
       vertexShader: FULLSCREEN_VERT,
       fragmentShader: RAYMARCH_FRAG,
@@ -376,33 +409,52 @@ class CloudPass extends Pass {
       fragmentShader: COMPOSITE_FRAG,
       depthTest: false, depthWrite: false,
     });
-
     this.quadMarch = new FullScreenQuad(this.march);
     this.quadComposite = new FullScreenQuad(this.composite);
   }
 
   setSize(w, h) {
-    this.target.setSize(Math.max(1, Math.round(w * CLOUD_RES)),
-                        Math.max(1, Math.round(h * CLOUD_RES)));
+    this._size.set(w, h);
+    this.target.setSize(Math.max(1, Math.round(w * this.resScale)),
+                        Math.max(1, Math.round(h * this.resScale)));
   }
 
+  // the panel changes cloud res live; re-derive the buffer from the size we were given
+  applyResScale(s) { this.resScale = s; this.setSize(this._size.x, this._size.y); }
+
   render(renderer, writeBuffer, readBuffer) {
-    const u = this.march.uniforms;
-    const cam = this.camera;
+    const u = this.march.uniforms, cam = this.camera, p = this.params;
+    cam.getWorldDirection(this._fwd);
     u.cameraPos.value.copy(cam.position);
     u.invProjection.value.copy(cam.projectionMatrixInverse);
     u.invView.value.copy(cam.matrixWorld);
+    u.camForward.value.copy(this._fwd);
     u.cameraNear.value = cam.near;
     u.cameraFar.value = cam.far;
     u.sceneDepth.value = readBuffer.depthTexture;
 
-    const p = this.params;
-    u.cloudBase.value = p.cloudBase; u.cloudTop.value = p.cloudTop;
-    u.coverage.value = p.coverage; u.shapeScale.value = p.shapeScale;
-    u.detailScale.value = p.detailScale; u.detailStrength.value = p.detailStrength;
-    u.worleyMix.value = p.worleyMix; u.absorptionCoeff.value = p.absorptionCoeff;
-    u.densityScale.value = p.densityScale; u.maxDist.value = p.maxDist;
-    u.baseDarken.value = p.baseDarken; u.silverStrength.value = p.silverStrength;
+    let lo = Infinity, hi = -Infinity;
+    for (let i = 0; i < NLAYERS; i++) {
+      const L = p.layers[i];
+      u.lBase.value[i] = L.base; u.lTop.value[i] = L.top;
+      u.lCoverage.value[i] = L.coverage; u.lShapeScale.value[i] = 1 / Math.max(1, L.featureSize);
+      u.lDetailScale.value[i] = 1 / Math.max(1, L.detailSize);
+      u.lDetailStrength.value[i] = L.detailStrength;
+      u.lWorleyMix.value[i] = L.worleyMix; u.lDensity.value[i] = L.density;
+      u.lFlatBase.value[i] = L.flatBase;
+      if (L.density > 0 && L.top > L.base) { lo = Math.min(lo, L.base); hi = Math.max(hi, L.top); }
+    }
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    u.slabMin.value = lo; u.slabMax.value = hi;
+
+    u.islandCenter.value.set(p.island.centerX, p.island.centerZ);
+    u.islandFull.value = p.island.radius;
+    u.islandFade.value = Math.max(1, p.island.fade);
+    u.islandFloor.value = p.island.seaFloorDensity;
+    u.islandWarp.value = p.island.edgeWarp;
+    u.absorptionCoeff.value = p.absorption; u.maxDist.value = p.maxDist;
+    u.baseDarken.value = p.baseDarken; u.silverStrength.value = p.silver;
+    u.sunBoost.value = p.sunBoost; u.ambientBoost.value = p.ambientBoost;
     u.windDirection.value.set(p.windX, p.windZ); u.windSpeed.value = p.windSpeed;
     u.time.value = p.time;
 
@@ -429,22 +481,44 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
   const detailTex = makeDetailTexture(32);
   const bakeMs = Math.round(performance.now() - t0);
 
-  // partlyCloudy, from the skill's presets, moved up to our altitudes: the aircraft
-  // cruises at 1-5 km and wants something to fly between rather than a low deck.
+  // THREE LAYERS. featureSize and detailSize are in METRES — the size of the thing you
+  // are asking for — rather than the reciprocal the shader wants, because 1/9000 is not
+  // a number anyone can tune by feel.
   const params = {
-    cloudBase: num('cbase', 1400),
-    cloudTop: num('ctop', 4200),
-    coverage: num('coverage', 0.46),
-    // 1/metres. 1/9000 puts the base shape's features at kilometre scale.
-    shapeScale: num('sscale', 1 / 9000),
-    detailScale: num('dscale', 1 / 900),
-    detailStrength: num('dstr', 0.50),
-    worleyMix: num('wmix', 0.55),
-    absorptionCoeff: num('absorb', 0.055),
-    densityScale: num('density', 1.0),
+    cloudRes: CLOUD_RES,
+    layers: [
+      { name: 'cumulus',   base: num('l1base', 1100), top: num('l1top', 2400),
+        coverage: num('l1cov', 0.42), featureSize: num('l1size', 5200),
+        detailSize: num('l1det', 700), detailStrength: num('l1dstr', 0.52),
+        worleyMix: num('l1worley', 0.72), density: num('l1den', 1.05),
+        flatBase: num('l1flat', 0.85) },
+      { name: 'big masses', base: num('l2base', 2600), top: num('l2top', 5200),
+        coverage: num('l2cov', 0.40), featureSize: num('l2size', 11000),
+        detailSize: num('l2det', 1100), detailStrength: num('l2dstr', 0.46),
+        worleyMix: num('l2worley', 0.50), density: num('l2den', 0.85),
+        flatBase: num('l2flat', 0.35) },
+      { name: 'high veil', base: num('l3base', 6400), top: num('l3top', 7600),
+        coverage: num('l3cov', 0.30), featureSize: num('l3size', 26000),
+        detailSize: num('l3det', 2600), detailStrength: num('l3dstr', 0.60),
+        worleyMix: num('l3worley', 0.15), density: num('l3den', 0.30),
+        flatBase: num('l3flat', 0.0) },
+    ],
+    // ISLAND CAP. radius is how far the full deck reaches from the island centre, fade
+    // is how far it takes to die out beyond that, and seaFloorDensity is what survives
+    // over open ocean (0 = a clear sea, which is the point of having the cap at all).
+    island: {
+      centerX: num('icx', 0), centerZ: num('icz', 0),
+      radius: num('iradius', 9000),
+      fade: num('ifade', 11000),
+      seaFloorDensity: num('isea', 0.0),
+      edgeWarp: num('iwarp', 5200),
+    },
+    absorption: num('absorb', 0.055),
     maxDist: num('maxdist', 46000),
     baseDarken: num('basedark', 0.55),
-    silverStrength: num('silver', 1.1),
+    silver: num('silver', 1.1),
+    sunBoost: num('sunboost', 7.5),
+    ambientBoost: num('ambient', 0.55),
     windX: 0.82, windZ: 0.57,
     windSpeed: num('wind', 1.6),
     time: 0,
@@ -468,18 +542,20 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
 
+  let lastW = 1, lastH = 1;
   const api = {
-    clouds: null,          // no third-party effect object; params is the handle
-    params, composer, cloudPass, bakeMs,
+    params, composer, cloudPass, bloom, bakeMs, NLAYERS,
     setSize(w, h) {
+      lastW = w; lastH = h;
       composer.setSize(w, h);
       cloudPass.setSize(w * dpr, h * dpr);
       bloom.setSize(w, h);
     },
-    render(dt = 0.016) {
-      params.time += dt;
-      composer.render();
+    setCloudRes(s) {
+      params.cloudRes = s;
+      cloudPass.applyResScale(s);
     },
+    render(dt = 0.016) { params.time += dt; composer.render(); },
     dispose() {
       cloudPass.dispose(); shapeTex.dispose(); detailTex.dispose(); composer.dispose();
     },
