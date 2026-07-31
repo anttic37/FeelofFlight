@@ -45,26 +45,25 @@ const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 80;
 // cirrus stops being speckle. Reprojection also smears anything that does not move
 // with the world, which for a chase camera means the aeroplane itself.
 //
-// 0.75, CHOSEN FOR LOOK AND EXPENSIVE. Cost tracks buffer pixels and climbs steeply —
-// measured on a moving camera, medians over alternating rounds:
-//   temporal 1/16      7.8 ms
-//   no history 0.35    9.2 ms   <- barely more than temporal
-//   no history 0.42   14.7 ms
-//   no history 0.58   24.0 ms
-// 0.75 is past the end of that table. Re-measured against 0.45 on the four-level sky,
-// five poses at 1920x1000, interleaved so thermal drift hits both equally:
-//   0.45   7.8  9.2 10.5 12.9 10.4 ms
-//   0.75  15.7 18.6 21.8 25.9 21.7 ms
-// A flat 2.1x, i.e. roughly 40-64 fps where 0.45 gives 78-128. That is a deliberate
-// trade for sharper silhouettes, not an oversight: at 0.45 the buffer upscales nearly
-// 3x on a wide display and the edges go soft. Turn it down first if the frame rate
-// matters more than the edges — it is by far the most expensive single number here.
+// 0.30, and this is BY FAR THE MOST EXPENSIVE NUMBER IN THE FILE. Cost tracks buffer
+// pixels, so it is very close to quadratic in this scale. Three points on the four-level
+// sky, five poses at 1920x1000, interleaved so thermal drift hits every setting equally:
+//   0.30   6.3  6.1  6.8  8.5  6.8 ms    118-164 fps
+//   0.45   7.8  9.2 10.5 12.9 10.4 ms     78-128 fps
+//   0.75  16.4 18.4 23.0 26.5 22.0 ms     38-61 fps
+// 0.30 against 0.75 is 3.1x for a difference that is hard to see: the cloud silhouettes
+// soften slightly and small distant puffs lose a little edge, but the shapes, the
+// shading and the layering are all identical — none of that lives in this buffer.
+// Nothing else in this module comes close to buying that much frame time.
+//
+// The floor is 0.25 (clamped below). Under about 0.3 the upscale starts eating small
+// clouds outright rather than just softening them.
 //
 // ?nohist=0 restores temporal reconstruction, ?cloudres= overrides the scale, and the
 // tuning panel (P) has it as the "cloud res" slider.
 const NO_HISTORY = PARAMS.get('nohist') !== '0';
 const CLOUD_RES = Math.min(1, Math.max(0.25,
-  +(PARAMS.get('cloudres')) || (NO_HISTORY ? 0.75 : 1)));
+  +(PARAMS.get('cloudres')) || (NO_HISTORY ? 0.30 : 1)));
 
 // our world: +X east, +Y up, -Z north (so +Z is south)
 // ECEF at lat 0 lon 0: +X is up through the surface, +Y east, +Z north
