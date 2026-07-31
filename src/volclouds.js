@@ -34,6 +34,11 @@ const PARAMS = new URLSearchParams(location.search);
 // alone does almost nothing — 2300 -> 1200 scored 150.
 const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 80;
 
+// How hard to round the joins between blobs in the weather map. 0 restores plain max(),
+// which is what produced the creases — see the smax() comment in renderWeatherMap.
+// ?smooth=0 is the A/B.
+const SMOOTH_K = PARAMS.get('smooth') != null ? +PARAMS.get('smooth') : 1;
+
 // NO TEMPORAL HISTORY. This is where the grain came from.
 //
 // By default the library renders only 1/16 of the cloud pixels each frame (a quarter
@@ -145,14 +150,15 @@ function weatherOffsetFor(repeat) {
 // makes every blob a lumpy version of the same average size and fills the gaps between
 // them; taking the max keeps each blob its own size and leaves the background at zero, so
 // a small puff next to a big mass stays a small puff instead of merging into grey soup.
-function renderWeatherMap(renderer, target, seed) {
+function renderWeatherMap(renderer, target, seed, smooth = SMOOTH_K) {
   const scene = new THREE.Scene();
   const cam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
   const mat = new THREE.ShaderMaterial({
-    uniforms: { uSeed: { value: seed } },
+    uniforms: { uSeed: { value: seed }, uSmooth: { value: smooth } },
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }`,
     fragmentShader: `
       uniform float uSeed;
+      uniform float uSmooth;   // 0 = plain max, the old creased field (?smooth=0)
       varying vec2 vUv;
 
       // hash on a lattice that WRAPS at per, so the whole map tiles.
@@ -166,6 +172,36 @@ function renderWeatherMap(renderer, target, seed) {
         vec3 q = fract(vec3(p.x, p.y, p.x + p.y) * vec3(0.1031, 0.1030, 0.0973) + s);
         q += dot(q, q.yzx + 33.33);
         return fract((q.xxy + q.yzz) * q.zyx);
+      }
+
+      // SMOOTH MAX. Worth having, but NOT the cause of the big walls — see below.
+      //
+      // max(a, b) is continuous in VALUE but its GRADIENT jumps where a == b. That is a
+      // crease: no hole, no seam, nothing a value-difference detector can see, which is
+      // why scanning the map for straight edges comes back clean at every threshold. The
+      // renderer extrudes this 2D map vertically, so a crease CURVE in the map becomes a
+      // crease PLANE in the sky — a fold with a lit face and a shaded face, running the
+      // full height of the layer. Every blob junction was making one.
+      //
+      // Measured with a Hough transform over a 240-pose grid, scoring the most edge
+      // pixels sharing one straight line: worst case 130 px with plain max, 90 px with
+      // this. A real 31% — but it does NOT touch the dominant wall, and the A/B frames at
+      // the worst pose are indistinguishable. That wall is the layer LID (a horizontal
+      // cut, not a vertical fold) and it needs a different fix.
+      //
+      // Recorded because it cost time: the first straight-edge detector scored the
+      // longest contiguous run of vertical discontinuity, which fires just as hard on an
+      // ordinary near-vertical cloud silhouette. It called a wall-free frame worse than a
+      // walled one. Straightness needs a straightness measure, not a run length.
+      //
+      // The k term is what rounds the fold. Beyond |a - b| > k this is EXACTLY max, so
+      // isolated blobs keep their own size and the background stays at zero (the whole
+      // point of using max over a sum). Only the junctions change.
+      float smax(float a, float b, float k) {
+        k *= uSmooth;
+        if (k <= 0.0) return max(a, b);
+        float h = clamp(0.5 + 0.5 * (a - b) / k, 0.0, 1.0);
+        return mix(b, a, h) + k * h * (1.0 - h);
       }
 
       // Scattered blobs: one per lattice cell, jittered off the lattice so the grid does
@@ -183,7 +219,7 @@ function renderWeatherMap(renderer, target, seed) {
             vec2 c = g + 0.15 + h.xy * 0.7;             // jittered centre
             float r = mix(rMin, rMax, fract(h.z * 7.31));
             float d = length(f - c) / r;
-            m = max(m, 1.0 - smoothstep(0.35, 1.0, d)); // soft round falloff
+            m = smax(m, 1.0 - smoothstep(0.35, 1.0, d), 0.12); // soft round falloff
           }
         }
         return m;
@@ -213,11 +249,11 @@ function renderWeatherMap(renderer, target, seed) {
         float big   = blobs(q, 30.0,  uSeed + 0.11, 0.26, 0.40, 0.85);
         float mid   = blobs(q, 60.0,  uSeed + 0.37, 0.30, 0.32, 0.68);
         float small = blobs(q, 120.0, uSeed + 0.73, 0.34, 0.26, 0.55);
-        float r = max(max(big * 1.00, mid * 0.90), small * 0.78);
+        float r = smax(smax(big * 1.00, mid * 0.90, 0.14), small * 0.78, 0.14);
 
         // g: the big-mass channel — the same field biased hard toward the large class,
         // so layer 3 draws on genuinely bigger footprints instead of the same ones
-        float g = max(big * 1.00, mid * 0.55);
+        float g = smax(big * 1.00, mid * 0.55, 0.16);
 
         // b: cirrus. Smooth and broad, stretched along one axis so it streaks.
         // per-axis periods MUST match the per-axis frequencies, or the map does not join
@@ -421,9 +457,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   weather.renderTarget.setSize(4096, 4096);
   weather.size = 4096;
   const USE_LIB_WEATHER = PARAMS.get('libweather') === '1';
-  const bakeWeather = (repeat) => {
+  const bakeWeather = (repeat, smooth = SMOOTH_K) => {
     if (USE_LIB_WEATHER) { weather.needsRender = true; weather.render(renderer, 0); }
-    else renderWeatherMap(renderer, weather.renderTarget, 0.37);
+    else renderWeatherMap(renderer, weather.renderTarget, 0.37, smooth);
     // ?cap=0 skips the island mask entirely — the mask boundary was a suspect for the
     // straight cuts, and it is baked into the map so there is no other way to A/B it
     if (PARAMS.get('cap') !== '0') applyIslandCap(renderer, weather, repeat);
@@ -902,7 +938,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     return repeat;
   };
 
-  window.__vc = { clouds, aerial, composer, textures, bloom, setWeatherRepeat }; // tuning handle, same idea as __ff
+  window.__vc = { clouds, aerial, composer, textures, bloom, setWeatherRepeat, bakeWeather, WEATHER_REPEAT }; // tuning handle, same idea as __ff
 
   return {
     clouds,
