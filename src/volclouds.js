@@ -150,9 +150,14 @@ function renderWeatherMap(renderer, target, seed) {
       uniform float uSeed;
       varying vec2 vUv;
 
-      // hash on a lattice that WRAPS at per, so the whole map tiles
-      vec3 hash33(vec2 p, float per, float s) {
-        p = mod(p, vec2(per));
+      // hash on a lattice that WRAPS at per, so the whole map tiles.
+      // per is per-AXIS. It used to be a single float, which is fine while both axes run
+      // at the same frequency but silently breaks the moment they do not: the cirrus uses
+      // 5 across and 17 down, so x reached only 5 before the tile ended while the lattice
+      // was told to wrap at 17, and the map did not join up. Measured as a 48x brightness
+      // jump along one vertical line — a straight edge across the sky, every tile.
+      vec3 hash33(vec2 p, vec2 per, float s) {
+        p = mod(p, per);
         vec3 q = fract(vec3(p.x, p.y, p.x + p.y) * vec3(0.1031, 0.1030, 0.0973) + s);
         q += dot(q, q.yzx + 33.33);
         return fract((q.xxy + q.yzz) * q.zyx);
@@ -168,7 +173,7 @@ function renderWeatherMap(renderer, target, seed) {
         for (int y = -1; y <= 1; ++y) {
           for (int x = -1; x <= 1; ++x) {
             vec2 g = vec2(float(x), float(y));
-            vec3 h = hash33(i + g, freq, s);
+            vec3 h = hash33(i + g, vec2(freq), s);
             if (h.z > cover) continue;                  // empty cell: real sky
             vec2 c = g + 0.15 + h.xy * 0.7;             // jittered centre
             float r = mix(rMin, rMax, fract(h.z * 7.31));
@@ -180,7 +185,7 @@ function renderWeatherMap(renderer, target, seed) {
       }
 
       // low-frequency warp, so blob outlines are organic rather than circular
-      float vn(vec2 p, float per) {
+      float vn(vec2 p, vec2 per) {
         vec2 i = floor(p), f = fract(p);
         vec2 u = f * f * (3.0 - 2.0 * f);
         float a = hash33(i, per, 3.7).x, b = hash33(i + vec2(1,0), per, 3.7).x;
@@ -191,7 +196,7 @@ function renderWeatherMap(renderer, target, seed) {
       void main() {
         vec2 uv = vUv;
         // warp amplitude is in uv, kept small so blobs deform rather than tear apart
-        vec2 w = vec2(vn(uv * 12.0, 12.0), vn(uv * 12.0 + 5.3, 12.0)) - 0.5;
+        vec2 w = vec2(vn(uv * 12.0, vec2(12.0)), vn(uv * 12.0 + 5.3, vec2(12.0))) - 0.5;
         vec2 q = uv + w * 0.045;
 
         // THREE SIZE CLASSES, max-combined. Frequencies are integers so each octave wraps
@@ -210,8 +215,9 @@ function renderWeatherMap(renderer, target, seed) {
         float g = max(big * 1.00, mid * 0.55);
 
         // b: cirrus. Smooth and broad, stretched along one axis so it streaks.
-        float b = vn(vec2(q.x * 5.0, q.y * 17.0), 17.0) * 0.6
-                + vn(vec2(q.x * 11.0, q.y * 31.0), 31.0) * 0.4;
+        // per-axis periods MUST match the per-axis frequencies, or the map does not join
+        float b = vn(vec2(q.x * 5.0,  q.y * 17.0), vec2(5.0,  17.0)) * 0.6
+                + vn(vec2(q.x * 11.0, q.y * 31.0), vec2(11.0, 31.0)) * 0.4;
 
         gl_FragColor = vec4(r, g, b, 1.0);
       }`,
