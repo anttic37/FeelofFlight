@@ -660,11 +660,20 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // connected carpet whose arms extruded into long chained masses; raising it
     // keeps only each blob's core, so clouds come out discrete with sky between
     // them, which is what a fair-weather field actually looks like.
-    // The bases are STAGGERED by a few tens of metres rather than shared exactly.
-    // One airmass really does have one condensation level, but pinning three layers
-    // to the identical metre stacks their undersides into a single plane and
-    // triples how sharply it reads; 580/620/680 is well inside the scatter of a
-    // real field and gives three soft ceilings instead of one hard one.
+    // FOUR SEPARATE LEVELS, not one deck. These used to sit at 580/620/680 — three
+    // layers on essentially the same base, on the reasoning that one airmass has one
+    // condensation level. True of a single fair-weather cumulus field, and it built a
+    // sky with no depth: everything happened in one 2 km slab and there was nothing
+    // above it but cirrus. Spreading them out gives four things to fly between and
+    // through, and it is what a real sky does once there is more than one airmass in it:
+    //
+    //   440-900     small puffs, right down at circuit height
+    //   910-2110    the strong cells
+    //   2420-4220   big masses, a genuinely separate deck above
+    //   4400-5200   cirrus
+    //
+    // The gap between 2110 and 2420 is the important one — it is what makes the upper
+    // deck read as another layer rather than the top of the same one.
     // SIZE COMES FROM THE PER-LAYER BAR, not from global coverage and not from
     // localWeatherRepeat. Rearranging the library's threshold, a layer produces
     // nothing unless weather^exponent > (1 - cfw - coverage*heightScale)/(1 - cfw),
@@ -684,7 +693,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // whole horizon at cloud-base height: a full-width straight edge, the exact
     // artifact this has been chasing for days, arriving from a completely new
     // direction. At 0.60 the bar is 0.25 (weather > 0.46) against the sea's 0.07.
-    { channel: 'r', altitude: 580, height: 460, densityScale: 0.44,
+    { channel: 'r', altitude: 440, height: 460, densityScale: 0.44,
       weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.60,
       shapeAmount: 1.0, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
     // the strongest cells of that same field, building a little deeper
@@ -693,7 +702,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // size they take the texel grid's shape instead of their own — isolated
     // rectangular clouds. The exponent buys separation right up until it starts
     // buying rectangles.
-    { channel: 'r', altitude: 620, height: 1200, densityScale: 0.60,
+    { channel: 'r', altitude: 910, height: 1200, densityScale: 0.60,
       weatherExponent: 2.1, shapeAlteringBias: 0.55, coverageFilterWidth: 0.45,
       shapeAmount: 1.0, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
@@ -718,7 +727,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // at 0.3 a tall layer gets all its width crammed into the bottom tenth and tapers
     // away above: a pancake with a spike, not a tower. Moving the peak to a third of
     // the way up is what lets these build.
-    { channel: 'g', altitude: 680, height: 1800, densityScale: 0.82,
+    { channel: 'g', altitude: 2420, height: 1800, densityScale: 0.82,
       weatherExponent: 1.25, shapeAlteringBias: 0.62, coverageFilterWidth: 0.64,
       shapeAmount: 1.0, shapeDetailAmount: 0.45, shadow: true, profile: BOTH_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
@@ -729,15 +738,20 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // cirrus, but only once the ends actually feather out. This is
     // A*exp(b*h) + m*h + c solved for f(0) = f(1) = 0, peaking about 0.32 a third
     // of the way up; densityScale carries the rest.
-    // cfw = 1 - coverage KEEPS THE VEIL WHERE IT WAS. Its bar is
-    // (1 - cfw - coverage*hs)/(1 - cfw), so at 0.70/0.30 it sat at zero — thin and
-    // translucent. Raising global coverage alone drives it negative, the remap clamps
-    // to full density over most of the layer, and the upper sky becomes a fizzy grey
-    // sheet with sun rays combed through it. Moving cfw down in lockstep holds the bar
-    // at zero, so the convective layers can get their coverage without the cirrus
-    // noticing.
-    { channel: 'b', altitude: 4200, height: 420, densityScale: 0.45,
-      weatherExponent: 3.5, shapeAlteringBias: 0.3, coverageFilterWidth: 0.80, shadow: false,
+    // cfw = 1 - coverage is the rule that HOLDS the veil steady: its bar is
+    // (1 - cfw - coverage*hs)/(1 - cfw), so matching them keeps it at zero — thin and
+    // translucent — and letting coverage rise alone drives the bar negative, the remap
+    // clamps to full density over most of the layer, and the upper sky turns into a
+    // fizzy grey sheet with sun rays combed through it.
+    //
+    // 0.86 against coverage 0.20 deliberately breaks that rule in the loose direction.
+    // It puts the bar BELOW zero on purpose, which is the fizzy-sheet failure mode — but
+    // only just, and paired with a 800 m layer and densityScale 0.45 it buys visible
+    // cirrus streaks across the whole sky instead of a barely-there wash. Worth knowing
+    // that this one is deliberately near an edge: push coverage up without pulling cfw
+    // down and the upper sky goes to mush quickly.
+    { channel: 'b', altitude: 4400, height: 800, densityScale: 0.45,
+      weatherExponent: 3.5, shapeAlteringBias: 0.53, coverageFilterWidth: 0.86, shadow: false,
       shapeDetailAmount: 0.5, profile: [-1, -3, -0.95, 1] },
   ];
   for (let i = 0; i < clouds.cloudLayers.length; i++) {
