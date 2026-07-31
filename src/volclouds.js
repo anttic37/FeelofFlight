@@ -615,13 +615,17 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // stops being a cloud and becomes a curtain. Tops run 880/1040/1240 m off a
   // 620 m base: enough spread to see, flat enough to look right.
   //
-  // shapeDetailAmount is held DOWN TO 0.45 — and note the comment here used to claim
-  // 0.4 while the layers actually ran 0.85, which is how it escaped notice. The fine
-  // erosion noise is near the ray-step frequency, so at full strength it aliases into
-  // ribs on anything seen edge-on at distance, and it punches the cloud full of small
-  // holes: at 0.85 the deck reads as lace instead of mass once there is no temporal
-  // averaging to smear it. The big smooth lumps are what read as cloud anyway, and they
-  // come from shapeRepeat above, not from detail.
+  // shapeDetailAmount is back to the library's own 1.0. It was cut to 0.45 because at
+  // full strength the deck read as lace instead of mass — but that was against the
+  // library's tessellated cellular weather map, where every cell already touched its
+  // neighbours and the fine erosion had only thin walls to chew through. On the blob map
+  // the clouds are solid bodies with space around them, so full detail carves surface
+  // texture rather than holes, and it also removes the sprayed dust that was hanging
+  // around the edges. Costs nothing measurable: 6.92 ms against 7.09 at 0.45.
+  //
+  // Worth remembering as a general point — a value tuned against one weather field is not
+  // transferable to another. Half the numbers in this file were re-derived when the map
+  // changed and this one was simply missed.
   // DENSITY MUST REACH ZERO AT THE CEILING. This is the one that kept producing
   // "sliced" clouds. A profile of (linear -0.6, constant 1.0) looks like a taper
   // and reads like one in the code, but it still leaves 0.4 density at the top of
@@ -695,7 +699,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // direction. At 0.60 the bar is 0.25 (weather > 0.46) against the sea's 0.07.
     { channel: 'r', altitude: 440, height: 460, densityScale: 0.44,
       weatherExponent: 1.8, shapeAlteringBias: 0.35, coverageFilterWidth: 0.60,
-      shapeAmount: 1.0, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
+      shapeAmount: 1.0, shapeDetailAmount: 1.0, shadow: true, profile: BASE_SOFT },
     // the strongest cells of that same field, building a little deeper
     // 2.1, not 2.8. Past about 2.2 this layer keeps so little of the field that
     // its surviving regions shrink to a couple of weather texels, and at that
@@ -704,7 +708,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // buying rectangles.
     { channel: 'r', altitude: 910, height: 1200, densityScale: 0.60,
       weatherExponent: 2.1, shapeAlteringBias: 0.55, coverageFilterWidth: 0.45,
-      shapeAmount: 1.0, shapeDetailAmount: 0.45, shadow: true, profile: BASE_SOFT },
+      shapeAmount: 1.0, shapeDetailAmount: 1.0, shadow: true, profile: BASE_SOFT },
     // a decorrelated set of the biggest ones. The stock density profile ramps UP
     // with height (0.25 + 0.75h), so density peaks exactly where the layer
     // ceiling cuts it off — that gives every cloud a flat sliced top, and on a
@@ -729,7 +733,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // the way up is what lets these build.
     { channel: 'g', altitude: 2420, height: 1800, densityScale: 0.82,
       weatherExponent: 1.25, shapeAlteringBias: 0.62, coverageFilterWidth: 0.64,
-      shapeAmount: 1.0, shapeDetailAmount: 0.45, shadow: true, profile: BOTH_TAPER },
+      shapeAmount: 1.0, shapeDetailAmount: 1.0, shadow: true, profile: BOTH_TAPER },
     // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
     // the top: the stock one sits at 0.25 density on the layer's floor, so the
     // veil was sliced off flat along its underside and squared off at the end of
@@ -752,7 +756,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // down and the upper sky goes to mush quickly.
     { channel: 'b', altitude: 4400, height: 800, densityScale: 0.45,
       weatherExponent: 3.5, shapeAlteringBias: 0.53, coverageFilterWidth: 0.86, shadow: false,
-      shapeDetailAmount: 0.5, profile: [-1, -3, -0.95, 1] },
+      shapeDetailAmount: 1.0, profile: [-1, -3, -0.95, 1] },
   ];
   for (let i = 0; i < clouds.cloudLayers.length; i++) {
     const layer = clouds.cloudLayers[i], spec = LAYERS[i];
@@ -795,7 +799,21 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // terrain instead of dragging the terrain up to meet them.
   // 8 is the balance point: below it distant clouds stay pink-grey, above it
   // the aerial inscatter scales too and the landscape starts hazing over.
-  const LUMINANCE_BOOST = 8;
+  // 4, NOT 8, and this is what stopped the clouds looking like flat paint.
+  //
+  // The boost scales the atmosphere's sun and sky radiance to meet a scene authored for
+  // exposure 1.15. At 8 the whole cloud sat in the compressed shoulder of the ACES curve,
+  // so every value from a sunlit top to a shaded base landed on nearly the same white.
+  // The modelling was in the HDR buffer the whole time; tone mapping was throwing it out.
+  // Measured as the tonal range WITHIN cloud pixels: 15.6 at boost 8, 34.1 at 4, 46.3 at
+  // 2 — so halving the boost doubles the shading.
+  //
+  // The old note said 8 was the balance point because below it distant clouds went
+  // pink-grey. That was written when the clouds were a thin deck and there was little
+  // modelling to lose. With four levels and real depth the trade is the other way round.
+  // Absorption is NOT the lever here, for the record: 0 to 0.8 moved the range 15.6 to
+  // 17.8, which is nothing.
+  const LUMINANCE_BOOST = 4;
   for (const key of ['SUN_SPECTRAL_RADIANCE_TO_LUMINANCE', 'SKY_SPECTRAL_RADIANCE_TO_LUMINANCE']) {
     const u = aerial.uniforms.get(key);
     if (u) u.value.multiplyScalar(LUMINANCE_BOOST);
