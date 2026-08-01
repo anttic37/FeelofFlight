@@ -57,6 +57,8 @@ export function createWater(scene, heightAt) {
     uHazeFar: { value: 15000.0 },
     uChop: { value: 1.0 },
     uCaps: { value: 0.22 },
+    uWind: { value: new THREE.Vector2(0.82, 0.57).normalize() },
+    uSubsurface: { value: new THREE.Color().setRGB(0.045, 0.185, 0.135) },
   };
 
   // FOG OFF, deliberately. The shared aerial perspective fades everything to hazeAway /
@@ -96,6 +98,8 @@ vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
 uniform float uTime;
 uniform vec3 uSunDir, uZenith, uHorizon, uDeep, uMid, uShallow, uHaze;
 uniform float uGlint, uChop, uHazeNear, uHazeFar, uCaps;
+uniform vec2 uWind;
+uniform vec3 uSubsurface;
 varying float vShoreDepth;
 varying vec3 vWorldPos;
 
@@ -121,6 +125,24 @@ vec2 wgrad(vec2 p) {
   const float e = 0.09;
   return vec2(wnoise(p + vec2(e, 0.0)) - wnoise(p - vec2(e, 0.0)),
               wnoise(p + vec2(0.0, e)) - wnoise(p - vec2(0.0, e)));
+}
+
+// WIND SPACE, and this is the single biggest thing separating procedural water from sea.
+// Wind waves are ANISOTROPIC: they travel along the wind and their crests run across it,
+// so the surface varies quickly along the wind and stays coherent for a long way across.
+// Isotropic noise gives round blobs that read as static speckle no matter how the
+// amplitudes are tuned, which is what this looked like.
+//
+// Coordinates are rotated into (along-wind, across-wind) and the across axis is
+// compressed, which stretches every feature into a crest line. The gradient comes back
+// in the same frame, so it has to be rotated out again by the caller.
+vec2 windSpace(vec2 p, float across) {
+  vec2 w = normalize(uWind);
+  return vec2(dot(p, w), dot(p, vec2(-w.y, w.x)) * across);
+}
+vec2 windUnrot(vec2 g) {
+  vec2 w = normalize(uWind);
+  return w * g.x + vec2(-w.y, w.x) * g.y;
 }
 // The sky this water reflects. Same gradient the dome draws, so the two agree where
 // they meet — a reflected constant shows up immediately as a mismatch at the horizon.
@@ -148,15 +170,27 @@ float fChop  = 1.0 - smoothstep(30.0, 260.0, viewDist);
 float fFine  = 1.0 - smoothstep(160.0, 1400.0, viewDist);
 float fMid   = 1.0 - smoothstep(900.0, 9000.0, viewDist);
 float fSwell = 1.0 - smoothstep(6000.0, 52000.0, viewDist);
-vec2 p0 = vWorldPos.xz * 0.415  + vec2(uTime * 0.55, uTime * 0.31);
-vec2 p1 = vWorldPos.xz * 0.132  + vec2(uTime * 0.21, uTime * 0.13);
-vec2 p2 = vWorldPos.xz * 0.040  + vec2(-uTime * 0.075, uTime * 0.052);
-vec2 p3 = vWorldPos.xz * 0.0098 + vec2(uTime * 0.021, -uTime * 0.016);
+// Every octave lives in wind space and travels ALONG the wind. Longer waves are less
+// anisotropic than short ones, which is how real seas behave: chop is strongly combed by
+// the wind, big swell much less so.
+vec2 q = vWorldPos.xz;
+vec2 p0 = windSpace(q, 0.30) * 0.415  + vec2(uTime * 0.62, 0.0);
+vec2 p1 = windSpace(q, 0.38) * 0.132  + vec2(uTime * 0.26, 0.0);
+vec2 p2 = windSpace(q, 0.55) * 0.040  + vec2(uTime * 0.10, 0.0);
+vec2 p3 = windSpace(q, 0.75) * 0.0098 + vec2(uTime * 0.030, 0.0);
+
+// GUSTS. A real sea is never evenly rough — the wind lands in patches and you get
+// cat's-paws of dark ripple between glassier lanes. Without this the chop is uniform
+// across the whole surface, which is a large part of why it read as a noise texture
+// rather than as water.
+float gust = 0.45 + 1.05 * wnoise(windSpace(q, 0.5) * 0.0016 + vec2(uTime * 0.012, 0.0));
+
 vec2 g2 = wgrad(p2), g3 = wgrad(p3);      // kept: the whitecap term reuses these
-vec2 g = wgrad(p0) * (0.85 * fChop)
-       + wgrad(p1) * (1.05 * fFine)
-       + g2 * (0.95 * fMid)
-       + g3 * (0.80 * fSwell);
+vec2 g = windUnrot(
+    wgrad(p0) * (0.95 * fChop * gust)
+  + wgrad(p1) * (1.10 * fFine * mix(1.0, gust, 0.7))
+  + g2 * (0.95 * fMid)
+  + g3 * (0.80 * fSwell));
 g *= uChop;
 // flatten right at the shore so the foam band does not crawl
 g *= smoothstep(0.0, 1.2, vShoreDepth);
@@ -178,6 +212,14 @@ vec3 R = reflect(-V, wN);
 R.y = abs(R.y);                       // never sample below the horizon
 vec3 refl = skyAt(R);
 diffuseColor.rgb = mix(body, refl, F);
+
+// ── subsurface: sunlight coming THROUGH a wave face ──
+// The green-teal glow on the sunward side of a crest, from light scattering inside the
+// water rather than off it. Cheap version: strongest when looking roughly toward the sun
+// and the surface is tilted, gated by (1 - F) so it only appears where we can see INTO
+// the water rather than where it has become a mirror.
+float sub = pow(max(dot(V, -uSunDir), 0.0), 3.0) * smoothstep(0.04, 0.30, length(g));
+diffuseColor.rgb += uSubsurface * sub * (1.0 - F) * smoothstep(1.0, 6.0, vShoreDepth);
 
 // ── whitecaps, on the SWELL only and genuinely rare ──
 // Driven by the large octave rather than by total slope: total slope is dominated by the
