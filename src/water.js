@@ -57,6 +57,7 @@ export function createWater(scene, heightAt) {
     uHazeFar: { value: 15000.0 },
     uChop: { value: 1.0 },
     uCaps: { value: 0.22 },
+    uFoam: { value: 1.0 },
     uWind: { value: new THREE.Vector2(0.82, 0.57).normalize() },
     uSubsurface: { value: new THREE.Color().setRGB(0.045, 0.185, 0.135) },
   };
@@ -97,7 +98,7 @@ vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
       .replace('#include <common>', `#include <common>
 uniform float uTime;
 uniform vec3 uSunDir, uZenith, uHorizon, uDeep, uMid, uShallow, uHaze;
-uniform float uGlint, uChop, uHazeNear, uHazeFar, uCaps;
+uniform float uGlint, uChop, uHazeNear, uHazeFar, uCaps, uFoam;
 uniform vec2 uWind;
 uniform vec3 uSubsurface;
 varying float vShoreDepth;
@@ -255,12 +256,45 @@ float steep = smoothstep(0.15, 0.32, swellSteep);
 float capMask = smoothstep(8.0, 24.0, vShoreDepth);
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), steep * capMask * uCaps);
 
-// ── shoreline foam ──
-float foamBand = 1.0 - smoothstep(0.0, 2.4, vShoreDepth);
-float stripes = sin(uTime * 1.7 - vShoreDepth * 4.2 + sin(vWorldPos.x * 0.23) * 1.9 + sin(vWorldPos.z * 0.19) * 1.9);
-float foam = foamBand * foamBand * smoothstep(0.25, 0.95, stripes) * 0.7;
-foam = max(foam, (1.0 - smoothstep(0.0, 0.9, vShoreDepth)) * 0.85);
-diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.94, 0.97, 1.0), clamp(foam, 0.0, 1.0));
+// ── SHORELINE ────────────────────────────────────────────────────────────────
+// The old version was an opaque sheet with a white band painted along its edge, and
+// that is exactly what it looked like: a plane laid on top of the island and cut off
+// where the two met. Three things fix it, and none of them are the foam.
+//
+// 1. WATER IS NOT OPAQUE. In a metre of clear water you see the sand through it. The
+//    shoreline you actually recognise is the GRADIENT from sand, through green, into
+//    blue — the waterline itself is barely an edge at all. An opaque sheet cannot
+//    express that no matter how its edge is painted.
+// 2. SURF BREAKS ON DEPTH, NOT DISTANCE. A wave breaks where the water shallows to
+//    about its own height, so the break line follows the depth CONTOUR. That is why
+//    real surf bends around a headland and bunches over a bar, and why a band at a
+//    fixed distance from the shore reads as a drawn outline.
+// 3. THE WATERLINE MOVES. Swash runs up the beach and drains back. A static edge is a
+//    cut; an edge that breathes is a shore.
+
+// SWASH: the whole waterline advances and retreats, so every depth-driven term below
+// moves with it rather than the foam sliding across a fixed edge.
+float swash = sin(uTime * 0.75) * 0.30 + sin(uTime * 0.41 + 1.7) * 0.16;
+float sd = vShoreDepth + swash;
+
+// CLARITY: transparent in the shallows so the sea floor reads through, opaque by the
+// time it is deep. Fresnel overrides it — even a puddle mirrors the sky end-on, so at
+// grazing angles the water must stay opaque or the beach shows through the reflection.
+float clarity = smoothstep(0.0, 5.0, sd);
+diffuseColor.a *= max(mix(0.08, 1.0, clarity), F);
+
+// SETS rolling shoreward. The phase advances with depth, so the crests travel up the
+// slope; the two low-frequency sines bend them along the coast so they are not parallel
+// stripes across the whole island.
+float sets = sin(sd * 3.0 - uTime * 1.5
+                 + sin(vWorldPos.x * 0.019) * 2.3 + sin(vWorldPos.z * 0.016) * 2.3);
+float breakBand = (1.0 - smoothstep(0.0, 2.8, sd)) * smoothstep(0.10, 0.85, sets);
+// the persistent lace right at the edge, where the last of the wave is still draining
+float edge = 1.0 - smoothstep(0.0, 1.0, sd);
+float foam = clamp(breakBand * 0.8 + edge * edge * 0.95, 0.0, 1.0) * uFoam;
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.96, 0.99), foam);
+// foam floats ON the water: opaque even in ten centimetres of it
+diffuseColor.a = max(diffuseColor.a, foam);
 
 // ── aerial perspective, into the sky's own colour along this bearing ──
 // Saturates at 22 km, well inside the far plane's 45 km half-extent, so the plane's
