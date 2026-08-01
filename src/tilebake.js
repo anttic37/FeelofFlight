@@ -33,8 +33,105 @@ function ringGridIndex(res, k) {
 
 const _col = [0, 0, 0]; // reused rgb out for terrainColor
 
+// ---------------------------------------------------------------------------
+// AMBIENT OCCLUSION, baked into the vertex colour.
+//
+// Everything on this island was lit by its own surface normal and nothing else, which
+// is why the hills read as smooth inflated shapes however good the silhouette got. Real
+// ground darkens where it is ENCLOSED — valley floors, the inside of every fold, the
+// base of a slope — and that enclosure is independent of which way the surface faces.
+// It is the single largest thing separating "shaded geometry" from "landscape".
+//
+// HORIZON SAMPLING, not curvature. For six compass directions, walk outward and keep
+// the steepest upward angle to the skyline; the sky each vertex can still see is one
+// minus the mean of those. Curvature is cheaper and was the obvious alternative, but it
+// only knows the local bowl a vertex sits in — it cannot tell that a valley floor is
+// dark because the ridge 300 m away blocks half the sky, which is exactly the effect
+// that makes terrain read as big.
+//
+// Two radii, spread so one pass covers the fold you are standing in and the ridge on
+// the far side of the valley: 45 m catches gullies, 180 m catches the enclosing hills.
+//
+// Baked, so it costs nothing at runtime and works at every distance — unlike a
+// screen-space AO, which would fade out exactly where the terrain is largest.
+// How much of the sky's contribution a fully enclosed vertex loses. Full occlusion
+// (1.0) is too strong: this is a vertex colour, so it multiplies the DIFFUSE as well as
+// the ambient, and taking all of it turns valley floors black under direct sun.
+const AO_STRENGTH = 0.62;
+// 6 directions and 2 radii, not 8 and 3. The first version cost 83 ms of a 97 ms tile
+// bake — 85% of the whole thing — which streams terrain in visibly and would have hung
+// the synchronous startup ring for seconds. Sky visibility is a smooth function; it does
+// not repay 24 height queries per vertex.
+const AO_DIRS = 6;
+const AO_R = [45, 180];
+// AO is sampled on a COARSE LATTICE and interpolated, not evaluated per vertex. It
+// varies over tens of metres by construction — the whole point is the ridge on the far
+// side of the valley — so a lattice every few vertices is visually identical and costs
+// an order of magnitude less. This is the change that made it affordable.
+const AO_STEP = 4;
+const _aoGrid = new Float64Array(4225);   // up to a 65x65 lattice, reused, no allocation
+const AO_COS = new Float64Array(AO_DIRS);
+const AO_SIN = new Float64Array(AO_DIRS);
+for (let d = 0; d < AO_DIRS; d++) {
+  const a = (d / AO_DIRS) * Math.PI * 2;
+  AO_COS[d] = Math.cos(a); AO_SIN[d] = Math.sin(a);
+}
+
+export function terrainAO(x, z, h) {
+  let sky = 0;
+  for (let d = 0; d < AO_DIRS; d++) {
+    const cx = AO_COS[d], cz = AO_SIN[d];
+    let maxT = 0;
+    for (let k = 0; k < AO_R.length; k++) {
+      const r = AO_R[k];
+      const t = (heightAt(x + cx * r, z + cz * r) - h) / r;
+      if (t > maxT) maxT = t;
+    }
+    // sin of the horizon angle: the fraction of that direction's sky that is blocked
+    sky += maxT / Math.sqrt(1 + maxT * maxT);
+  }
+  return 1 - sky / AO_DIRS;   // 1 = open sky, lower = enclosed
+}
+
+// Fill the reusable lattice for one square of world, and read it back with bilinear
+// interpolation. gn is the number of lattice CELLS across, so (gn+1)^2 samples.
+export function bakeAOGrid(x0, z0, size, gn) {
+  const s = size / gn;
+  for (let j = 0; j <= gn; j++) {
+    const z = z0 + j * s;
+    for (let i = 0; i <= gn; i++) {
+      const x = x0 + i * s;
+      _aoGrid[j * (gn + 1) + i] = terrainAO(x, z, heightAt(x, z));
+    }
+  }
+}
+export function sampleAOGrid(u, v, gn) {   // u, v in 0..1 across the baked square
+  const fu = Math.min(Math.max(u, 0), 1) * gn;
+  const fv = Math.min(Math.max(v, 0), 1) * gn;
+  let i0 = fu | 0, j0 = fv | 0;
+  if (i0 >= gn) i0 = gn - 1;
+  if (j0 >= gn) j0 = gn - 1;
+  const tu = fu - i0, tv = fv - j0, w = gn + 1;
+  const a = _aoGrid[j0 * w + i0], b = _aoGrid[j0 * w + i0 + 1];
+  const c = _aoGrid[(j0 + 1) * w + i0], d = _aoGrid[(j0 + 1) * w + i0 + 1];
+  return (a + (b - a) * tu) + ((c + (d - c) * tu) - (a + (b - a) * tu)) * tv;
+}
+
+// Occlusion darkens AND warms. What a hollow loses is SKY light, which is blue; what
+// reaches it instead is light bounced off the ground around it, which is warm. Scaling
+// all three channels equally gives a grey wash that reads as dirt rather than as shade.
+export function applyAO(col, ao, strength) {
+  const k = 1 - strength * (1 - ao);
+  col[0] *= k;
+  col[1] *= k * 0.985;
+  col[2] *= k * 0.955;
+}
+
 export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan, nrmOut) {
   const cell = size / res;
+  // AO lattice for this tile, one entry per AO_STEP vertices (at least 2 cells)
+  const _aoN = Math.max(2, Math.ceil(res / AO_STEP));
+  bakeAOGrid(x0, z0, size, _aoN);
   const ms = minSpan || 0;
   // Grid: heights + colors. terrainColor's normalY (steep-face rock, scree)
   // comes from an ANALYTIC central difference of heightAt with spacing = one
@@ -79,6 +176,9 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan,
       const gz = (heightAt(x, z + cell) - heightAt(x, z - cell)) / (2 * cell);
       const ny = 1 / Math.sqrt(1 + gx * gx + gz * gz); // normalize(-gx, 1, -gz).y
       terrainColor(x, z, h, ny, _col);
+      // Underwater ground is excluded: the sea floor is lit through the water by its own
+      // depth palette, and occluding it as well doubles up and turns the shallows muddy.
+      if (h > 0.5) applyAO(_col, sampleAOGrid(ix / res, iz / res, _aoN), AO_STRENGTH);
       colOut[o] = _col[0]; colOut[o + 1] = _col[1]; colOut[o + 2] = _col[2];
       if (nrmOut) {
         // analytic vertex normal, free here (gx/gz/ny already computed). Only

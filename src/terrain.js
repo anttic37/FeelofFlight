@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { heightAt, getTerrainSeed } from './heightcore.js';
 import { terrainColor } from './colorcore.js';
-import { bakeTile, buildTileIndex, tileVertexCount } from './tilebake.js';
+import { bakeTile, buildTileIndex, tileVertexCount, bakeAOGrid, sampleAOGrid, applyAO } from './tilebake.js';
 import { injectGroundFX } from './groundfx.js';
 
 // The terrain engine. Two modes, selected by URL param:
@@ -72,8 +72,13 @@ function bakeIslandGeometry(segments, minSpan) {
   const tNorm = geo.attributes.normal;
   const tCol = new Float32Array(tPos.count * 3);
   const _col = [0, 0, 0];
+  // one AO lattice for the whole 15.6 km shell — per-vertex horizon sampling over 63k
+  // vertices would cost seconds of startup for a field that varies over tens of metres
+  bakeAOGrid(-7800, -7800, 15600, 64);
   for (let i = 0; i < tPos.count; i++) {
-    terrainColor(tPos.getX(i), tPos.getZ(i), tPos.getY(i), tNorm.getY(i), _col);
+    const _ax = tPos.getX(i), _az = tPos.getZ(i), _ah = tPos.getY(i);
+    terrainColor(_ax, _az, _ah, tNorm.getY(i), _col);
+    if (_ah > 0.5) applyAO(_col, sampleAOGrid((_ax + 7800) / 15600, (_az + 7800) / 15600, 64), 0.62);
     tCol[i * 3] = _col[0]; tCol[i * 3 + 1] = _col[1]; tCol[i * 3 + 2] = _col[2];
   }
   geo.setAttribute('color', new THREE.BufferAttribute(tCol, 3));

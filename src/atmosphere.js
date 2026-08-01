@@ -11,7 +11,13 @@ import * as THREE from 'three';
 // shaders as a constant instead of being carried as a uniform that every
 // material would have to be handed and updated.
 
-export const SUN_DIR = new THREE.Vector3(0.45, 0.75, 0.3).normalize();
+// SUN AT ~28 DEGREES, not 54. A high sun is the least flattering light terrain can get:
+// it lands nearly along every surface normal at once, so slopes barely separate and the
+// hills flatten into shaded blobs. Dropping it rakes the ridges and throws real shadow
+// down the valleys, which is most of what makes landscape photography read as relief.
+// Azimuth is unchanged; only the elevation moved, so the warm/cool haze split and the
+// water's glitter path still point where they did.
+export const SUN_DIR = new THREE.Vector3(0.45, 0.2876, 0.3).normalize();
 
 // Authored in sRGB, used in LINEAR: everything downstream (the composer target,
 // the terrain's vertex colours) works in linear space, and skipping the
