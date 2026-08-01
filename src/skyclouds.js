@@ -611,7 +611,9 @@ class CloudPass extends Pass {
       this.quadShadow.render(renderer);
     }
     cs.shadowStrength.value = p.shadowStrength;
-    cs.sceneDepth.value = readBuffer.depthTexture;
+    // Only bind depth when the shadow branch will actually sample it. With shadows off
+    // this is null and the composite never touches a texture it is writing through.
+    cs.sceneDepth.value = p.shadowStrength > 0 ? readBuffer.depthTexture : null;
     cs.cameraNear.value = cam.near;
     cs.cameraFar.value = cam.far;
 
@@ -704,14 +706,16 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
   rt.depthTexture.type = THREE.UnsignedIntType;
 
   const composer = new EffectComposer(renderer, rt);
-  // EffectComposer clones the target for its swap buffer, and the clone copies the SAME
-  // DepthTexture object. RenderPass does not swap, so the scene depth always lands in
-  // renderTarget1 — but the cloud composite writes into renderTarget2 while sampling
-  // that depth, and with the texture attached to both framebuffers that is a feedback
-  // loop. GL is entitled to return anything; here it returned black, for the whole
-  // frame, silently and with no shader error. Detaching it from the swap buffer, which
-  // nothing reads, makes the sample well-defined.
-  if (composer.renderTarget2) composer.renderTarget2.depthTexture = null;
+  // NOTE: EffectComposer clones this target for its swap buffer and the clone copies the
+  // SAME DepthTexture object. Detaching it from the swap buffer looks like the obvious
+  // way to avoid a feedback loop when a pass samples depth while writing the other
+  // buffer — do not. The raymarch reads that same sampler to clamp rays against terrain,
+  // and on any frame where it resolves to the detached buffer the sampler returns 0,
+  // which the clamp reads as "solid geometry at the near plane" and every ray exits
+  // before it starts. The result is a sky with no clouds in it at all, silently.
+  //
+  // The composite avoids the loop by simply not binding depth unless cloud shadows are
+  // switched on (see render()), so nothing samples a texture it is writing through.
   composer.addPass(new RenderPass(scene, camera));
   const cloudPass = new CloudPass(camera, shapeTex, detailTex, sunDir, params);
   composer.addPass(cloudPass);
