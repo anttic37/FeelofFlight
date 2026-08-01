@@ -127,22 +127,50 @@ vec2 wgrad(vec2 p) {
               wnoise(p + vec2(0.0, e)) - wnoise(p - vec2(0.0, e)));
 }
 
-// WIND SPACE, and this is the single biggest thing separating procedural water from sea.
+// GRADIENT (Perlin) noise for the wave field, not value noise.
+//
+// Value noise is one smooth bump per lattice cell, so its slope field is a grid of
+// bumps. That is disguised while octaves point in different directions, but combing them
+// all along the wind ALIGNED their lattices and the grid became plainly visible as
+// rectangular blocks on the water. Gradient noise is zero at every lattice point with
+// the variation in between, so it has no per-cell blob to give the grid away.
+vec2 hash22(vec2 p) {
+  p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+  return -1.0 + 2.0 * fract(sin(p) * 43758.5453);
+}
+float pnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  vec2 u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+  return mix(mix(dot(hash22(i + vec2(0.0, 0.0)), f - vec2(0.0, 0.0)),
+                 dot(hash22(i + vec2(1.0, 0.0)), f - vec2(1.0, 0.0)), u.x),
+             mix(dot(hash22(i + vec2(0.0, 1.0)), f - vec2(0.0, 1.0)),
+                 dot(hash22(i + vec2(1.0, 1.0)), f - vec2(1.0, 1.0)), u.x), u.y);
+}
+vec2 pgrad(vec2 p) {
+  const float e = 0.07;
+  return vec2(pnoise(p + vec2(e, 0.0)) - pnoise(p - vec2(e, 0.0)),
+              pnoise(p + vec2(0.0, e)) - pnoise(p - vec2(0.0, e)));
+}
+
+// ONE WAVE OCTAVE, in its own wind-aligned frame.
+//
 // Wind waves are ANISOTROPIC: they travel along the wind and their crests run across it,
 // so the surface varies quickly along the wind and stays coherent for a long way across.
-// Isotropic noise gives round blobs that read as static speckle no matter how the
-// amplitudes are tuned, which is what this looked like.
+// Coordinates are rotated into (along, across) with the across axis compressed, which
+// stretches features into crest lines, and the resulting slope is rotated straight back
+// out so octaves can be summed in world space.
 //
-// Coordinates are rotated into (along-wind, across-wind) and the across axis is
-// compressed, which stretches every feature into a crest line. The gradient comes back
-// in the same frame, so it has to be rotated out again by the caller.
-vec2 windSpace(vec2 p, float across) {
+// Each octave takes its own ANGLE OFFSET. With every octave on exactly the same axis the
+// lattices line up and reinforce into a visible grid; a few degrees apart is enough to
+// break that while still reading as one wind direction.
+vec2 waveOctave(vec2 q, float freq, float across, float ang, float speed, float amp) {
   vec2 w = normalize(uWind);
-  return vec2(dot(p, w), dot(p, vec2(-w.y, w.x)) * across);
-}
-vec2 windUnrot(vec2 g) {
-  vec2 w = normalize(uWind);
-  return w * g.x + vec2(-w.y, w.x) * g.y;
+  float c = cos(ang), s = sin(ang);
+  vec2 wr = vec2(w.x * c - w.y * s, w.x * s + w.y * c);
+  vec2 tr = vec2(-wr.y, wr.x);
+  vec2 p = vec2(dot(q, wr), dot(q, tr) * across) * freq + vec2(uTime * speed, 0.0);
+  vec2 g = pgrad(p);
+  return (wr * g.x + tr * g.y) * amp;
 }
 // The sky this water reflects. Same gradient the dome draws, so the two agree where
 // they meet — a reflected constant shows up immediately as a mismatch at the horizon.
@@ -174,23 +202,20 @@ float fSwell = 1.0 - smoothstep(6000.0, 52000.0, viewDist);
 // anisotropic than short ones, which is how real seas behave: chop is strongly combed by
 // the wind, big swell much less so.
 vec2 q = vWorldPos.xz;
-vec2 p0 = windSpace(q, 0.30) * 0.415  + vec2(uTime * 0.62, 0.0);
-vec2 p1 = windSpace(q, 0.38) * 0.132  + vec2(uTime * 0.26, 0.0);
-vec2 p2 = windSpace(q, 0.55) * 0.040  + vec2(uTime * 0.10, 0.0);
-vec2 p3 = windSpace(q, 0.75) * 0.0098 + vec2(uTime * 0.030, 0.0);
 
 // GUSTS. A real sea is never evenly rough — the wind lands in patches and you get
 // cat's-paws of dark ripple between glassier lanes. Without this the chop is uniform
 // across the whole surface, which is a large part of why it read as a noise texture
 // rather than as water.
-float gust = 0.45 + 1.05 * wnoise(windSpace(q, 0.5) * 0.0016 + vec2(uTime * 0.012, 0.0));
+float gust = 0.50 + 1.00 * (0.5 + pnoise(q * 0.0016 + vec2(uTime * 0.012, 0.0)));
 
-vec2 g2 = wgrad(p2), g3 = wgrad(p3);      // kept: the whitecap term reuses these
-vec2 g = windUnrot(
-    wgrad(p0) * (0.95 * fChop * gust)
-  + wgrad(p1) * (1.10 * fFine * mix(1.0, gust, 0.7))
-  + g2 * (0.95 * fMid)
-  + g3 * (0.80 * fSwell));
+//                    freq     across  angle   speed  amplitude
+vec2 g2 = waveOctave(q, 0.040,  0.55,  -0.31,  0.10,  1.09);  // kept for whitecaps
+vec2 g3 = waveOctave(q, 0.0098, 0.75,   0.14,  0.030, 0.92);
+vec2 g = waveOctave(q, 0.415,  0.34,   0.00,  0.62,  1.13) * (fChop * gust)
+       + waveOctave(q, 0.132,  0.42,   0.22,  0.26,  1.26) * (fFine * mix(1.0, gust, 0.7))
+       + g2 * fMid
+       + g3 * fSwell;
 g *= uChop;
 // flatten right at the shore so the foam band does not crawl
 g *= smoothstep(0.0, 1.2, vShoreDepth);
@@ -226,7 +251,7 @@ diffuseColor.rgb += uSubsurface * sub * (1.0 - F) * smoothstep(1.0, 6.0, vShoreD
 // fine chop, which is present everywhere, so keying off it whitewashed the entire near
 // field. A whitecap is a big wave breaking, not a ripple.
 float swellSteep = length(g3 * fSwell + g2 * 0.6 * fMid);
-float steep = smoothstep(0.34, 0.62, swellSteep);
+float steep = smoothstep(0.15, 0.32, swellSteep);
 float capMask = smoothstep(8.0, 24.0, vShoreDepth);
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), steep * capMask * uCaps);
 
