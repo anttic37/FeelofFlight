@@ -224,10 +224,15 @@ export function terrainColor(x, z, h, normalY, out) {
   // ragged. The graded platform underneath is unchanged — this is purely what colour
   // sits on it.
   const rw = runwayInfluence(x, z);
-  if (rw > 0.12) {
-    const edge = 0.30 + 0.34 * noise2(x * 0.035 + 5.1, z * 0.035 + 9.3);
-    const p = smooth(edge, 0.94, rw);
-    if (p > 0.004) lerp1(cDirt, p * 0.8);
+  if (rw > 0.5) {
+    // The margin m is 60-90 m around a strip only ~26 m wide, so ANY generous share of
+    // that falloff is a dirt field several times the width of the runway, reaching well
+    // past both thresholds. Painting only the top third of the falloff keeps it to a
+    // shoulder of roughly 20-30 m — which is what a strip actually wears — and the noise
+    // on the threshold stops that shoulder being a parallel-sided outline.
+    const edge = 0.62 + 0.22 * noise2(x * 0.045 + 5.1, z * 0.045 + 9.3);
+    const p = smooth(edge, 0.985, rw);
+    if (p > 0.004) lerp1(cDirt, p * 0.72);
   }
   out[0] = _r; out[1] = _g; out[2] = _b;
 }

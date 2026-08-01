@@ -17,6 +17,7 @@ let K_ROLL = 0;  // v6.1 rolling-ground amplitude — gen islands are NEVER flat
 // lobes — elongated, egg/comma, tri-lobed and bay-bitten outlines per seed.
 // SH_ON false (classic) keeps the plain circular mask, bit for bit.
 let SH_ON = false, SH_A1 = 0, SH_P1 = 0, SH_A2 = 0, SH_P2 = 0, SH_A3 = 0, SH_P3 = 0;
+let SH_A4 = 0, SH_P4 = 0, SH_A5 = 0, SH_P5 = 0;
 let SH_R2OUT = 75690000; // beyond-the-shelf early-out radius², shape-aware
 // seeded islands are scaled to 75% so the widest silhouette lobe + coast warp
 // stays well inside the baked far shell (+-7800) — land past the shell edge
@@ -24,9 +25,26 @@ let SH_R2OUT = 75690000; // beyond-the-shelf early-out radius², shape-aware
 // same swells, just a tighter island. Classic seed 0 keeps 7200 / scale 1.
 let RM_BASE = 7200, LSCALE = 1;
 let GEN_ON = false; // seed!=0: v6 feature-grammar islands (classic template retired)
+// THE OUTLINE LIVES HERE, not in the coastal noise. The waterline is where HEIGHT
+// crosses zero, and height is dominated by this radial silhouette — so scaling up the
+// coast warp barely moved the shape (standard deviation of the shore radius went 737 to
+// 772 m for a 1.35x warp) while changing these harmonics moves it a great deal.
+//
+// Five harmonics now instead of three: 1 and 2 give the island its overall lopsided
+// mass, 3 makes lobes, 4 and 5 cut the bays and throw the peninsulas between them.
+//
+// The clamp is the hard constraint. RM_BASE is 5400 on a seeded island and the static
+// terrain shell is 15.6 km across, so land beyond r = 7800 simply is not covered by it.
+// 1.32 x 5400 = 7128, leaving room for the coastal warp on top without any bearing
+// running out past the shell and getting cut off by a circular edge.
 function shapeS(theta) {
-  const s = 1 + SH_A1 * Math.sin(theta + SH_P1) + SH_A2 * Math.sin(2 * theta + SH_P2) + SH_A3 * Math.sin(3 * theta + SH_P3);
-  return s < 0.6 ? 0.6 : s > 1.3 ? 1.3 : s;
+  const s = 1
+    + SH_A1 * Math.sin(theta + SH_P1)
+    + SH_A2 * Math.sin(2 * theta + SH_P2)
+    + SH_A3 * Math.sin(3 * theta + SH_P3)
+    + SH_A4 * Math.sin(4 * theta + SH_P4)
+    + SH_A5 * Math.sin(5 * theta + SH_P5);
+  return s < 0.55 ? 0.55 : s > 1.32 ? 1.32 : s;
 }
 function h01(n) { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); }
 export function setTerrainSeed(seed) {
@@ -35,6 +53,7 @@ export function setTerrainSeed(seed) {
     SX = SZ = 0; K_MTN = K_MESA = K_DUNE = K_HILL = K_FOR = K_REL = 1; K_SWELL = 0; K_ROLL = 0; COAST_WARP = 760;
     K_RANGE = 0.00021; K_THR = 0.55; K_ERO = 0; RIV_W = 0;
     SH_ON = false; SH_R2OUT = 75690000; RM_BASE = 7200; LSCALE = 1; GEN_ON = false; // classic island
+    SH_A4 = SH_P4 = SH_A5 = SH_P5 = 0;
     restoreClassicLayout(); // hand-tuned anchors, runways, canyon, tribs
   } else {
     SX = (h01(SEED * 0.013 + 11.7) - 0.5) * 30000;
@@ -55,9 +74,14 @@ export function setTerrainSeed(seed) {
     K_ROLL = 38 + 37 * h01(SEED * 0.083 + 6.6); // 38-75 m rolling ground under everything
     COAST_WARP = (700 + 500 * h01(SEED * 0.043 + 3.6)) * LSCALE; // ragged shore, scaled with the island
     SH_ON = true; // seeded silhouette: comma / elongated / tri-lobed outlines
-    SH_A1 = 0.26 * h01(SEED * 0.053 + 4.9); SH_P1 = Math.PI * 2 * h01(SEED * 0.059 + 7.7);
-    SH_A2 = 0.30 * h01(SEED * 0.061 + 1.4); SH_P2 = Math.PI * 2 * h01(SEED * 0.067 + 9.8);
-    SH_A3 = 0.18 * h01(SEED * 0.071 + 3.2); SH_P3 = Math.PI * 2 * h01(SEED * 0.073 + 6.5);
+    // FLOORS on every amplitude. These were pure h01 scalings, so a seed could roll them
+    // all near zero and produce a circle — which is what seed 1 did. A floor guarantees
+    // every island has a genuine shape rather than leaving it to chance.
+    SH_A1 = 0.12 + 0.24 * h01(SEED * 0.053 + 4.9); SH_P1 = Math.PI * 2 * h01(SEED * 0.059 + 7.7);
+    SH_A2 = 0.14 + 0.24 * h01(SEED * 0.061 + 1.4); SH_P2 = Math.PI * 2 * h01(SEED * 0.067 + 9.8);
+    SH_A3 = 0.09 + 0.17 * h01(SEED * 0.071 + 3.2); SH_P3 = Math.PI * 2 * h01(SEED * 0.073 + 6.5);
+    SH_A4 = 0.05 + 0.12 * h01(SEED * 0.079 + 2.6); SH_P4 = Math.PI * 2 * h01(SEED * 0.083 + 4.1);
+    SH_A5 = 0.03 + 0.08 * h01(SEED * 0.089 + 8.3); SH_P5 = Math.PI * 2 * h01(SEED * 0.097 + 1.9);
     SH_R2OUT = 61000000; // r ~7.8 km: widest lobe (5400*1.3) + warp stays inside the shell
     GEN_ON = true;
     generateIsland(); // compose a fresh island from big features + discovered strips
@@ -605,10 +629,22 @@ function charBench(x, z) { // 0 = rounded, 1 = stepped tableland
 // One function, because this is added to the radius in TWO places and they must agree
 // exactly — the height field and the shore query. Two copies of the same expression is
 // how a coastline ends up disagreeing with the water depth baked against it.
+// Four octaves, and the low ones carry more weight than a textbook fBm would give them.
+// A 0.5 falloff produces a coast that is merely FUZZY — lots of small crenellation on a
+// shape that is still fundamentally the circle underneath. What reads as a real island
+// is the big stuff: a bay several kilometres across, a peninsula that changes the
+// silhouette. So the second octave runs at 0.78 rather than 0.5, and the whole warp is
+// scaled up 1.35x.
+//
+// The ceiling on this is SH_R2OUT, the shelf guard at r ~7.8 km, beyond which height
+// returns a flat -20. Mean radius is ~5.4 km and the widest bearing reached 6.7 km
+// before this; pushing the warp much further would run the outer headlands into that
+// guard and cut them off with a circular edge — the exact artefact this is removing.
 function coastWarp(x, z) {
-  return (noise2(x * 0.00028 + 3.1,  z * 0.00028 + 7.7)  - 0.5) * COAST_WARP
-       + (noise2(x * 0.00071 + 21.4, z * 0.00071 + 13.2) - 0.5) * COAST_WARP * 0.58
-       + (noise2(x * 0.00160 + 41.9, z * 0.00160 + 27.5) - 0.5) * COAST_WARP * 0.26;
+  return ((noise2(x * 0.00028 + 3.1,  z * 0.00028 + 7.7)  - 0.5)
+        + (noise2(x * 0.00071 + 21.4, z * 0.00071 + 13.2) - 0.5) * 0.78
+        + (noise2(x * 0.00160 + 41.9, z * 0.00160 + 27.5) - 0.5) * 0.40
+        + (noise2(x * 0.00330 + 63.2, z * 0.00330 + 51.8) - 0.5) * 0.18) * COAST_WARP * 1.35;
 }
 
 function genTerrainHeight(x, z) {
