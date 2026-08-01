@@ -592,10 +592,29 @@ function charBench(x, z) { // 0 = rounded, 1 = stepped tableland
   return smooth(0.42, 0.78, noise2(x * 0.00024 + 12.9, z * 0.00024 + 51.3));
 }
 
+// COASTLINE RAGGEDNESS. One octave at a 3.6 km wavelength is a gentle wobble on a 7 km
+// radius, which is why the island read as a smooth blob — a drawn circle with a slight
+// dent. Real coasts are self-similar: the same shape of inlet repeats at every scale
+// from the bay down to the cove.
+//
+// Three octaves, each finer and weaker. The second (~1.4 km) is what cuts bays and
+// throws headlands; the third (~630 m) puts coves and points on those headlands. Total
+// amplitude is about 1.8x the old single octave, so the outline genuinely moves rather
+// than just getting fuzzy.
+//
+// One function, because this is added to the radius in TWO places and they must agree
+// exactly — the height field and the shore query. Two copies of the same expression is
+// how a coastline ends up disagreeing with the water depth baked against it.
+function coastWarp(x, z) {
+  return (noise2(x * 0.00028 + 3.1,  z * 0.00028 + 7.7)  - 0.5) * COAST_WARP
+       + (noise2(x * 0.00071 + 21.4, z * 0.00071 + 13.2) - 0.5) * COAST_WARP * 0.58
+       + (noise2(x * 0.00160 + 41.9, z * 0.00160 + 27.5) - 0.5) * COAST_WARP * 0.26;
+}
+
 function genTerrainHeight(x, z) {
   const r2 = x * x + z * z;
   if (r2 > SH_R2OUT) return -20;
-  const rr = Math.sqrt(r2) + (noise2(x * 0.00028 + 3.1, z * 0.00028 + 7.7) - 0.5) * COAST_WARP;
+  const rr = Math.sqrt(r2) + coastWarp(x, z);
   const RM = RM_BASE * shapeS(Math.atan2(x, z));
   const m = 1 - (rr / RM) * (rr / RM);
   if (m <= 0) return Math.max(-20, -6 + m * 44);
@@ -605,9 +624,22 @@ function genTerrainHeight(x, z) {
   const wx = x + (noise2(x * 0.0002 + 31.4, z * 0.0002 + 8.8) - 0.5) * 1800;
   const wz = z + (noise2(x * 0.0002 + 3.9, z * 0.0002 + 21.6) - 0.5) * 1800;
   const e = fbm(wx * 0.00035 + 5.5, wz * 0.00035 + 1.5, 6) * 0.5 + 0.5;
-  // district multiplier: whole neighborhoods sit high or low (~5 km, x0.62-1.47)
-  const dist = 0.62 + 0.85 * (fbm(x * 0.00013 + 15.9, z * 0.00013 + 71.2, 2) * 0.5 + 0.5);
-  let h = 4 + K_ROLL * 0.62 * e * 2.4 + 260 * K_REL * Math.pow(e, 2.6) * dist;
+  // DISTRICT MULTIPLIER, widened from x0.62-1.47 to x0.42-1.85, and given a second
+  // finer octave. This is the knob that decides whether a whole neighbourhood is low
+  // coastal plain or high ground, and at the old range every part of the island landed
+  // within about a factor of two of every other part — which is why the relief read as
+  // uniform however good the local detail got. Nearly a factor of FOUR now, so flat
+  // country and genuine uplands can sit side by side.
+  //
+  // The 2 km octave breaks the districts up so they are not all one 5 km blob apiece;
+  // it is deliberately weaker, because at full strength it fights the drainage and the
+  // island turns lumpy rather than varied.
+  const distBig = fbm(x * 0.00013 + 15.9, z * 0.00013 + 71.2, 2) * 0.5 + 0.5;
+  const distFine = fbm(x * 0.00046 + 62.7, z * 0.00046 + 8.3, 2) * 0.5 + 0.5;
+  const dist = 0.42 + 1.43 * (distBig * 0.74 + distFine * 0.26);
+  // 300, was 260: the taller districts need somewhere to go, and the extra head-room is
+  // what turns "hills" into a skyline. Peaks land near 1.2 km rather than 1.0.
+  let h = 4 + K_ROLL * 0.62 * e * 2.4 + 300 * K_REL * Math.pow(e, 2.6) * dist;
   // medium relief: hills riding on the base (~600 m wavelength, +-16..50 m).
   // Mostly RIDGED now — the round fBm is kept at partial weight so slopes still
   // have some softness between the crests, but the shape of the hill comes from
@@ -1151,7 +1183,7 @@ export function biomeWeights(x, z) { // region radii scale with the island (LSCA
 function baseHeight(x, z) {
   const r2 = x * x + z * z;
   if (r2 > SH_R2OUT) return -20; // beyond the shelf everything has bottomed out
-  const rr = Math.sqrt(r2) + (noise2(x * 0.00028 + 3.1, z * 0.00028 + 7.7) - 0.5) * COAST_WARP;
+  const rr = Math.sqrt(r2) + coastWarp(x, z);
   const RM = SH_ON ? RM_BASE * shapeS(Math.atan2(x, z)) : RM_BASE;
   const m = 1 - (rr / RM) * (rr / RM);
   if (m <= 0) return Math.max(-20, -6 + m * 44); // underwater falloff to about -20

@@ -213,7 +213,21 @@ export function terrainColor(x, z, h, normalY, out) {
     _b2 += (0.055 - 0.03 * normalY) * cover;
     lerp12(cover * 0.94);
   }
-  const rw = runwayInfluence(x, z); // graded dirt aprons around the strips
-  if (rw > 0) lerp1(cDirt, rw * 0.9);
+  // RUNWAY APRON. runwayInfluence is a rounded RECTANGLE — it has to be, because the
+  // same field grades the terrain flat and a strip needs a clean platform to sit on.
+  // Painting dirt straight over that field inherits the rectangle, and what you see from
+  // the air is a tan billboard around the runway with four visible corners, far wider
+  // than anything a strip would actually wear into the ground.
+  //
+  // The PAINT does not need the rectangle. Threshold it well up the falloff so the dirt
+  // stays close to the tarmac, and jitter that threshold with noise so the edge is
+  // ragged. The graded platform underneath is unchanged — this is purely what colour
+  // sits on it.
+  const rw = runwayInfluence(x, z);
+  if (rw > 0.12) {
+    const edge = 0.30 + 0.34 * noise2(x * 0.035 + 5.1, z * 0.035 + 9.3);
+    const p = smooth(edge, 0.94, rw);
+    if (p > 0.004) lerp1(cDirt, p * 0.8);
+  }
   out[0] = _r; out[1] = _g; out[2] = _b;
 }
