@@ -680,12 +680,11 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     // camera; density is how hard the cloud attenuates on the way to the sun; strength
     // is how much of the ground's light it takes away.
     shadowExtent: num('shadowext', 16000),
-    shadowDensity: num('shadowden', 0.10),
-    // DEFAULT OFF. The shadow map itself computes correct data, but the composite
-    // lookup does not reliably darken the ground and I have not visually confirmed a
-    // single cloud-shaped shadow. Shipping it enabled would be shipping a guess.
-    // ?shadow=0.55 turns it on to work on it.
-    shadowStrength: num('shadow', 0.0),
+    shadowDensity: num('shadowden', 0.30),
+    // ON. The lookup was correct all along — what broke it was the depth feedback loop
+    // above, which blacked the frame whenever shadows were enabled, so every A/B I ran
+    // was really strength-0 against strength-0. ?shadow=0 turns them off.
+    shadowStrength: num('shadow', 0.55),
     baseDarken: num('basedark', 0.55),
     silver: num('silver', 1.1),
     sunBoost: num('sunboost', 7.5),
@@ -706,16 +705,25 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
   rt.depthTexture.type = THREE.UnsignedIntType;
 
   const composer = new EffectComposer(renderer, rt);
-  // NOTE: EffectComposer clones this target for its swap buffer and the clone copies the
-  // SAME DepthTexture object. Detaching it from the swap buffer looks like the obvious
-  // way to avoid a feedback loop when a pass samples depth while writing the other
-  // buffer — do not. The raymarch reads that same sampler to clamp rays against terrain,
-  // and on any frame where it resolves to the detached buffer the sampler returns 0,
-  // which the clamp reads as "solid geometry at the near plane" and every ray exits
-  // before it starts. The result is a sky with no clouds in it at all, silently.
+  // EffectComposer clones this target for its swap buffer, and the clone copies the SAME
+  // DepthTexture object. That is a feedback loop waiting to happen: RenderPass writes
+  // scene depth into renderTarget1, and the cloud composite samples that depth while
+  // writing into renderTarget2 — one texture attached to both framebuffers. GL may return
+  // anything, and here it returned a black frame, silently, with no shader or GL error.
   //
-  // The composite avoids the loop by simply not binding depth unless cloud shadows are
-  // switched on (see render()), so nothing samples a texture it is writing through.
+  // DETACHING it from the swap buffer is the obvious fix and it is wrong: the raymarch
+  // reads the same sampler to clamp rays against terrain, and whenever it resolved to the
+  // detached buffer the sampler returned 0, which the clamp read as solid geometry at the
+  // near plane, so every ray exited before it started and the sky came out empty.
+  //
+  // Give the swap buffer its OWN depth attachment instead. Nothing reads it, so its
+  // contents do not matter; what matters is that the texture being sampled is no longer
+  // attached to the framebuffer being written.
+  if (composer.renderTarget2) {
+    const d2 = new THREE.DepthTexture(1, 1);
+    d2.type = THREE.UnsignedIntType;
+    composer.renderTarget2.depthTexture = d2;
+  }
   composer.addPass(new RenderPass(scene, camera));
   const cloudPass = new CloudPass(camera, shapeTex, detailTex, sunDir, params);
   composer.addPass(cloudPass);
