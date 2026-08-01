@@ -34,6 +34,8 @@ const CLOUD_RES = Math.min(1, Math.max(0.2, num('cloudres', 0.7)));
 const MAX_STEPS = Math.round(num('steps', 72));
 const LIGHT_STEPS = Math.round(num('lsteps', 6));
 const NLAYERS = 3;
+const SHADOW_RES = Math.round(num('shadowres', 512));
+const SHADOW_STEPS = Math.round(num('shadowsteps', 14));
 
 // ---------------------------------------------------------------------------
 // 3D NOISE, baked on the CPU into tiling textures.
@@ -140,21 +142,16 @@ function makeDetailTexture(N = 32) {
 }
 
 // ---------------------------------------------------------------------------
-const RAYMARCH_FRAG = /* glsl */`
+// The density field, shared verbatim between the view raymarch and the shadow pass.
+// Splitting it out is the whole trick behind cloud shadows being cheap here: the shadow
+// map is the SAME field marched toward the sun instead of toward the eye, so the shadows
+// cannot disagree with the clouds casting them.
+const CLOUD_FIELD = /* glsl */`
 precision highp float;
 precision highp sampler3D;
 
 uniform sampler3D shapeTex;
 uniform sampler3D detailTex;
-uniform sampler2D sceneDepth;
-
-uniform vec3  cameraPos;
-uniform mat4  invProjection;
-uniform mat4  invView;
-uniform vec3  camForward;
-uniform vec3  sunDir;
-uniform vec3  sunColor;
-uniform vec3  ambientSky;
 uniform float time;
 
 // per layer
@@ -178,18 +175,8 @@ uniform float islandFade;   // fade over this many further metres
 uniform float islandFloor;  // density multiplier far out to sea (0 = clear)
 uniform float islandWarp;   // how far the edge wanders, metres
 
-uniform float absorptionCoeff;
-uniform float maxDist;
-uniform float baseDarken;
-uniform float silverStrength;
-uniform float sunBoost;
-uniform float ambientBoost;
 uniform vec2  windDirection;
 uniform float windSpeed;
-uniform float cameraNear;
-uniform float cameraFar;
-
-varying vec2 vUv;
 
 #define PI 3.14159265
 
@@ -252,6 +239,62 @@ float cloudDensity(vec3 p, float lod) {
   }
   return total * islandMask(p);
 }
+`;
+
+// ─── Cloud shadow map ───────────────────────────────
+// A small top-down transmittance texture: for every world XZ in a square that follows
+// the camera, march the density field TOWARD THE SUN and write exp(-tau). The composite
+// pass then reconstructs each pixel's world position from scene depth and looks the
+// value up, so the shadows land on terrain, water, runways and the aircraft at once
+// without touching a single one of their materials.
+//
+// Marching toward the sun rather than straight down matters: a low sun throws shadows a
+// long way downwind of the cloud, and a vertical projection would pin every shadow
+// directly under its cloud, which looks wrong the moment the sun is not overhead.
+const SHADOW_FRAG = CLOUD_FIELD + /* glsl */`
+uniform vec3 sunDir;
+uniform vec2 shadowOrigin;   // world XZ of the texture's (0,0) corner
+uniform float shadowExtent;  // metres covered by the texture
+uniform float shadowDensity;
+varying vec2 vUv;
+
+void main() {
+  vec3 p = vec3(shadowOrigin.x + vUv.x * shadowExtent, 0.0,
+                shadowOrigin.y + vUv.y * shadowExtent);
+  // A sun near the horizon makes the slab traversal arbitrarily long; clamp so the step
+  // count stays meaningful instead of smearing one sample over kilometres.
+  float sy = max(sunDir.y, 0.15);
+  float t0 = (slabMin - p.y) / sy;
+  float t1 = (slabMax - p.y) / sy;
+  float dt = (t1 - t0) / float(SHADOW_STEPS);
+  float tau = 0.0;
+  for (int i = 0; i < SHADOW_STEPS; i++) {
+    // lod 1 skips the detail erosion: shadow edges are soft anyway and it halves the
+    // texture fetches in the hottest loop in the file
+    tau += cloudDensity(p + sunDir * (t0 + (float(i) + 0.5) * dt), 1.0) * dt;
+  }
+  gl_FragColor = vec4(exp(-tau * shadowDensity), 0.0, 0.0, 1.0);
+}
+`;
+
+const RAYMARCH_FRAG = CLOUD_FIELD + /* glsl */`
+uniform vec3  cameraPos;
+uniform mat4  invProjection;
+uniform mat4  invView;
+uniform vec3  camForward;
+uniform vec3  sunDir;
+uniform vec3  sunColor;
+uniform vec3  ambientSky;
+uniform sampler2D sceneDepth;
+uniform float absorptionCoeff;
+uniform float maxDist;
+uniform float baseDarken;
+uniform float silverStrength;
+uniform float sunBoost;
+uniform float ambientBoost;
+uniform float cameraNear;
+uniform float cameraFar;
+varying vec2 vUv;
 
 // ─── Phase ──────────────────────────────────────────
 float hg(float c, float g) {
@@ -342,9 +385,50 @@ const COMPOSITE_FRAG = /* glsl */`
 precision highp float;
 uniform sampler2D tDiffuse;
 uniform sampler2D tClouds;
+uniform sampler2D tShadow;
+uniform sampler2D sceneDepth;
+uniform mat4 invProjection;
+uniform mat4 invView;
+uniform vec2 shadowOrigin;
+uniform float shadowExtent;
+uniform float shadowStrength;
+uniform vec3 shadowTint;
+uniform float shadowCeiling;   // no cloud shadow above the lowest cloud base
+uniform float cameraNear;
+uniform float cameraFar;
 varying vec2 vUv;
+
 void main() {
   vec4 scene = texture2D(tDiffuse, vUv);
+  float dz = texture2D(sceneDepth, vUv).r;
+
+  // CLOUD SHADOWS. Applied here rather than in every ground material: the depth buffer
+  // gives world position for whatever the pixel actually is, so terrain, water, runways,
+  // props and the aircraft all get shadowed from one place.
+  //
+  // This darkens the composited colour rather than only the direct-light term, which is
+  // not strictly correct — a shadowed patch loses a little ambient it should keep. The
+  // tint compensates: shadowed ground is pulled slightly BLUE rather than just dimmed,
+  // which is what losing the sun but keeping the sky actually looks like.
+  if (dz < 1.0 && shadowStrength > 0.0) {
+    vec4 clip = vec4(vUv * 2.0 - 1.0, dz * 2.0 - 1.0, 1.0);
+    vec4 vp = invProjection * clip;
+    vp /= vp.w;
+    vec3 wp = (invView * vec4(vp.xyz, 1.0)).xyz;
+    if (wp.y < shadowCeiling) {
+      vec2 suv = (wp.xz - shadowOrigin) / shadowExtent;
+      // feather the last 6% so the edge of the map is never a visible square
+      vec2 fade = smoothstep(vec2(0.0), vec2(0.06), suv)
+                * (1.0 - smoothstep(vec2(0.94), vec2(1.0), suv));
+      float edge = fade.x * fade.y;
+      if (edge > 0.0) {
+        float lit = texture2D(tShadow, clamp(suv, 0.0, 1.0)).r;
+        float s = (1.0 - lit) * shadowStrength * edge;
+        scene.rgb = scene.rgb * (1.0 - s) + scene.rgb * shadowTint * s;
+      }
+    }
+  }
+
   vec4 c = texture2D(tClouds, vUv);          // premultiplied
   gl_FragColor = vec4(scene.rgb * (1.0 - c.a) + c.rgb, scene.a);
 }
@@ -403,13 +487,60 @@ class CloudPass extends Pass {
       depthTest: false, depthWrite: false,
     });
 
+    // Cloud shadow map. R8 is plenty — this is a single transmittance scalar and the
+    // result is blurred by its own texel size on the ground anyway.
+    this.shadowTarget = new THREE.WebGLRenderTarget(SHADOW_RES, SHADOW_RES, {
+      type: THREE.UnsignedByteType, format: THREE.RGBAFormat,
+      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+      wrapS: THREE.ClampToEdgeWrapping, wrapT: THREE.ClampToEdgeWrapping,
+      depthBuffer: false,
+    });
+    this._shadowOrigin = new THREE.Vector2();
+
+    // The shadow material shares the field uniforms with the march by REFERENCE, so the
+    // panel moving a layer moves the shadow it casts in the same frame. Anything less
+    // and the two drift apart the moment a value changes.
+    const m = this.march.uniforms;
+    this.shadow = new THREE.ShaderMaterial({
+      defines: { NLAYERS, SHADOW_STEPS },
+      uniforms: {
+        shapeTex: m.shapeTex, detailTex: m.detailTex, time: m.time,
+        lBase: m.lBase, lTop: m.lTop, lCoverage: m.lCoverage, lShapeScale: m.lShapeScale,
+        lDetailScale: m.lDetailScale, lDetailStrength: m.lDetailStrength,
+        lWorleyMix: m.lWorleyMix, lDensity: m.lDensity, lFlatBase: m.lFlatBase,
+        slabMin: m.slabMin, slabMax: m.slabMax,
+        islandCenter: m.islandCenter, islandFull: m.islandFull,
+        islandFade: m.islandFade, islandFloor: m.islandFloor, islandWarp: m.islandWarp,
+        windDirection: m.windDirection, windSpeed: m.windSpeed,
+        sunDir: m.sunDir,
+        shadowOrigin: { value: this._shadowOrigin },
+        shadowExtent: { value: params.shadowExtent },
+        shadowDensity: { value: params.shadowDensity },
+      },
+      vertexShader: FULLSCREEN_VERT,
+      fragmentShader: SHADOW_FRAG,
+      depthTest: false, depthWrite: false,
+    });
+
     this.composite = new THREE.ShaderMaterial({
-      uniforms: { tDiffuse: { value: null }, tClouds: { value: this.target.texture } },
+      uniforms: {
+        tDiffuse: { value: null }, tClouds: { value: this.target.texture },
+        tShadow: { value: this.shadowTarget.texture },
+        sceneDepth: { value: null },
+        invProjection: m.invProjection, invView: m.invView,
+        shadowOrigin: { value: this._shadowOrigin },
+        shadowExtent: { value: params.shadowExtent },
+        shadowStrength: { value: params.shadowStrength },
+        shadowTint: { value: new THREE.Color(0.62, 0.72, 0.92) },
+        shadowCeiling: { value: 1e9 },
+        cameraNear: { value: camera.near }, cameraFar: { value: camera.far },
+      },
       vertexShader: FULLSCREEN_VERT,
       fragmentShader: COMPOSITE_FRAG,
       depthTest: false, depthWrite: false,
     });
     this.quadMarch = new FullScreenQuad(this.march);
+    this.quadShadow = new FullScreenQuad(this.shadow);
     this.quadComposite = new FullScreenQuad(this.composite);
   }
 
@@ -458,6 +589,32 @@ class CloudPass extends Pass {
     u.windDirection.value.set(p.windX, p.windZ); u.windSpeed.value = p.windSpeed;
     u.time.value = p.time;
 
+    // ── cloud shadow map ──
+    // The region follows the camera but is SNAPPED TO ITS OWN TEXEL GRID. Without that
+    // the whole map slides by a fraction of a texel every frame and the shadow edges
+    // crawl and shimmer across the ground, which is far more distracting than having no
+    // shadows at all.
+    const cs = this.composite.uniforms;
+    if (p.shadowStrength > 0) {
+      const ext = p.shadowExtent;
+      const texel = ext / SHADOW_RES;
+      this._shadowOrigin.set(
+        Math.floor((cam.position.x - ext * 0.5) / texel) * texel,
+        Math.floor((cam.position.z - ext * 0.5) / texel) * texel);
+      this.shadow.uniforms.shadowExtent.value = ext;
+      this.shadow.uniforms.shadowDensity.value = p.shadowDensity;
+      cs.shadowExtent.value = ext;
+      // never shadow anything at or above the lowest cloud base — an aircraft flying
+      // over the top of the deck must not pick up the shadow of the deck below it
+      cs.shadowCeiling.value = lo;
+      renderer.setRenderTarget(this.shadowTarget);
+      this.quadShadow.render(renderer);
+    }
+    cs.shadowStrength.value = p.shadowStrength;
+    cs.sceneDepth.value = readBuffer.depthTexture;
+    cs.cameraNear.value = cam.near;
+    cs.cameraFar.value = cam.far;
+
     renderer.setRenderTarget(this.target);
     renderer.clear();
     this.quadMarch.render(renderer);
@@ -469,7 +626,9 @@ class CloudPass extends Pass {
   }
 
   dispose() {
-    this.target.dispose(); this.march.dispose(); this.composite.dispose();
+    this.target.dispose(); this.shadowTarget.dispose();
+    this.march.dispose(); this.shadow.dispose(); this.composite.dispose();
+    this.quadShadow.dispose();
     this.quadMarch.dispose(); this.quadComposite.dispose();
   }
 }
@@ -515,6 +674,16 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     },
     absorption: num('absorb', 0.055),
     maxDist: num('maxdist', 46000),
+    // CLOUD SHADOWS. extent is the square of world the map covers, centred on the
+    // camera; density is how hard the cloud attenuates on the way to the sun; strength
+    // is how much of the ground's light it takes away.
+    shadowExtent: num('shadowext', 16000),
+    shadowDensity: num('shadowden', 0.10),
+    // DEFAULT OFF. The shadow map itself computes correct data, but the composite
+    // lookup does not reliably darken the ground and I have not visually confirmed a
+    // single cloud-shaped shadow. Shipping it enabled would be shipping a guess.
+    // ?shadow=0.55 turns it on to work on it.
+    shadowStrength: num('shadow', 0.0),
     baseDarken: num('basedark', 0.55),
     silver: num('silver', 1.1),
     sunBoost: num('sunboost', 7.5),
@@ -535,6 +704,14 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
   rt.depthTexture.type = THREE.UnsignedIntType;
 
   const composer = new EffectComposer(renderer, rt);
+  // EffectComposer clones the target for its swap buffer, and the clone copies the SAME
+  // DepthTexture object. RenderPass does not swap, so the scene depth always lands in
+  // renderTarget1 — but the cloud composite writes into renderTarget2 while sampling
+  // that depth, and with the texture attached to both framebuffers that is a feedback
+  // loop. GL is entitled to return anything; here it returned black, for the whole
+  // frame, silently and with no shader error. Detaching it from the swap buffer, which
+  // nothing reads, makes the sample well-defined.
+  if (composer.renderTarget2) composer.renderTarget2.depthTexture = null;
   composer.addPass(new RenderPass(scene, camera));
   const cloudPass = new CloudPass(camera, shapeTex, detailTex, sunDir, params);
   composer.addPass(cloudPass);
