@@ -30,12 +30,12 @@ function C(hex) {
 }
 
 const cSandWet = C(0xb69b6c), cSand = C(0xdcc891),
-      cGrassL = C(0x7fae57), cGrassD = C(0x466f37),
+      cGrassL = C(0x86a862), cGrassD = C(0x4c6b3d),
       cMeadow = C(0x9dbd63), cRock = C(0x8d8a82),
       cRockD = C(0x6e6b64), cSnow = C(0xeef2f4),
       cDirt = C(0x9b7f57), cDesert = C(0xd9bd7e),
       cOchre = C(0xc0904f), cSage = C(0x9aa468),
-      cForL = C(0x4d7a39), cForD = C(0x2f5129),
+      cForL = C(0x557a44), cForD = C(0x365233),
       cMtnLow = C(0x8a7355), cRubble = C(0xa9825c),
       cDeep = C(0x35635d), cWashBed = C(0xd8c6a0),
       cCrest = C(0xead9a8), cScree = C(0x8f8a81),
@@ -185,9 +185,34 @@ export function terrainColor(x, z, h, normalY, out) {
     _r = _r2; _g = _g2; _b = _b2;
   }
   if (h < -2.5) lerp1(cDeep, smooth(2.5, 13, -h) * 0.75);
-  // snow above ~420, noise-jittered
-  const snowline = 420 + (noise2(x * 0.006 + 3.7, z * 0.006) - 0.5) * 76;
-  if (h > snowline - 14) lerp1(cSnow, smooth(snowline - 14, snowline + 10, h));
+  // SNOW. Was height alone: one noise-jittered line at 420 with a 24 m transition,
+  // lerping the whole way to near-white. That gives caps that look dipped in paint —
+  // pure white, a hard scalloped rim at a single frequency, and snow clinging to
+  // vertical cliff faces where in reality it slides straight off.
+  //
+  // Three things fix it, and they are all things real snow does.
+  //
+  // 1. STEEP GROUND SHEDS IT. Above about 30 degrees snow starts to slide and the rock
+  //    shows through; by 55 it is bare. This is what breaks the cap into ribs and
+  //    gullies that follow the mountain instead of a smooth white shell over it.
+  // 2. THE LINE IS NOT ONE FREQUENCY. A broad ~600 m drift decides which side of a
+  //    massif holds snow, and a finer ~130 m term ruffles the rim. One frequency reads
+  //    as a scallop pattern immediately.
+  // 3. IT NEVER REACHES PURE WHITE. Even deep snow keeps some of the rock beneath it
+  //    at the edges, and the shaded side is blue rather than grey — snow is bright
+  //    enough in shadow that skylight dominates, which is why it photographs blue.
+  const snowBroad = (noise2(x * 0.0017 + 3.7, z * 0.0017) - 0.5) * 88;
+  const snowFine = (noise2(x * 0.0076 + 19.4, z * 0.0076 + 5.1) - 0.5) * 30;
+  const snowline = 455 + snowBroad + snowFine;
+  const shed = 1 - smooth(0.13, 0.42, 1 - normalY);      // ~29 deg -> ~55 deg
+  const cover = smooth(snowline - 26, snowline + 40, h) * shed;
+  if (cover > 0.004) {
+    // deep snow is whiter; the thin fringe keeps more of the ground under it
+    set2(cSnow); lerp2(cRockD, (1 - cover) * 0.5);
+    // cool it where the surface turns away from the sky, warm the sunlit tops a hair
+    _b2 += (0.055 - 0.03 * normalY) * cover;
+    lerp12(cover * 0.94);
+  }
   const rw = runwayInfluence(x, z); // graded dirt aprons around the strips
   if (rw > 0) lerp1(cDirt, rw * 0.9);
   out[0] = _r; out[1] = _g; out[2] = _b;
