@@ -133,11 +133,29 @@ export function createTerrain(scene) {
   // ~1:20), so ring boundaries stepped along the coast. Poke-through only
   // happens on steep ground, which is always well above 12 m — the beach
   // keeps its exact shoreline at every LOD.
+  // THE SHORE BAND GETS A SMALL SINK, NOT NONE.
+  //
+  // This used to fade the LOD bias to exactly zero below 2 m and only reach full at 12 m,
+  // and bakeIslandGeometry's min-tap envelope is shore-faded the same way. Both fades
+  // exist to stop the coarse surface dragging the coastline around, and both leave the
+  // 0-12 m band — which is precisely the beach — with NO separation at all. There the
+  // 62 m shell competes with fine tiles on equal terms, their coastlines disagree by up
+  // to half a shell cell, and you fly along the water looking at two overlapping
+  // shorelines.
+  //
+  // SHORE_FRAC keeps a fraction of the bias down there. It has to be small: this sinks
+  // LAND, so the waterline creeps inland by the sink divided by the beach slope. At 0.35
+  // of a -4 m shell bias that is ~1.4 m, tens of metres of coastline on a shallow beach —
+  // invisible at the ranges where the shell is the only thing drawn, and the near view is
+  // the fine tiles' anyway, which is the whole point.
+  const SHORE_FRAC = 0.35;
   function sinkAboveShore(positions, bias) {
     for (let i = 1; i < positions.length; i += 3) {
       const y = positions[i];
+      if (y <= -1) continue;              // already underwater: nothing to separate
       const t = y <= 2 ? 0 : y >= 12 ? 1 : (y - 2) / 10;
-      positions[i] = y + bias * t * t * (3 - 2 * t);
+      const s = t * t * (3 - 2 * t);
+      positions[i] = y + bias * (SHORE_FRAC + (1 - SHORE_FRAC) * s);
     }
   }
 
