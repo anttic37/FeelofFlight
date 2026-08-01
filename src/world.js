@@ -287,15 +287,34 @@ export function createWorld(scene) {
   }
   rocks.count = nR;
 
-  for (const m of [pines, trunks, leaves, cacti1, cacti2, rocks]) {
-    m.castShadow = true;
-    m.receiveShadow = true;
-    scene.add(m);
+  // DECORATIONS OFF. Flat-shaded cones, icosahedron blobs and cylinder cacti at a scale
+  // where the aircraft is the only thing close enough to read as a model — from the air
+  // they are a pepper of dark specks over otherwise clean hillsides, and they date the
+  // whole scene against the terrain, water and sky around them.
+  //
+  // Kept as code rather than deleted: the placement rules (biome, slope, snowline and
+  // corridor vetoes) are the useful part and would have to be written again for any
+  // replacement. ?props=1 puts them back.
+  const SHOW_PROPS = new URLSearchParams(location.search).get('props') === '1';
+  if (SHOW_PROPS) {
+    for (const m of [pines, trunks, leaves, cacti1, cacti2, rocks]) {
+      m.castShadow = true;
+      m.receiveShadow = true;
+      scene.add(m);
+    }
   }
 
   const runways = createRunways(scene);
   const water = createWater(scene, heightAt);
-  const scatter = createScatter(scene); // near-field props: the ground-rush layer
+  // NEAR-FIELD PROPS, OFF. They existed to give a sense of speed close to the ground,
+  // and they do — but they read as scattered white pebbles and teal cones sitting ON
+  // the terrain rather than as anything growing out of it, and at altitude they are a
+  // pepper of specks over otherwise clean hillsides. The ground rush they were bought
+  // for is now carried by the splat detail and the wash effects.
+  // ?props=1 brings them back.
+  const scatter = SHOW_PROPS
+    ? createScatter(scene)
+    : { update() {}, stats: () => ({ off: true }) };
 
   // keep the sun (and its shadow box) and sky centered on the plane
   function update(planePos, time = 0) {

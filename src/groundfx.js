@@ -40,11 +40,26 @@ float gnoise(vec2 p) {
 // blended across the cell boundary. Gradients are passed in from the UNOFFSET
 // coordinates, because the offsets make the derivatives discontinuous and the
 // hardware would otherwise pick a different mip on each side of every cell.
-vec2 gCellOff(vec2 c) {
-  return fract(sin(vec2(dot(c, vec2(127.1, 311.7)), dot(c, vec2(269.5, 183.3)))) * 43758.5453);
+vec3 gCellRand(vec2 c) {   // xy = uv offset, z = rotation
+  return fract(sin(vec3(dot(c, vec2(127.1, 311.7)),
+                        dot(c, vec2(269.5, 183.3)),
+                        dot(c, vec2(419.2, 371.9)))) * 43758.5453);
 }
+// TWO THINGS THIS GETS RIGHT THAT THE FIRST VERSION DID NOT.
+//
+// 1. THE CELL MUST BE ABOUT THE SIZE OF THE REPEAT. It was one random patch per 60 m
+//    against a texture that repeats every 16 m, so each randomised cell still contained
+//    nearly four copies of the same tile side by side. Offsetting a cell does nothing
+//    about repetition INSIDE that cell, and that residue is the crosshatch that was
+//    still visible. Now ~18 m, so a cell holds about one copy.
+//
+// 2. OFFSET ALONE CANNOT BREAK A DIRECTIONAL MOTIF. A shifted copy of a woven pattern
+//    is still the same weave running the same way, and the eye tracks direction far
+//    more readily than phase. Each cell now gets its own ROTATION as well, which is
+//    what actually destroys the grid. The gradients are rotated by the same matrix or
+//    the hardware picks a mip for the unrotated footprint and the far field goes soft.
 vec4 gNoTile(vec2 uv, vec2 ddx, vec2 ddy) {
-  vec2 cell = uv * 0.27;                 // one random patch per ~60 m of ground
+  vec2 cell = uv * 0.9;                  // one random patch per ~18 m, near the repeat
   vec2 ic = floor(cell), fc = fract(cell);
   vec2 w = fc * fc * (3.0 - 2.0 * fc);
   vec4 acc = vec4(0.0);
@@ -53,7 +68,11 @@ vec4 gNoTile(vec2 uv, vec2 ddx, vec2 ddy) {
     for (int i = 0; i < 2; i++) {
       vec2 o = vec2(float(i), float(j));
       float bw = mix(1.0 - w.x, w.x, o.x) * mix(1.0 - w.y, w.y, o.y);
-      acc += bw * textureGrad(uDetailTex, uv + gCellOff(ic + o), ddx, ddy);
+      vec3 h = gCellRand(ic + o);
+      float a = h.z * 6.2831853;
+      float ca = cos(a), sa = sin(a);
+      mat2 R = mat2(ca, -sa, sa, ca);
+      acc += bw * textureGrad(uDetailTex, R * uv + h.xy, R * ddx, R * ddy);
       wsum += bw;
     }
   }
