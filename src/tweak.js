@@ -85,6 +85,14 @@ export function initTweakPanel({ sc, applyResize }) {
   slider('light', 'silver lining', () => p.silver, v => p.silver = v, 0, 6, 0.05);
   slider('light', 'absorption', () => p.absorption, v => p.absorption = v, 0.005, 0.3, 0.005,
     v => v.toFixed(3));
+  // The one that actually decides how lit the clouds look: it sets the optical depth of
+  // the sun ray, so it is what darkens bases without touching tops. Was missing from the
+  // panel entirely while it sat 12x too low.
+  slider('light', 'self-shadow', () => p.lightAbsorb, v => p.lightAbsorb = v, 0.002, 0.08, 0.001,
+    v => v.toFixed(3));
+  slider('light', 'ms fill', () => p.msFalloff, v => p.msFalloff = v, 0, 0.9, 0.01);
+  slider('light', 'ms scatter', () => p.msScatter, v => p.msScatter = v, 0.1, 1, 0.01);
+  slider('light', 'powder', () => p.powderMix, v => p.powderMix = v, 0, 1, 0.01);
 
   p.layers.forEach((L, i) => {
     const sec = 'L' + (i + 1);
@@ -137,9 +145,10 @@ export function initTweakPanel({ sc, applyResize }) {
   };
   btn('Copy values', () => {
     const out = { layers: p.layers, island: p.island,
-      absorption: p.absorption, baseDarken: p.baseDarken, silver: p.silver,
-      sunBoost: p.sunBoost, ambientBoost: p.ambientBoost, maxDist: p.maxDist,
-      windSpeed: p.windSpeed, cloudRes: p.cloudRes };
+      absorption: p.absorption, lightAbsorb: p.lightAbsorb, baseDarken: p.baseDarken,
+      silver: p.silver, sunBoost: p.sunBoost, ambientBoost: p.ambientBoost,
+      msFalloff: p.msFalloff, msScatter: p.msScatter, powderMix: p.powderMix,
+      maxDist: p.maxDist, windSpeed: p.windSpeed, cloudRes: p.cloudRes };
     navigator.clipboard.writeText(JSON.stringify(out, null, 2));
   });
   btn('Reset', () => {

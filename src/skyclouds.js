@@ -295,6 +295,9 @@ uniform float baseDarken;
 uniform float silverStrength;
 uniform float sunBoost;
 uniform float ambientBoost;
+uniform float msFalloff;
+uniform float msScatter;
+uniform float powderMix;
 uniform float cameraNear;
 uniform float cameraFar;
 varying vec2 vUv;
@@ -335,6 +338,38 @@ float cloudPhase(float c) { return hg(c, 0.62) * 0.7 + hg(c, -0.3) * 0.3; }
 // magic constant, so the optical depth THROUGH a cloud stays around 1-3 where the Beer
 // curve actually has shape, and so it can be tuned without touching the view march's
 // alpha, which wants a completely different scale.
+//
+// POWDER DOES NOT BELONG IN THE LIGHT MARCH, and having it here was why the clouds looked
+// unlit no matter what anything was set to.
+//
+// This used to end with mix(beer, beer * powder, 0.5). powder = 1 - exp(-2 * tau) is ZERO
+// when tau is zero — and tau IS zero at the sunlit top of a cloud, because there is no
+// cloud above it to shadow it. So the brightest surface in the sky came back at exactly
+// 0.5, while the shadowed base, where tau is large and powder is ~1, was left completely
+// untouched. It compressed the one end that should have been left alone.
+//
+// MEASURED, in linear HDR straight off the cloud target, before the composite and before
+// tone mapping: fully opaque cloud pixels spanned p5 0.279 to p95 0.479 — a bright-to-dark
+// ratio of 1.72:1, where real cumulus run 10:1 or more. The lit top was pinned at ~0.48
+// and NOTHING raised it: lightAbsorb x37 moved it to 0.452, ambientBoost 0 to 0.252,
+// baseDarken 0.10 to 0.351. Every lever only ever darkened the base.
+//
+// sunBoost cannot fix that, and this is worth stating plainly because two sweeps were
+// spent on it: sunBoost is a MULTIPLY, and a multiply cannot change a ratio. Raising it
+// only slides 1.72:1 further up the ACES shoulder, where the curve compresses harder — so
+// brightness went up and contrast went DOWN, which is exactly what the sweep showed
+// (sun 9.5 -> range 76, sun 40 -> range 36, back to the original).
+//
+// Transmittance toward the sun is exp(-tau), full stop. Powder is a VIEW-side effect (the
+// dark rim on a thin edge seen against the sun) and now lives in the main loop keyed on
+// local density, where it darkens wisps without touching lit tops.
+//
+// The multiple-scattering octaves matter once this is pure Beer: a single exponential
+// sends deep interiors to black, and real clouds are bright inside precisely because light
+// bounces around in them. Octaves with decaying contribution and decaying extinction are
+// the standard cheap stand-in. Normalising by the tau=0 sum keeps a fully lit top at 1.0,
+// so the march returns a true 0..1 fraction of sunlight and sunBoost stays an exposure
+// control rather than a fudge factor.
 float lightMarch(vec3 p) {
   float accum = 0.0;
   for (int i = 0; i < LIGHT_STEPS; i++) {
@@ -342,9 +377,14 @@ float lightMarch(vec3 p) {
     accum += cloudDensity(p, 1.0) * lightStep;
   }
   float tau = accum * lightAbsorb;
-  float beer = exp(-tau);
-  float powder = 1.0 - exp(-tau * 2.0);
-  return mix(beer, beer * powder, 0.5);
+  float ms = 0.0, norm = 0.0, contrib = 1.0, extinct = 1.0;
+  for (int o = 0; o < MS_OCTAVES; o++) {
+    ms   += contrib * exp(-tau * extinct);
+    norm += contrib;
+    contrib *= msFalloff;
+    extinct *= msScatter;
+  }
+  return ms / max(norm, 1e-4);
 }
 
 vec2 intersectSlab(vec3 ro, vec3 rd, float yMin, float yMax) {
@@ -394,6 +434,12 @@ void main() {
     if (density > 0.002) {
       float light = lightMarch(p);
       vec3 col = sunColor * light * phase * sunBoost + ambientSky * ambientBoost;
+
+      // Powder, moved here off the light march. This is the dark rim on a thin edge seen
+      // TOWARD the sun, so it keys on local density and on cosT, and a dense lit top —
+      // where it used to cost half the brightness — is left alone.
+      float powder = 1.0 - exp(-density * 4.0);
+      col *= mix(1.0, powder, powderMix * max(cosT, 0.0));
 
       float edge = cloudDensity(p + sunDir * 220.0, 1.0);
       float silver = pow(max(1.0 - edge, 0.0), 3.0) * pow(max(-cosT, 0.0), 3.0);
@@ -534,7 +580,7 @@ class CloudPass extends Pass {
 
     const arr = (v) => ({ value: new Float32Array(NLAYERS).fill(v) });
     this.march = new THREE.ShaderMaterial({
-      defines: { MAX_STEPS, LIGHT_STEPS, NLAYERS },
+      defines: { MAX_STEPS, LIGHT_STEPS, NLAYERS, MS_OCTAVES: 3 },
       uniforms: {
         shapeTex: { value: shapeTex }, detailTex: { value: detailTex },
         sceneDepth: { value: null },
@@ -550,13 +596,15 @@ class CloudPass extends Pass {
         lDetailScale: arr(0), lDetailStrength: arr(0), lWorleyMix: arr(0),
         lDensity: arr(0), lFlatBase: arr(0),
         slabMin: { value: 0 }, slabMax: { value: 1 }, lightStep: { value: 200 },
-        lightAbsorb: { value: 0.0016 },
+        lightAbsorb: { value: 0.030 },
         islandCenter: { value: new THREE.Vector2() },
         islandFull: { value: 0 }, islandFade: { value: 1 },
         islandFloor: { value: 0 }, islandWarp: { value: 0 },
         absorptionCoeff: { value: 0.055 }, maxDist: { value: 46000 },
-        baseDarken: { value: 0.55 }, silverStrength: { value: 1.1 },
-        sunBoost: { value: 7.5 }, ambientBoost: { value: 0.55 },
+        baseDarken: { value: 0.65 }, silverStrength: { value: 1.1 },
+        sunBoost: { value: 18 }, ambientBoost: { value: 0.16 },
+        msFalloff: { value: 0.5 }, msScatter: { value: 0.5 },
+        powderMix: { value: 0.4 },
         windDirection: { value: new THREE.Vector2() }, windSpeed: { value: 0 },
         cameraNear: { value: camera.near }, cameraFar: { value: camera.far },
       },
@@ -686,6 +734,8 @@ class CloudPass extends Pass {
     u.absorptionCoeff.value = p.absorption; u.maxDist.value = p.maxDist;
     u.baseDarken.value = p.baseDarken; u.silverStrength.value = p.silver;
     u.sunBoost.value = p.sunBoost; u.ambientBoost.value = p.ambientBoost;
+    u.msFalloff.value = p.msFalloff; u.msScatter.value = p.msScatter;
+    u.powderMix.value = p.powderMix;
     u.windDirection.value.set(p.windX, p.windZ); u.windSpeed.value = p.windSpeed;
     u.time.value = p.time;
 
@@ -798,8 +848,18 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     },
     absorption: num('absorb', 0.055),
     // Separate from absorption: this one runs against a path measured in metres, so it
-    // needs a scale three orders smaller to land where the Beer curve has shape.
-    lightAbsorb: num('lightabsorb', 0.0016),
+    // needs a much smaller scale to land where the Beer curve has shape.
+    //
+    // THIS WAS 0.0016 AND THAT WAS ROUGHLY 12x TOO SMALL. Fixing the earlier exp(-76)
+    // saturation overshot in the other direction: 0.0016 puts optical depth around 0.2,
+    // where exp(-tau) is ~0.8 for everything and the whole cloud comes back uniformly lit.
+    // Isolating the sun term (no ambient, no base ramp) and sweeping it showed exactly
+    // where the shading lives — bright-to-dark ratio across opaque cloud pixels:
+    //   0.0016 -> 1.8    0.008 -> 3.9    0.020 -> 13.2    0.050 -> 101
+    // and the lit top barely moves across that whole sweep (p95 0.425 -> 0.382), so this
+    // darkens bases WITHOUT dimming tops, which is the one axis sunBoost/ambient/baseDarken
+    // could never move.
+    lightAbsorb: num('lightabsorb', 0.030),
     maxDist: num('maxdist', 46000),
     // CLOUD SHADOWS. extent is the square of world the map covers, centred on the
     // camera; density is how hard the cloud attenuates on the way to the sun; strength
@@ -815,10 +875,23 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     godDensity: num('raydensity', 0.72),
     godWeight: num('rayweight', 0.85),
     godDecay: num('raydecay', 0.965),
-    baseDarken: num('basedark', 0.55),
+    // Less fake vertical ramp than before: with lightAbsorb finally in range the cloud
+    // shadows itself for real, so this no longer has to stand in for that.
+    baseDarken: num('basedark', 0.65),
     silver: num('silver', 1.1),
-    sunBoost: num('sunboost', 7.5),
-    ambientBoost: num('ambient', 0.55),
+    // sunBoost is up because the light march now returns a true 0..1 fraction of sunlight
+    // (it used to cap at 0.5), and ambient is down hard because a flat additive floor is
+    // what was compressing the ratio: it lifts the shadowed base far more, in relative
+    // terms, than it lifts the lit top.
+    sunBoost: num('sunboost', 18),
+    ambientBoost: num('ambient', 0.16),
+    // Multiple scattering in the light march. falloff is how much each octave contributes
+    // relative to the last, scatter is how much less it is extinguished. Lower falloff
+    // means less bounced light filling the interior, so MORE contrast and darker cores.
+    msFalloff: num('msfall', 0.5),
+    msScatter: num('msscat', 0.5),
+    // View-side powder: dark rims on thin edges seen toward the sun.
+    powderMix: num('powder', 0.4),
     windX: 0.82, windZ: 0.57,
     windSpeed: num('wind', 1.6),
     time: 0,
