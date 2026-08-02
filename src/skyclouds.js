@@ -168,6 +168,8 @@ uniform float lFlatBase[NLAYERS];
 
 uniform float slabMin;
 uniform float slabMax;
+uniform float lightStep;
+uniform float lightAbsorb;
 
 // island cap
 uniform vec2  islandCenter;
@@ -304,15 +306,44 @@ float hg(float c, float g) {
 }
 float cloudPhase(float c) { return hg(c, 0.62) * 0.7 + hg(c, -0.3) * 0.3; }
 
+// THE STEP MUST BE SCALED TO A LAYER, NOT TO THE SLAB.
+//
+// This used to derive its step from (slabMax - slabMin), the full vertical extent of
+// every layer together. That is fine for one deck, and quietly wrong the moment there is
+// more than one: with layers at 1100-2400, 2600-5200 and 6400-7600 the slab spans 6500 m,
+// so the step became 595 m. The high veil is 1200 m thick, so the FIRST step out of it
+// already cleared slabMax, cloudDensity early-outs above that, and the layer accumulated
+// no self-shadowing at all — it came out uniformly lit, with no sun on it. The lower
+// decks lost most of their shading the same way.
+//
+// lightStep comes from the THINNEST active layer instead, so six steps stay inside the
+// cloud they started in and actually integrate the density that shadows it. The gap
+// between decks costs nothing: cloudDensity returns 0 there anyway.
+// THE LIGHT MARCH NEEDS ITS OWN COEFFICIENT, and losing that is why the upper decks had
+// no sun on them at all.
+//
+// accum here is density integrated over METRES, so a single cloud contributes on the
+// order of 1000. Feeding that through exp(-accum * absorptionCoeff) with the view
+// march's 0.055 gives exp(-76), which is zero to every bit of float precision. Every
+// cloud thick enough to be visible came out fully self-shadowed and lit by ambient
+// alone — flat, sunless, and completely insensitive to the march itself: sweeping the
+// step from 10 m to 3000 m moved the frame by 0.01 of a grey level, because the result
+// was saturated at both ends no matter what was sampled.
+//
+// The reference shader scaled this accumulation by 0.001 for exactly this reason and I
+// dropped it when rewriting the march. Restored as an explicit uniform rather than a
+// magic constant, so the optical depth THROUGH a cloud stays around 1-3 where the Beer
+// curve actually has shape, and so it can be tuned without touching the view march's
+// alpha, which wants a completely different scale.
 float lightMarch(vec3 p) {
-  float stepL = (slabMax - slabMin) / float(LIGHT_STEPS) * 0.55;
   float accum = 0.0;
   for (int i = 0; i < LIGHT_STEPS; i++) {
-    p += sunDir * stepL;
-    accum += cloudDensity(p, 1.0) * stepL;
+    p += sunDir * lightStep;
+    accum += cloudDensity(p, 1.0) * lightStep;
   }
-  float beer = exp(-accum * absorptionCoeff);
-  float powder = 1.0 - exp(-accum * absorptionCoeff * 2.0);
+  float tau = accum * lightAbsorb;
+  float beer = exp(-tau);
+  float powder = 1.0 - exp(-tau * 2.0);
   return mix(beer, beer * powder, 0.5);
 }
 
@@ -518,7 +549,8 @@ class CloudPass extends Pass {
         lBase: arr(0), lTop: arr(0), lCoverage: arr(0), lShapeScale: arr(0),
         lDetailScale: arr(0), lDetailStrength: arr(0), lWorleyMix: arr(0),
         lDensity: arr(0), lFlatBase: arr(0),
-        slabMin: { value: 0 }, slabMax: { value: 1 },
+        slabMin: { value: 0 }, slabMax: { value: 1 }, lightStep: { value: 200 },
+        lightAbsorb: { value: 0.0016 },
         islandCenter: { value: new THREE.Vector2() },
         islandFull: { value: 0 }, islandFade: { value: 1 },
         islandFloor: { value: 0 }, islandWarp: { value: 0 },
@@ -632,6 +664,19 @@ class CloudPass extends Pass {
     }
     if (!isFinite(lo)) { lo = 0; hi = 1; }
     u.slabMin.value = lo; u.slabMax.value = hi;
+    // Light-march step from the THINNEST active layer, not the slab. Six steps then stay
+    // inside the deck they started in; sizing it to the slab meant one step cleared the
+    // thinnest layer entirely and that layer got no self-shadowing — it rendered as if
+    // the sun were not there. Clamped so a very thin veil cannot drive the step so small
+    // that the march never reaches the cloud above it.
+    let thin = Infinity;
+    for (let i = 0; i < NLAYERS; i++) {
+      const L = p.layers[i];
+      if (L.density > 0 && L.top > L.base) thin = Math.min(thin, L.top - L.base);
+    }
+    if (!isFinite(thin)) thin = hi - lo;
+    u.lightStep.value = Math.min(600, Math.max(90, thin / LIGHT_STEPS * 1.15));
+    u.lightAbsorb.value = p.lightAbsorb;
 
     u.islandCenter.value.set(p.island.centerX, p.island.centerZ);
     u.islandFull.value = p.island.radius;
@@ -752,6 +797,9 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
       edgeWarp: num('iwarp', 5200),
     },
     absorption: num('absorb', 0.055),
+    // Separate from absorption: this one runs against a path measured in metres, so it
+    // needs a scale three orders smaller to land where the Beer curve has shape.
+    lightAbsorb: num('lightabsorb', 0.0016),
     maxDist: num('maxdist', 46000),
     // CLOUD SHADOWS. extent is the square of world the map covers, centred on the
     // camera; density is how hard the cloud attenuates on the way to the sun; strength
