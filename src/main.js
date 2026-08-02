@@ -6,6 +6,7 @@ import { patchAerialPerspective, SUN_DIR, buildSkyEnvironment } from './atmosphe
 // would bake in the stock flat-colour fog and silently miss the effect.
 patchAerialPerspective();
 import { createWorld, heightAt, surfaceAt } from './world.js';
+import { createDayNight } from './daynight.js';
 import { initGroundFX } from './groundfx.js';
 import { RUNWAYS } from './runways.js';
 import { buildPlane, updatePlaneVisual } from './crimson-kestrel.js'; // KX-1 with load-flexing wings
@@ -57,6 +58,16 @@ const world = createWorld(scene);
 // createWorld, because it needs the palette the dome was built with
 buildSkyEnvironment(renderer, scene);
 scene.environmentIntensity = 0.62;
+// TIME OF DAY. Built after the environment bake, which captures a fresh dome at the midday
+// palette on purpose: the env map is scaled per frame rather than re-baked, so it has to be
+// baked from the light it represents at full strength.
+const dayNight = createDayNight({
+  scene, skyMat: world.skyMat, sun: world.sun, hemi: world.hemi,
+  sunSpr: world.sunSpr, flare: world.flare, water: world.water,
+});
+dayNight.update(0);   // so frame one is already at the right time rather than at midday
+window.__dn = dayNight;
+// ?tod=0..1 pins the time of day (0 = dawn, 0.33 = noon, 0.67 = dusk, 0.85 = deep night)
 const plane = buildPlane();
 scene.add(plane.group);
 
@@ -186,6 +197,10 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
     .then(v => {
       volClouds = v;
       v.setSize(window.innerWidth, window.innerHeight);
+      // the cloud pass clones its sun direction and colours at construction, so it has to
+      // be pushed to explicitly rather than sharing the live vector
+      dayNight.attachClouds(v);
+      dayNight.update(0);
       console.log('[flighfeel] sky clouds active');
       // the panel binds to the live params object, so it can only be built once the
       // clouds have actually landed
@@ -256,6 +271,9 @@ renderer.setAnimationLoop(() => {
   // world time only feeds animation — ground drift, scatter sway, water, runway lights —
   // and terrain streaming ignores it, so holding it still is safe and stops the sea too
   if (!frozen) simTime += dt;
+  // the sky holds still with everything else when paused or in the free camera — a pause
+  // you can watch the sun set through is not a pause
+  if (!frozen) dayNight.update(dt);
   const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake };
   const steps = 2;
   if (!frozen) for (let i = 0; i < steps && !phys.crashed; i++) phys.update(dt / steps, controls);

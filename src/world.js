@@ -321,8 +321,11 @@ export function createWorld(scene) {
     // raw time, no wrap: value noise isn't periodic, so a wrap would visibly
     // reshuffle the cloud shadows; drift offsets stay float32-tiny for hours
     uGroundTime.value = time;
+    // sunDir is SUN_DIR, which daynight.js rewrites in place, so the light, the flare and
+    // the disc all follow the time of day without being told about it separately.
     sun.position.copy(planePos).addScaledVector(sunDir, 420);
     sun.target.position.copy(planePos);
+    flareAnchor.position.copy(sunDir).multiplyScalar(7600);
     sky.position.set(planePos.x, 0, planePos.z);
     terrain.update(planePos);
     scatter.update(planePos, time);
@@ -330,5 +333,10 @@ export function createWorld(scene) {
     water.update(time);
   }
 
-  return { update, terrain, scatter };
+  // the atmosphere handles go out so daynight.js can drive them; everything else here is
+  // internal
+  return {
+    update, terrain, scatter, water,
+    skyMat: sky.material, sun, hemi, sunSpr, flare,
+  };
 }

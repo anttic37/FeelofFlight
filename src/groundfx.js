@@ -1,4 +1,5 @@
 import { getDetailTexture } from './grounddetail.js';
+import { ATMO } from './atmosphere.js';
 
 // Shared per-pixel ground detail for standard materials, injected via
 // onBeforeCompile (same technique as the water shader): value-noise albedo
@@ -218,6 +219,12 @@ export function injectGroundFX(material, { detail = true, clouds = true, splat =
   splat = splat && SPLAT_ON;
   if (splat && !uDetailTex.value) uDetailTex.value = getDetailTexture(null); // initGroundFX normally wins the race
   material.onBeforeCompile = (shader) => {
+    // Assigning onBeforeCompile on the INSTANCE shadows the Material.prototype hook that
+    // patchAerialPerspective installs, so the shared atmosphere uniforms have to be merged
+    // here too. Without this the terrain compiles a fog chunk referencing uAtmSunDir that
+    // nothing ever supplies — it reads as zero, and the ground alone stops responding to
+    // the time of day while everything around it moves.
+    Object.assign(shader.uniforms, ATMO);
     shader.uniforms.uGroundTime = uGroundTime;
     shader.uniforms.uDetailTex = uDetailTex;
     shader.uniforms.uBumpScale = uBumpScale;

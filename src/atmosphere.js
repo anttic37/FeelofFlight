@@ -7,16 +7,18 @@ import * as THREE from 'three';
 // away from it it goes cool and blue. Get that one relationship right and a
 // stylised scene starts to feel like it has real air in it.
 //
-// The sun never moves in this game, so its direction is compiled into the
-// shaders as a constant instead of being carried as a uniform that every
-// material would have to be handed and updated.
-
-// SUN AT ~28 DEGREES, not 54. A high sun is the least flattering light terrain can get:
-// it lands nearly along every surface normal at once, so slopes barely separate and the
-// hills flatten into shaded blobs. Dropping it rakes the ridges and throws real shadow
-// down the valleys, which is most of what makes landscape photography read as relief.
-// Azimuth is unchanged; only the elevation moved, so the warm/cool haze split and the
-// water's glitter path still point where they did.
+// THE SUN MOVES NOW, so its direction can no longer be a compiled-in constant.
+//
+// It used to be a GLSL literal, on the reasoning that a uniform would have to be handed
+// to every material and updated. That reasoning had a hole in it: three uploads
+// shader.uniforms[name].value per material every frame, so if every material is handed
+// THE SAME uniform OBJECT, writing .value once reaches all of them. No traversal, no
+// registry, nothing to keep in sync. That is what ATMO below is, and patchAerialPerspective
+// installs it on Material.prototype so nothing has to remember to opt in.
+//
+// SUN_DIR is now LIVE — daynight.js writes into it in place rather than replacing it, so
+// anything holding the reference keeps working. Anything that CLONED it at construction
+// (water, the cloud pass) has to be pushed to explicitly; daynight does that.
 export const SUN_DIR = new THREE.Vector3(0.45, 0.2876, 0.3).normalize();
 
 // Authored in sRGB, used in LINEAR: everything downstream (the composer target,
@@ -32,11 +34,22 @@ export const SKY = {
   hazeToward: lin(0xf6e8d2), // ...and with the sun in front of you
 };
 
-const f = (n) => n.toFixed(4);
-const v3 = (c) => `vec3(${f(c.r)}, ${f(c.g)}, ${f(c.b)})`;
-// the sun as a GLSL literal, so every shader that needs it reads the same
-// direction as the light itself rather than a hand-copied triple
-export const SUN_GLSL = `vec3(${f(SUN_DIR.x)}, ${f(SUN_DIR.y)}, ${f(SUN_DIR.z)})`;
+// ---------------------------------------------------------------------------
+// THE SHARED ATMOSPHERE UNIFORMS. One object per quantity, handed by reference to every
+// material that compiles, so daynight.js writes each of these exactly once per frame.
+//
+// Names are prefixed uAtm because they are injected into materials that already have their
+// own injected uniforms (groundfx, water) and a collision would be a duplicate GLSL
+// declaration — which fails at compile time in a shader nobody edited.
+export const ATMO = {
+  uAtmSunDir:      { value: SUN_DIR },              // live vector, mutated in place
+  uAtmHazeAway:    { value: SKY.hazeAway.clone() },
+  uAtmHazeToward:  { value: SKY.hazeToward.clone() },
+  uAtmGlow:        { value: SKY.glow.clone() },
+  // 1 in full day, 0 at night. Scales the forward-scatter flare so the haze does not keep
+  // a bright warm rim around the moon.
+  uAtmSunPower:    { value: 1 },
+};
 
 // ---------------------------------------------------------------------------
 // AERIAL PERSPECTIVE. Patched into three's shared fog chunks rather than into
@@ -48,8 +61,22 @@ export function patchAerialPerspective() {
   if (patched) return;
   patched = true;
 
+  // EVERY MATERIAL GETS THE SHARED UNIFORMS, via the prototype hook rather than a call at
+  // each construction site — the whole point of patching the shared chunks is that nothing
+  // can be forgotten, and per-material opt-in would put that hole straight back.
+  //
+  // An instance that assigns its own onBeforeCompile SHADOWS this, so the two that do
+  // (groundfx, water) merge ATMO themselves. Chaining here would not help: the instance
+  // property replaces the prototype one outright.
+  const proto = THREE.Material.prototype.onBeforeCompile;
+  THREE.Material.prototype.onBeforeCompile = function (shader, renderer) {
+    Object.assign(shader.uniforms, ATMO);
+    if (proto) proto.call(this, shader, renderer);
+  };
+
   THREE.ShaderChunk.fog_pars_vertex = `
 #ifdef USE_FOG
+  uniform vec3 uAtmSunDir;
   varying float vFogDepth;
   varying float vFogMu;   // cos angle between the view ray and the sun
 #endif`;
@@ -59,13 +86,17 @@ export function patchAerialPerspective() {
   THREE.ShaderChunk.fog_vertex = `
 #ifdef USE_FOG
   vFogDepth = - mvPosition.z;
-  vec3 sunView = normalize((viewMatrix * vec4(${SUN_GLSL}, 0.0)).xyz);
+  vec3 sunView = normalize((viewMatrix * vec4(uAtmSunDir, 0.0)).xyz);
   vFogMu = dot(normalize(mvPosition.xyz), sunView);
 #endif`;
 
   THREE.ShaderChunk.fog_pars_fragment = `
 #ifdef USE_FOG
   uniform vec3 fogColor;
+  uniform vec3 uAtmHazeAway;
+  uniform vec3 uAtmHazeToward;
+  uniform vec3 uAtmGlow;
+  uniform float uAtmSunPower;
   varying float vFogDepth;
   varying float vFogMu;
   #ifdef FOG_EXP2
@@ -86,8 +117,8 @@ export function patchAerialPerspective() {
   // forward scattering: haze warms and brightens toward the sun. The wide term
   // is the general glow, the tight one is the flare right around it.
   float fwd = clamp(vFogMu, 0.0, 1.0);
-  vec3 haze = mix(${v3(SKY.hazeAway)}, ${v3(SKY.hazeToward)}, pow(fwd, 2.2));
-  haze += ${v3(SKY.glow)} * pow(fwd, 14.0) * 0.35;
+  vec3 haze = mix(uAtmHazeAway, uAtmHazeToward, pow(fwd, 2.2));
+  haze += uAtmGlow * pow(fwd, 14.0) * 0.35 * uAtmSunPower;
   gl_FragColor.rgb = mix( gl_FragColor.rgb, haze, fogFactor );
 #endif`;
 }
@@ -146,10 +177,17 @@ export function createSkyMaterial() {
     // depthTest stays on, so terrain still draws over the dome as before.
     depthWrite: false,
     uniforms: {
-      uZenith: { value: SKY.zenith },
-      uHorizon: { value: SKY.horizon },
-      uHaze: { value: SKY.haze },
-      uGlow: { value: SKY.glow },
+      // Cloned per material: buildSkyEnvironment makes a SECOND dome to bake the
+      // environment from, and that one must stay at the midday palette rather than follow
+      // the live sky, or re-baking it would be the only way to keep it sane.
+      uZenith: { value: SKY.zenith.clone() },
+      uHorizon: { value: SKY.horizon.clone() },
+      uHaze: { value: SKY.haze.clone() },
+      uGlow: { value: SKY.glow.clone() },
+      // shared by reference — the dome's sun is the same sun as everything else's
+      uAtmSunDir: ATMO.uAtmSunDir,
+      // how much of a disc halo to draw: full for the sun, much tighter for the moon
+      uSunHalo: { value: 1 },
     },
     vertexShader: `
 varying vec3 vWorld;
@@ -163,18 +201,22 @@ uniform vec3 uZenith;
 uniform vec3 uHorizon;
 uniform vec3 uHaze;
 uniform vec3 uGlow;
+uniform vec3 uAtmSunDir;
+uniform float uSunHalo;
 varying vec3 vWorld;
 void main() {
   vec3 d = normalize(vWorld - cameraPosition);
   float up = clamp(d.y, 0.0, 1.0);
-  float mu = clamp(dot(d, ${SUN_GLSL}), 0.0, 1.0);
+  float mu = clamp(dot(d, uAtmSunDir), 0.0, 1.0);
   // the gradient: a low exponent keeps blue well down toward the horizon
   vec3 col = mix(uHorizon, uZenith, pow(up, 0.42));
   // haze piles up along the horizon, where you look through the most air
   col = mix(col, uHaze, pow(1.0 - up, 7.0) * 0.9);
   // Mie forward scattering: a broad warm brightening across the sun's half of
   // the sky, plus the tight halo hugging the disc itself
-  col += uGlow * (pow(mu, 3.0) * 0.10 + pow(mu, 26.0) * 0.55);
+  // The broad term is what makes a sunset: it washes the sun's whole half of the sky, so
+  // it has to shrink for the moon or the night sky lights up around it like a small sun.
+  col += uGlow * (pow(mu, 3.0) * 0.10 * uSunHalo + pow(mu, 26.0) * 0.55);
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
