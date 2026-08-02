@@ -36,6 +36,7 @@ const LIGHT_STEPS = Math.round(num('lsteps', 6));
 const NLAYERS = 3;
 const SHADOW_RES = Math.round(num('shadowres', 512));
 const SHADOW_STEPS = Math.round(num('shadowsteps', 14));
+const RAY_SAMPLES = Math.round(num('raysamples', 24));
 
 // ---------------------------------------------------------------------------
 // 3D NOISE, baked on the CPU into tiling textures.
@@ -394,6 +395,10 @@ uniform float shadowExtent;
 uniform float shadowStrength;
 uniform vec3 shadowTint;
 uniform float shadowCeiling;   // no cloud shadow above the lowest cloud base
+uniform vec2  sunUv;
+uniform float sunVisible;
+uniform vec3  rayColor;
+uniform float rayExposure, rayDensity, rayWeight, rayDecay;
 uniform float cameraNear;
 uniform float cameraFar;
 varying vec2 vUv;
@@ -430,7 +435,47 @@ void main() {
   }
 
   vec4 c = texture2D(tClouds, vUv);          // premultiplied
-  gl_FragColor = vec4(scene.rgb * (1.0 - c.a) + c.rgb, scene.a);
+  vec3 outCol = scene.rgb * (1.0 - c.a) + c.rgb;
+
+  // ── GOD RAYS ──
+  // A radial blur, but of an OCCLUSION MASK rather than of the image — that is the
+  // difference between shafts and a smear. Sky contributes light, anything with geometry
+  // or cloud in front of it contributes nothing, so streaks emerge from every gap
+  // between occluders and stop dead where the occluder is solid.
+  //
+  // This lives inside the composite rather than in a pass of its own for a concrete
+  // reason: the pass after this one reads a swapped buffer, so scene depth would sit on
+  // the target being written and sampling it would be a framebuffer feedback loop. Here
+  // rt1's colour and depth are read while rt2 is written, which is already safe and
+  // already set up for the cloud shadows.
+  if (rayExposure > 0.0 && sunVisible > 0.0) {
+    vec2 dstep = (vUv - sunUv) * (rayDensity / float(RAY_SAMPLES));
+    vec2 uv = vUv;
+    float illum = 1.0, accum = 0.0;
+    for (int i = 0; i < RAY_SAMPLES; i++) {
+      uv -= dstep;
+      float d = texture2D(sceneDepth, uv).r;
+      // SKY TEST ON LINEAR DEPTH, not on the raw buffer. With near 0.5 and far 45000 the
+      // depth buffer is wildly non-linear: terrain at 10 km sits at 0.99996, so any
+      // plausible raw threshold classifies distant ground as sky and the shafts smear the
+      // landscape into streaks radiating from the sun. Linearising makes the test mean
+      // what it says.
+      float lin = (2.0 * cameraNear * cameraFar)
+                / (cameraFar + cameraNear - (d * 2.0 - 1.0) * (cameraFar - cameraNear));
+      // cloud alpha shadows the shaft too, so beams break up on the cloud field and not
+      // only on terrain
+      float open = step(cameraFar * 0.92, lin) * (1.0 - texture2D(tClouds, uv).a);
+      accum += dot(texture2D(tDiffuse, uv).rgb, vec3(0.2126, 0.7152, 0.0722)) * open * illum;
+      illum *= rayDecay;
+    }
+    accum *= rayWeight / float(RAY_SAMPLES);
+    // fade out toward the screen edge, and with sunVisible, so turning away from the sun
+    // dims the shafts rather than switching them off
+    float fall = 1.0 - smoothstep(0.15, 1.15, length(vUv - sunUv));
+    outCol += rayColor * accum * rayExposure * fall * sunVisible;
+  }
+
+  gl_FragColor = vec4(outCol, scene.a);
 }
 `;
 
@@ -447,6 +492,7 @@ class CloudPass extends Pass {
     this.camera = camera;
     this.params = params;
     this._fwd = new THREE.Vector3();
+    this._sunP = new THREE.Vector3();
     this.resScale = params.cloudRes;
     this._size = new THREE.Vector2(1, 1);
 
@@ -533,8 +579,17 @@ class CloudPass extends Pass {
         shadowStrength: { value: params.shadowStrength },
         shadowTint: { value: new THREE.Color(0.62, 0.72, 0.92) },
         shadowCeiling: { value: 1e9 },
+        sunUv: { value: new THREE.Vector2(0.5, 0.5) },
+        sunVisible: { value: 0 },
+        rayColor: { value: new THREE.Color(1.0, 0.86, 0.66) },
+        rayExposure: { value: params.godExposure },
+        rayDensity: { value: params.godDensity },
+        rayWeight: { value: params.godWeight },
+        rayDecay: { value: params.godDecay },
         cameraNear: { value: camera.near }, cameraFar: { value: camera.far },
       },
+      defines: { RAY_SAMPLES },
+
       vertexShader: FULLSCREEN_VERT,
       fragmentShader: COMPOSITE_FRAG,
       depthTest: false, depthWrite: false,
@@ -613,7 +668,29 @@ class CloudPass extends Pass {
     cs.shadowStrength.value = p.shadowStrength;
     // Only bind depth when the shadow branch will actually sample it. With shadows off
     // this is null and the composite never touches a texture it is writing through.
-    cs.sceneDepth.value = p.shadowStrength > 0 ? readBuffer.depthTexture : null;
+    // depth feeds BOTH the cloud-shadow lookup and the god-ray occlusion mask
+    cs.sceneDepth.value = (p.shadowStrength > 0 || p.godExposure > 0)
+      ? readBuffer.depthTexture : null;
+    cs.rayExposure.value = p.godExposure;
+    cs.rayDensity.value = p.godDensity;
+    cs.rayWeight.value = p.godWeight;
+    cs.rayDecay.value = p.godDecay;
+    // Project a point along the SUN DIRECTION rather than a world position: the sun is at
+    // infinity, so its screen position must not drift as the aircraft flies, and
+    // anchoring it to a world point does exactly that. Any positive distance along the
+    // ray gives the same screen point, so use one comfortably INSIDE the far plane —
+    // a point at 1e6 is past camera.far, which pushes NDC z above 1 and then reads as
+    // "behind the camera" even when the sun is dead ahead.
+    this._sunP.copy(cam.position).addScaledVector(u.sunDir.value, cam.far * 0.4).project(cam);
+    cs.sunUv.value.set(this._sunP.x * 0.5 + 0.5, this._sunP.y * 0.5 + 0.5);
+    const off = Math.max(Math.abs(this._sunP.x), Math.abs(this._sunP.y));
+    // Behind-camera is a dot against the view direction, not an NDC test — NDC z cannot
+    // distinguish "behind" from "beyond the far plane".
+    const ahead = this._fwd.dot(u.sunDir.value) > 0;
+    // Fade over the last stretch of screen so turning away from the sun dims the shafts
+    // instead of switching them off at the frame edge.
+    cs.sunVisible.value = ahead
+      ? 1 - Math.min(1, Math.max(0, (off - 1.0) / 0.8)) : 0;
     cs.cameraNear.value = cam.near;
     cs.cameraFar.value = cam.far;
 
@@ -685,6 +762,11 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     // above, which blacked the frame whenever shadows were enabled, so every A/B I ran
     // was really strength-0 against strength-0. ?shadow=0 turns them off.
     shadowStrength: num('shadow', 0.55),
+    // GOD RAYS. exposure is the master; 0 disables the loop entirely.
+    godExposure: num('rays', 0.42),
+    godDensity: num('raydensity', 0.72),
+    godWeight: num('rayweight', 0.85),
+    godDecay: num('raydecay', 0.965),
     baseDarken: num('basedark', 0.55),
     silver: num('silver', 1.1),
     sunBoost: num('sunboost', 7.5),
