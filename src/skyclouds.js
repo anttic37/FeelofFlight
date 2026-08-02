@@ -30,8 +30,10 @@ const num = (k, d) => (PARAMS.get(k) != null ? +PARAMS.get(k) : d);
 
 // Render scale for the cloud buffer. Cost is close to quadratic in this, and it is by
 // far the most expensive number in the file.
-const CLOUD_RES = Math.min(1, Math.max(0.2, num('cloudres', 0.7)));
-const MAX_STEPS = Math.round(num('steps', 72));
+const CLOUD_RES = Math.min(1, Math.max(0.2, num('cloudres', 0.9)));
+// 96 rather than 72 because the two-tier march spends iterations backing up on cloud entry
+// to resolve it at the fine step, and that budget has to come from somewhere.
+const MAX_STEPS = Math.round(num('steps', 96));
 const LIGHT_STEPS = Math.round(num('lsteps', 6));
 const NLAYERS = 3;
 const SHADOW_RES = Math.round(num('shadowres', 512));
@@ -477,9 +479,28 @@ void main() {
     // with min > max is undefined in GLSL, and deriving the bound from stepFine made that
     // reachable simply by dragging the slider up.
     float fine   = clamp(t * 0.012, stepFine, stepFine * 6.0);
-    float coarse = max(fine, clamp(t * 0.070, 180.0, 1200.0));
+    // Capped at a small multiple of fine so the back-step below costs a bounded number of
+    // iterations rather than crawling back across a kilometre.
+    float coarse = min(max(fine, clamp(t * 0.070, 180.0, 1200.0)), fine * 5.0);
 
     if (density > 0.002) {
+      // ARRIVED ON A COARSE STRIDE — BACK UP AND RE-ENTER FINELY. This is the speckle.
+      //
+      // Detecting cloud on a coarse sample means the ray has ALREADY crossed up to a full
+      // stride of it, and the loop then integrated that as if it were only one fine step.
+      // How much got missed depends on where the coarse grid happened to land, and the
+      // per-pixel jitter randomises exactly that — so neighbouring pixels lost different
+      // amounts of cloud and the result was salt-and-pepper. It is worst with strong
+      // detail, because the density the stride skips over varies fastest there.
+      //
+      // Backing up to one fine step past the last known-empty sample makes the entry
+      // resolution independent of the stride, which is what stops the grain. Clamped to
+      // slab.x so the very first sample cannot reverse out of the slab.
+      if (step > fine * 1.5) {
+        t = max(t - (step - fine), slab.x);
+        step = fine;
+        continue;
+      }
       // Refine on contact. Holding fine for one empty sample too (miss < 2) keeps a thin
       // gap between two lobes from throwing the march straight back to the coarse stride.
       step = fine;
@@ -881,10 +902,13 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
       // at these strengths the old one-sided term erased the sky. MEASURED on one seed,
       // same page load, cloud cover held at 35.3 -> 35.4% while silhouette raggedness went
       // 0.061 -> 0.107 and interior lobe structure 0.80 -> 1.24.
-      { name: 'cumulus',   base: num('l1base', 1100), top: num('l1top', 2400),
+      // Layer 1 retuned in the panel: base down to 400 m and top up to 3200 makes it a
+      // deep convective deck you fly through rather than a ceiling, and density comes
+      // right down (1.05 -> 0.49) to pay for the extra depth.
+      { name: 'cumulus',   base: num('l1base', 400), top: num('l1top', 3200),
         coverage: num('l1cov', 0.42), featureSize: num('l1size', 5200),
         detailSize: num('l1det', 420), detailStrength: num('l1dstr', 2.0),
-        worleyMix: num('l1worley', 0.72), density: num('l1den', 1.05),
+        worleyMix: num('l1worley', 0.72), density: num('l1den', 0.49),
         flatBase: num('l1flat', 0.85) },
       { name: 'big masses', base: num('l2base', 2600), top: num('l2top', 5200),
         coverage: num('l2cov', 0.40), featureSize: num('l2size', 11000),
@@ -902,10 +926,12 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     // over open ocean (0 = a clear sea, which is the point of having the cap at all).
     island: {
       centerX: num('icx', 0), centerZ: num('icz', 0),
-      radius: num('iradius', 9000),
-      fade: num('ifade', 11000),
-      seaFloorDensity: num('isea', 0.0),
-      edgeWarp: num('iwarp', 5200),
+      radius: num('iradius', 11000),
+      fade: num('ifade', 10500),
+      // A little cloud left over open sea rather than a hard clear-out: at 0 the cap edge
+      // is the only thing out there and it reads as an edge.
+      seaFloorDensity: num('isea', 0.10),
+      edgeWarp: num('iwarp', 4200),
     },
     absorption: num('absorb', 0.055),
     // Separate from absorption: this one runs against a path measured in metres, so it
@@ -920,8 +946,8 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     // and the lit top barely moves across that whole sweep (p95 0.425 -> 0.382), so this
     // darkens bases WITHOUT dimming tops, which is the one axis sunBoost/ambient/baseDarken
     // could never move.
-    lightAbsorb: num('lightabsorb', 0.030),
-    maxDist: num('maxdist', 46000),
+    lightAbsorb: num('lightabsorb', 0.028),
+    maxDist: num('maxdist', 14000),
     // CLOUD SHADOWS. extent is the square of world the map covers, centred on the
     // camera; density is how hard the cloud attenuates on the way to the sun; strength
     // is how much of the ground's light it takes away.
@@ -938,26 +964,34 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     godDecay: num('raydecay', 0.965),
     // Less fake vertical ramp than before: with lightAbsorb finally in range the cloud
     // shadows itself for real, so this no longer has to stand in for that.
-    baseDarken: num('basedark', 0.65),
-    silver: num('silver', 1.1),
+    baseDarken: num('basedark', 0.54),
+    silver: num('silver', 1.2),
     // sunBoost is up because the light march now returns a true 0..1 fraction of sunlight
     // (it used to cap at 0.5), and ambient is down hard because a flat additive floor is
     // what was compressing the ratio: it lifts the shadowed base far more, in relative
     // terms, than it lifts the lit top.
-    sunBoost: num('sunboost', 18),
-    ambientBoost: num('ambient', 0.16),
+    sunBoost: num('sunboost', 24),
+    ambientBoost: num('ambient', 0.49),
     // Multiple scattering in the light march. falloff is how much each octave contributes
     // relative to the last, scatter is how much less it is extinguished. Lower falloff
     // means less bounced light filling the interior, so MORE contrast and darker cores.
-    msFalloff: num('msfall', 0.5),
-    msScatter: num('msscat', 0.5),
+    msFalloff: num('msfall', 0.10),
+    msScatter: num('msscat', 0.37),
     // View-side powder: dark rims on thin edges seen toward the sun.
-    powderMix: num('powder', 0.4),
+    powderMix: num('powder', 0.57),
     // In-cloud march step in metres at close range, the control over how much shape
     // actually gets resolved. Scales with distance inside the shader.
-    stepFine: num('stepfine', 60),
+    //
+    // 80 rather than the 375 this was hand-set to. 375 looks like the safe end of the
+    // slider and is the opposite: measured speckle at the panel's own settings ran 2.89 /
+    // 3.61 across two poses at 375 against 0.97 / 0.74 at 80. The reason 375 seemed to
+    // help is that it makes the coarse stride collapse onto the fine step below ~5 km, so
+    // the march goes uniform and the stride artefact disappears — trading it for plain
+    // undersampling of the detail. With the back-step above, the stride artefact is gone
+    // at any setting and this can sit where the grain actually is lowest. Costs ~1 ms.
+    stepFine: num('stepfine', 80),
     windX: 0.82, windZ: 0.57,
-    windSpeed: num('wind', 1.6),
+    windSpeed: num('wind', 3.1),
     time: 0,
   };
 
