@@ -9,7 +9,13 @@
 // and label, so a control that is later renamed or removed is skipped rather than
 // restoring a stale number into whatever now sits at that index.
 
-const STORE = 'flighfeel-tweak-sky';
+// Key bumped to v2 deliberately: every existing v1 store holds a full 45-slider snapshot
+// written by the old save(), including cloud lighting values that predate the shading fix.
+// Those would keep overriding the new defaults forever, since a restored value never
+// equals the code default and so never gets pruned. Abandoning the old key is the only
+// way to hand existing browsers the new defaults; anything retuned from here persists
+// normally.
+const STORE = 'flighfeel-tweak-sky-v2';
 
 export function initTweakPanel({ sc, applyResize }) {
   const p = sc.params;
@@ -93,6 +99,9 @@ export function initTweakPanel({ sc, applyResize }) {
   slider('light', 'ms fill', () => p.msFalloff, v => p.msFalloff = v, 0, 0.9, 0.01);
   slider('light', 'ms scatter', () => p.msScatter, v => p.msScatter = v, 0.1, 1, 0.01);
   slider('light', 'powder', () => p.powderMix, v => p.powderMix = v, 0, 1, 0.01);
+  // How finely the march samples inside cloud. This is what decides whether any of the
+  // detail above is resolved at all — at 600 the clouds go back to flat blobs.
+  slider('light', 'step fine', () => p.stepFine, v => p.stepFine = v, 25, 600, 5);
 
   p.layers.forEach((L, i) => {
     const sec = 'L' + (i + 1);
@@ -105,17 +114,31 @@ export function initTweakPanel({ sc, applyResize }) {
       v => (v / 1000).toFixed(1) + ' km');
     slider(sec, 'detail size', () => L.detailSize, v => L.detailSize = v, 80, 6000, 20,
       v => v.toFixed(0) + ' m');
-    slider(sec, 'detail', () => L.detailStrength, v => L.detailStrength = v, 0, 1, 0.01);
+    // 0..1 was the range for the old one-sided term, where anything near 1 dissolved the
+    // layer. Centred, it carves and fills, so useful values now run past 2.
+    slider(sec, 'detail', () => L.detailStrength, v => L.detailStrength = v, 0, 4, 0.02);
     slider(sec, 'billow', () => L.worleyMix, v => L.worleyMix = v, 0, 1, 0.01);
     slider(sec, 'flat base', () => L.flatBase, v => L.flatBase = v, 0, 1, 0.01);
   });
 
   // ---- persistence: store only what differs from the code defaults
+  //
+  // IT DID NOT ACTUALLY DO THAT, and the bug was close to invisible: save() wrote EVERY
+  // row, so the store held all 45 sliders whether or not they had been touched, and load()
+  // then restored all 45 over the code defaults on every single boot. The effect is that
+  // shipping a new default has NO EFFECT on anyone who has ever opened the panel — a
+  // retuned sunBoost/ambient/baseDarken went out, and every browser that had the panel
+  // open at some point quietly put the old numbers back and rendered exactly as before.
+  //
+  // Snapshot taken BEFORE load() runs, so it is the code default rather than whatever was
+  // restored, and a row that matches it is not persisted at all.
+  rows.forEach(r => { r.codeDefault = r.get(); });
   const save = () => {
     const diff = {};
     for (const r of rows) {
-      const key = r.section + '|' + r.label;
-      diff[key] = r.get();
+      const v = r.get();
+      if (v === r.codeDefault) continue;
+      diff[r.section + '|' + r.label] = v;
     }
     try { localStorage.setItem(STORE, JSON.stringify(diff)); } catch {}
   };
@@ -154,7 +177,9 @@ export function initTweakPanel({ sc, applyResize }) {
   btn('Reset', () => {
     p.layers.forEach((L, i) => Object.assign(L, defaults.layers[i]));
     Object.assign(p.island, defaults.island);
-    rows.forEach(r => { r.input.value = r.get(); r.show(); });
+    // Every row, not just the layer/island ones — the top-level lighting sliders were not
+    // covered by the two Object.assigns above, so Reset left them wherever they were.
+    rows.forEach(r => { r.set(r.codeDefault); r.input.value = r.codeDefault; r.show(); });
   });
   btn('Forget saved', () => { try { localStorage.removeItem(STORE); } catch {} });
   el.appendChild(bar);

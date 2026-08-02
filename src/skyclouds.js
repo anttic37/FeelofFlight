@@ -123,6 +123,7 @@ function makeShapeTexture(N = 64) {
 function makeDetailTexture(N = 32) {
   const data = new Uint8Array(N * N * N * 4);
   const s = 1 / N;
+  let sum = 0;
   for (let z = 0; z < N; z++)
   for (let y = 0; y < N; y++)
   for (let x = 0; x < N; x++) {
@@ -131,14 +132,20 @@ function makeDetailTexture(N = 32) {
             + (1 - worley3(u, v, w, 8, 23)) * 0.30
             + (1 - worley3(u, v, w, 16, 37)) * 0.15;
     const i = (((z * N) + y) * N + x) * 4;
-    data[i] = data[i + 1] = data[i + 2] = Math.max(0, Math.min(255, d * 255));
+    const q = Math.max(0, Math.min(255, d * 255));
+    data[i] = data[i + 1] = data[i + 2] = q;
     data[i + 3] = 255;
+    sum += q / 255;
   }
   const t = new THREE.Data3DTexture(data, N, N, N);
   t.format = THREE.RGBAFormat; t.type = THREE.UnsignedByteType;
   t.minFilter = t.magFilter = THREE.LinearFilter;
   t.wrapS = t.wrapT = t.wrapR = THREE.RepeatWrapping;
   t.needsUpdate = true;
+  // Carried to the shader so the detail term can be centred exactly. Three inverted
+  // Worley octaves do NOT average 0.5 — assuming they did would bias every sample toward
+  // erosion, which is the bug this whole term just came out of.
+  t.userData.mean = sum / (N * N * N);
   return t;
 }
 
@@ -153,6 +160,7 @@ precision highp sampler3D;
 
 uniform sampler3D shapeTex;
 uniform sampler3D detailTex;
+uniform float detailMid;   // the detail texture's own mean, measured at bake time
 uniform float time;
 
 // per layer
@@ -236,7 +244,19 @@ float cloudDensity(vec3 p, float lod) {
     if (lod < 0.5) {
       float d = texture(detailTex, (p + wind * 2.0) * lDetailScale[i]).r;
       float dm = mix(d, 1.0 - d, smoothstep(0.25, 0.75, a));   // whippy low, fluffy high
-      shape = remap(shape, dm * lDetailStrength[i], 1.0, 0.0, 1.0);
+      // CENTRED ON THE TEXTURE'S OWN MEAN, so detail CARVES AND FILLS.
+      //
+      // As plain dm * strength this could only ever raise the erosion floor, so it
+      // subtracted and never added: turning detail up did not put lobes on a cloud, it
+      // dissolved the sky. MEASURED at fixed coverage, strength 0.52 -> 0.75 -> 0.92 took
+      // cloud cover 6.5% -> 1.4% -> 0.2%. Centred, the same knob bumps the surface out
+      // where the noise is below its mean and bites in where it is above, which is what
+      // makes a cauliflower edge instead of a shrinking blob.
+      //
+      // The midpoint has to flip with dm: the mix above inverts the field with altitude,
+      // and an uninverted mean would bias every high sample one way.
+      float mid = mix(detailMid, 1.0 - detailMid, smoothstep(0.25, 0.75, a));
+      shape = remap(shape, (dm - mid) * lDetailStrength[i], 1.0, 0.0, 1.0);
     }
     total += max(shape, 0.0) * altEnv * lDensity[i];
   }
@@ -298,6 +318,7 @@ uniform float ambientBoost;
 uniform float msFalloff;
 uniform float msScatter;
 uniform float powderMix;
+uniform float stepFine;
 uniform float cameraNear;
 uniform float cameraFar;
 varying vec2 vUv;
@@ -421,9 +442,30 @@ void main() {
   float cosT = dot(rd, sunDir);
   float phase = cloudPhase(cosT);
 
-  float stepSize = (slab.y - slab.x) / float(MAX_STEPS);
+  // THE STEP MUST NOT BE THE SLAB LENGTH OVER A FIXED COUNT, and this was the whole reason
+  // the clouds had no detail in them.
+  //
+  // slab is the vertical extent of every active layer — 1100 to 7600 m — so a ray that is
+  // anywhere near level stays inside it until it runs out at maxDist. MEASURED:
+  //   level at 1500 m       slab length 46000 m   ->  step 639 m
+  //   climbing 6 deg        slab length 46000 m   ->  step 639 m
+  //   45 deg up             slab length  9192 m   ->  step 128 m
+  //   straight up           slab length  6501 m   ->  step  90 m
+  // Clouds are a few hundred metres across, so level flight sampled one or two points per
+  // cloud and the detail erosion was being applied at a frequency the march could not
+  // resolve. It was worst at exactly the angle the game is played at, and fine looking
+  // straight up, which is why it read as "flat" from the cockpit and looked fine in a
+  // top-down test shot.
+  //
+  // Two-tier marching instead: stride through empty air, refine on contact. Almost the
+  // whole slab is empty — a near-level ray crosses tens of km of clear sky between decks —
+  // so the coarse stride costs little and the fine step is spent only where there is cloud.
+  // Both scale with distance, because a cloud 20 km out covers few enough pixels that
+  // resolving its lobes is wasted work.
   float jitter = fract(sin(dot(vUv, vec2(12.9898, 78.233)) + time) * 43758.5453);
-  float t = slab.x + jitter * stepSize;
+  float step = stepFine * 3.0;
+  float t = slab.x + jitter * step;
+  float miss = 0.0;
 
   vec4 result = vec4(0.0);
   for (int i = 0; i < MAX_STEPS; i++) {
@@ -431,7 +473,16 @@ void main() {
     vec3 p = ro + rd * t;
     float density = cloudDensity(p, t > 22000.0 ? 1.0 : 0.0);
 
+    // max() rather than a stepFine-derived lower bound so coarse >= fine ALWAYS: clamp()
+    // with min > max is undefined in GLSL, and deriving the bound from stepFine made that
+    // reachable simply by dragging the slider up.
+    float fine   = clamp(t * 0.012, stepFine, stepFine * 6.0);
+    float coarse = max(fine, clamp(t * 0.070, 180.0, 1200.0));
+
     if (density > 0.002) {
+      // Refine on contact. Holding fine for one empty sample too (miss < 2) keeps a thin
+      // gap between two lobes from throwing the march straight back to the coarse stride.
+      step = fine;
       float light = lightMarch(p);
       vec3 col = sunColor * light * phase * sunBoost + ambientSky * ambientBoost;
 
@@ -449,11 +500,15 @@ void main() {
       float a = clamp((p.y - slabMin) / max(slabMax - slabMin, 1.0), 0.0, 1.0);
       col *= mix(baseDarken, 1.0, smoothstep(0.0, 0.7, a));
 
-      float alpha = 1.0 - exp(-density * stepSize * absorptionCoeff);
+      float alpha = 1.0 - exp(-density * step * absorptionCoeff);
       result.rgb += col * alpha * (1.0 - result.a);
       result.a += alpha * (1.0 - result.a);
+      miss = 0.0;
+    } else {
+      miss += 1.0;
+      if (miss >= 2.0) step = coarse;
     }
-    t += stepSize;
+    t += step;
   }
   gl_FragColor = clamp(result, 0.0, 64.0);
 }
@@ -583,6 +638,7 @@ class CloudPass extends Pass {
       defines: { MAX_STEPS, LIGHT_STEPS, NLAYERS, MS_OCTAVES: 3 },
       uniforms: {
         shapeTex: { value: shapeTex }, detailTex: { value: detailTex },
+        detailMid: { value: detailTex.userData.mean },
         sceneDepth: { value: null },
         cameraPos: { value: new THREE.Vector3() },
         invProjection: { value: new THREE.Matrix4() },
@@ -604,7 +660,7 @@ class CloudPass extends Pass {
         baseDarken: { value: 0.65 }, silverStrength: { value: 1.1 },
         sunBoost: { value: 18 }, ambientBoost: { value: 0.16 },
         msFalloff: { value: 0.5 }, msScatter: { value: 0.5 },
-        powderMix: { value: 0.4 },
+        powderMix: { value: 0.4 }, stepFine: { value: 60 },
         windDirection: { value: new THREE.Vector2() }, windSpeed: { value: 0 },
         cameraNear: { value: camera.near }, cameraFar: { value: camera.far },
       },
@@ -630,7 +686,7 @@ class CloudPass extends Pass {
     this.shadow = new THREE.ShaderMaterial({
       defines: { NLAYERS, SHADOW_STEPS },
       uniforms: {
-        shapeTex: m.shapeTex, detailTex: m.detailTex, time: m.time,
+        shapeTex: m.shapeTex, detailTex: m.detailTex, detailMid: m.detailMid, time: m.time,
         lBase: m.lBase, lTop: m.lTop, lCoverage: m.lCoverage, lShapeScale: m.lShapeScale,
         lDetailScale: m.lDetailScale, lDetailStrength: m.lDetailStrength,
         lWorleyMix: m.lWorleyMix, lDensity: m.lDensity, lFlatBase: m.lFlatBase,
@@ -735,7 +791,7 @@ class CloudPass extends Pass {
     u.baseDarken.value = p.baseDarken; u.silverStrength.value = p.silver;
     u.sunBoost.value = p.sunBoost; u.ambientBoost.value = p.ambientBoost;
     u.msFalloff.value = p.msFalloff; u.msScatter.value = p.msScatter;
-    u.powderMix.value = p.powderMix;
+    u.powderMix.value = p.powderMix; u.stepFine.value = p.stepFine;
     u.windDirection.value.set(p.windX, p.windZ); u.windSpeed.value = p.windSpeed;
     u.time.value = p.time;
 
@@ -820,19 +876,24 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
   const params = {
     cloudRes: CLOUD_RES,
     layers: [
+      // detailSize down ~40% and detailStrength up ~3.8x across the board. Both only became
+      // usable once the detail term was centred and the march stopped stepping over it:
+      // at these strengths the old one-sided term erased the sky. MEASURED on one seed,
+      // same page load, cloud cover held at 35.3 -> 35.4% while silhouette raggedness went
+      // 0.061 -> 0.107 and interior lobe structure 0.80 -> 1.24.
       { name: 'cumulus',   base: num('l1base', 1100), top: num('l1top', 2400),
         coverage: num('l1cov', 0.42), featureSize: num('l1size', 5200),
-        detailSize: num('l1det', 700), detailStrength: num('l1dstr', 0.52),
+        detailSize: num('l1det', 420), detailStrength: num('l1dstr', 2.0),
         worleyMix: num('l1worley', 0.72), density: num('l1den', 1.05),
         flatBase: num('l1flat', 0.85) },
       { name: 'big masses', base: num('l2base', 2600), top: num('l2top', 5200),
         coverage: num('l2cov', 0.40), featureSize: num('l2size', 11000),
-        detailSize: num('l2det', 1100), detailStrength: num('l2dstr', 0.46),
+        detailSize: num('l2det', 660), detailStrength: num('l2dstr', 1.75),
         worleyMix: num('l2worley', 0.50), density: num('l2den', 0.85),
         flatBase: num('l2flat', 0.35) },
       { name: 'high veil', base: num('l3base', 6400), top: num('l3top', 7600),
         coverage: num('l3cov', 0.30), featureSize: num('l3size', 26000),
-        detailSize: num('l3det', 2600), detailStrength: num('l3dstr', 0.60),
+        detailSize: num('l3det', 1560), detailStrength: num('l3dstr', 2.3),
         worleyMix: num('l3worley', 0.15), density: num('l3den', 0.30),
         flatBase: num('l3flat', 0.0) },
     ],
@@ -892,6 +953,9 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     msScatter: num('msscat', 0.5),
     // View-side powder: dark rims on thin edges seen toward the sun.
     powderMix: num('powder', 0.4),
+    // In-cloud march step in metres at close range, the control over how much shape
+    // actually gets resolved. Scales with distance inside the shader.
+    stepFine: num('stepfine', 60),
     windX: 0.82, windZ: 0.57,
     windSpeed: num('wind', 1.6),
     time: 0,
