@@ -29,7 +29,11 @@ import { SKY, SUN_DIR } from './atmosphere.js';
 // 400 m vertex pitch could not carry a 150 m wave anyway.
 
 const SIZE = 16400;   // detailed sheet: covers island r~7000 plus a shore band
-const SEG = 300;      // 301^2 ≈ 90k verts, ~55 m pitch
+// 240, not 300. The only thing the vertex grid has to carry is the swell, whose
+// shortest wavelength is ~150 m; at 240 the pitch is 68 m, comfortably inside Nyquist.
+// 300 was 180k triangles for detail no wave could use — the single largest mesh in the
+// scene, spent on nothing.
+const SEG = 240;      // 241^2 ≈ 58k verts, ~68 m pitch
 // THE FAR OCEAN MUST FIT INSIDE camera.far, CORNERS INCLUDED. At 90 km across, the
 // corners sat at 63.6 km against a 45 km far clip, so they were clipped — and the clip
 // boundary of a perspective frustum is a PLANE, which cuts the ocean along a straight
@@ -350,7 +354,12 @@ roughnessFactor = mix(0.055, 0.34, smoothstep(400.0, 26000.0, viewDist));`);
   // Same material, so there is no shading step at the join. Segmented enough that the
   // Fresnel term and the reflected sky vary across it rather than being flat-shaded per
   // huge triangle; waveAmp 0 because a 400 m vertex pitch cannot carry a 150 m wave.
-  const farGeo = new THREE.PlaneGeometry(FAR, FAR, 220, 220);
+  // 16 SEGMENTS, NOT 220. This plane carries no vertex waves (waveAmp 0), and every
+  // single thing that shades it — Fresnel, the reflected sky, the wave normals, the haze
+  // fade — is evaluated per FRAGMENT. The only per-vertex quantity is vWorldPos, which
+  // interpolates exactly across a flat plane no matter how few triangles it has. 220
+  // segments was 97k triangles producing a result identical to 512.
+  const farGeo = new THREE.PlaneGeometry(FAR, FAR, 16, 16);
   farGeo.rotateX(-Math.PI / 2);
   const fc = farGeo.attributes.position.count;
   farGeo.setAttribute('shoreDepth', new THREE.BufferAttribute(new Float32Array(fc).fill(60), 1));
