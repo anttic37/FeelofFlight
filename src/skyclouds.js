@@ -897,28 +897,33 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
   const params = {
     cloudRes: CLOUD_RES,
     layers: [
-      // detailSize down ~40% and detailStrength up ~3.8x across the board. Both only became
-      // usable once the detail term was centred and the march stopped stepping over it:
-      // at these strengths the old one-sided term erased the sky. MEASURED on one seed,
-      // same page load, cloud cover held at 35.3 -> 35.4% while silhouette raggedness went
-      // 0.061 -> 0.107 and interior lobe structure 0.80 -> 1.24.
-      // Layer 1 retuned in the panel: base down to 400 m and top up to 3200 makes it a
-      // deep convective deck you fly through rather than a ceiling, and density comes
-      // right down (1.05 -> 0.49) to pay for the extra depth.
-      { name: 'cumulus',   base: num('l1base', 400), top: num('l1top', 3200),
-        coverage: num('l1cov', 0.42), featureSize: num('l1size', 5200),
-        detailSize: num('l1det', 420), detailStrength: num('l1dstr', 2.0),
-        worleyMix: num('l1worley', 0.72), density: num('l1den', 0.49),
-        flatBase: num('l1flat', 0.85) },
-      { name: 'big masses', base: num('l2base', 2600), top: num('l2top', 5200),
-        coverage: num('l2cov', 0.40), featureSize: num('l2size', 11000),
-        detailSize: num('l2det', 660), detailStrength: num('l2dstr', 1.75),
-        worleyMix: num('l2worley', 0.50), density: num('l2den', 0.85),
-        flatBase: num('l2flat', 0.35) },
-      { name: 'high veil', base: num('l3base', 6400), top: num('l3top', 7600),
-        coverage: num('l3cov', 0.30), featureSize: num('l3size', 26000),
-        detailSize: num('l3det', 1560), detailStrength: num('l3dstr', 2.3),
-        worleyMix: num('l3worley', 0.15), density: num('l3den', 0.30),
+      // All three panel-tuned. detailStrength stays high throughout, which only became
+      // usable once the detail term was centred and the march stopped stepping over it —
+      // the old one-sided term erased the sky at these numbers.
+      //
+      // The decks are now genuinely separated in altitude rather than stacked: a shallow
+      // 450-1750 m cumulus layer under a 3550-5900 m mass layer under a veil that runs to
+      // 12.1 km. Nothing overlaps, so each reads as its own thing from the air instead of
+      // the three of them summing into one continuous ceiling.
+      { name: 'cumulus',   base: num('l1base', 450), top: num('l1top', 1750),
+        coverage: num('l1cov', 0.40), featureSize: num('l1size', 5700),
+        detailSize: num('l1det', 760), detailStrength: num('l1dstr', 2.0),
+        worleyMix: num('l1worley', 0.37), density: num('l1den', 0.43),
+        flatBase: num('l1flat', 0.80) },
+      // featureSize 11 km -> 24.8 km and flatBase to 1.0: big flat-bottomed masses rather
+      // than more of the same cumulus one deck up.
+      { name: 'big masses', base: num('l2base', 3550), top: num('l2top', 5900),
+        coverage: num('l2cov', 0.38), featureSize: num('l2size', 24800),
+        detailSize: num('l2det', 1360), detailStrength: num('l2dstr', 1.72),
+        worleyMix: num('l2worley', 0.75), density: num('l2den', 0.45),
+        flatBase: num('l2flat', 1.00) },
+      // The veil is the big change: 1200 m thick -> 5650 m, and density 0.30 -> 1.38. It
+      // stops being a thin sheet at one altitude and becomes real high cloud with depth,
+      // which is what the slab now extends to 12.1 km to hold.
+      { name: 'high veil', base: num('l3base', 6450), top: num('l3top', 12100),
+        coverage: num('l3cov', 0.39), featureSize: num('l3size', 26000),
+        detailSize: num('l3det', 4260), detailStrength: num('l3dstr', 4.0),
+        worleyMix: num('l3worley', 0.48), density: num('l3den', 1.38),
         flatBase: num('l3flat', 0.0) },
     ],
     // ISLAND CAP. radius is how far the full deck reaches from the island centre, fade
@@ -946,8 +951,8 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     // and the lit top barely moves across that whole sweep (p95 0.425 -> 0.382), so this
     // darkens bases WITHOUT dimming tops, which is the one axis sunBoost/ambient/baseDarken
     // could never move.
-    lightAbsorb: num('lightabsorb', 0.028),
-    maxDist: num('maxdist', 14000),
+    lightAbsorb: num('lightabsorb', 0.037),
+    maxDist: num('maxdist', 22000),
     // CLOUD SHADOWS. extent is the square of world the map covers, centred on the
     // camera; density is how hard the cloud attenuates on the way to the sun; strength
     // is how much of the ground's light it takes away.
@@ -964,32 +969,33 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     godDecay: num('raydecay', 0.965),
     // Less fake vertical ramp than before: with lightAbsorb finally in range the cloud
     // shadows itself for real, so this no longer has to stand in for that.
-    baseDarken: num('basedark', 0.54),
+    // 0.90 is nearly no fake vertical ramp at all. With lightAbsorb up at 0.037 the cloud
+    // shadows itself properly, so the stand-in that used to do that job is mostly off.
+    baseDarken: num('basedark', 0.90),
     silver: num('silver', 1.2),
     // sunBoost is up because the light march now returns a true 0..1 fraction of sunlight
     // (it used to cap at 0.5), and ambient is down hard because a flat additive floor is
     // what was compressing the ratio: it lifts the shadowed base far more, in relative
     // terms, than it lifts the lit top.
-    sunBoost: num('sunboost', 24),
-    ambientBoost: num('ambient', 0.49),
+    sunBoost: num('sunboost', 12.2),
+    ambientBoost: num('ambient', 0.50),
     // Multiple scattering in the light march. falloff is how much each octave contributes
     // relative to the last, scatter is how much less it is extinguished. Lower falloff
     // means less bounced light filling the interior, so MORE contrast and darker cores.
-    msFalloff: num('msfall', 0.10),
+    msFalloff: num('msfall', 0.13),
     msScatter: num('msscat', 0.37),
     // View-side powder: dark rims on thin edges seen toward the sun.
-    powderMix: num('powder', 0.57),
+    powderMix: num('powder', 0.55),
     // In-cloud march step in metres at close range, the control over how much shape
     // actually gets resolved. Scales with distance inside the shader.
     //
-    // 80 rather than the 375 this was hand-set to. 375 looks like the safe end of the
-    // slider and is the opposite: measured speckle at the panel's own settings ran 2.89 /
-    // 3.61 across two poses at 375 against 0.97 / 0.74 at 80. The reason 375 seemed to
-    // help is that it makes the coarse stride collapse onto the fine step below ~5 km, so
-    // the march goes uniform and the stride artefact disappears — trading it for plain
-    // undersampling of the detail. With the back-step above, the stride artefact is gone
-    // at any setting and this can sit where the grain actually is lowest. Costs ~1 ms.
-    stepFine: num('stepfine', 80),
+    // Speckle falls monotonically as this drops — measured across two poses, 375 gave
+    // 2.89 / 3.61, 120 gave 1.31 / 1.21, 80 gave 0.97 / 0.74 — so it is a straight grain
+    // against cost trade with no sweet spot to find. 120 is the panel's pick. Anything
+    // near 375 is the worst of the slider, not the safe end of it: up there the coarse
+    // stride collapses onto the fine step and the march goes uniform, which trades the
+    // stride artefact for plain undersampling of the detail.
+    stepFine: num('stepfine', 120),
     windX: 0.82, windZ: 0.57,
     windSpeed: num('wind', 3.1),
     time: 0,

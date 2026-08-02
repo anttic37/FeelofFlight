@@ -115,8 +115,9 @@ export function initTweakPanel({ sc, applyResize }) {
     slider(sec, 'detail size', () => L.detailSize, v => L.detailSize = v, 80, 6000, 20,
       v => v.toFixed(0) + ' m');
     // 0..1 was the range for the old one-sided term, where anything near 1 dissolved the
-    // layer. Centred, it carves and fills, so useful values now run past 2.
-    slider(sec, 'detail', () => L.detailStrength, v => L.detailStrength = v, 0, 4, 0.02);
+    // layer. Centred, it carves and fills, so useful values run well past 2 — the veil was
+    // tuned hard against the 4 ceiling, so there is room to 8 now.
+    slider(sec, 'detail', () => L.detailStrength, v => L.detailStrength = v, 0, 8, 0.02);
     slider(sec, 'billow', () => L.worleyMix, v => L.worleyMix = v, 0, 1, 0.01);
     slider(sec, 'flat base', () => L.flatBase, v => L.flatBase = v, 0, 1, 0.01);
   });
