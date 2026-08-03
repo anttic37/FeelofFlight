@@ -60,7 +60,6 @@ const raw = (r, g, b) => new THREE.Color().setRGB(r, g, b);
 const STOPS = [
   { alt: -90,
     zenith: 0x05070f, horizon: 0x0b1120, haze: 0x141c30, glow: 0x46557e,
-    hazeAway: 0x0e1526, hazeToward: 0x1c2642,
     light: 0x9fb6dc, lightI: 0.18,
     hemiSky: 0x33415e, hemiGround: 0x191d26, hemiI: 0.11,
     env: 0.07, halo: 0.10, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
@@ -68,7 +67,6 @@ const STOPS = [
 
   { alt: -20,
     zenith: 0x070b18, horizon: 0x101a30, haze: 0x1a2440, glow: 0x4c5c86,
-    hazeAway: 0x121b2f, hazeToward: 0x243050,
     light: 0x9fb6dc, lightI: 0.16,
     hemiSky: 0x394765, hemiGround: 0x1c202a, hemiI: 0.10,
     env: 0.08, halo: 0.12, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
@@ -76,7 +74,6 @@ const STOPS = [
 
   { alt: -6,
     zenith: 0x121d3c, horizon: 0x2c3a5e, haze: 0x3a4a70, glow: 0x6b7ba4,
-    hazeAway: 0x222d4c, hazeToward: 0x3e4a72,
     light: 0xa9bee0, lightI: 0.12,
     hemiSky: 0x45557a, hemiGround: 0x24272f, hemiI: 0.12,
     env: 0.12, halo: 0.25, sunPower: 0.05, fogNear: 1300, fogFar: 6800,
@@ -84,7 +81,6 @@ const STOPS = [
 
   { alt: -2,
     zenith: 0x1d3057, horizon: 0x8a5f5a, haze: 0x9c6f60, glow: 0xd88a55,
-    hazeAway: 0x415472, hazeToward: 0xb07a5e,
     light: 0xd08a58, lightI: 0.30,
     hemiSky: 0x5a6785, hemiGround: 0x2e2b2a, hemiI: 0.16,
     env: 0.22, halo: 0.85, sunPower: 0.45, fogNear: 1400, fogFar: 6600,
@@ -92,7 +88,6 @@ const STOPS = [
 
   { alt: 1,
     zenith: 0x27508f, horizon: 0xd9884e, haze: 0xe8a070, glow: 0xffb070,
-    hazeAway: 0x7d90ae, hazeToward: 0xecb083,
     light: 0xffa860, lightI: 0.95,
     hemiSky: 0x8296b4, hemiGround: 0x453a30, hemiI: 0.22,
     env: 0.42, halo: 1.35, sunPower: 1.0, fogNear: 1450, fogFar: 6550,
@@ -100,7 +95,6 @@ const STOPS = [
 
   { alt: 8,
     zenith: 0x2f63a8, horizon: 0xf0c39a, haze: 0xf3d3b4, glow: 0xffd9a8,
-    hazeAway: 0x9fb6d2, hazeToward: 0xf6dcbc,
     light: 0xffd2a0, lightI: 1.95,
     hemiSky: 0xa8c2dd, hemiGround: 0x54503c, hemiI: 0.28,
     env: 0.74, halo: 1.12, sunPower: 1.0, fogNear: 1480, fogFar: 6520,
@@ -131,13 +125,38 @@ const STOPS = [
 // replaces was (1, 0.905, 0.745), i.e. markedly warmer and more saturated than the tuned
 // look. Shader UNIFORMS are the opposite case: three uploads them untouched, so those do
 // need the explicit conversion, which is why the rest of the project's colours use lin().
+// HAZE IS DERIVED FROM THE SKY, not authored beside it.
+//
+// It was two independent columns, and they drifted apart the moment the sky started moving:
+// at sunset the horizon went orange while hazeAway stayed the daytime steel blue, so distant
+// ridges sat there as cold blue cut-outs against a warm sky. Aerial perspective IS the sky
+// seen through air — whatever a distant surface fades toward has to be the colour of the sky
+// behind it, at every time of day, or the two read as separate pictures.
+//
+// Looking away from the sun that is the sky near the horizon pulled slightly toward the
+// zenith; looking into it, the horizon pulled most of the way to the sun's own glow. The
+// two daylight rows that the game was tuned against keep their measured values so midday is
+// untouched; every other row derives, and so can never disagree with its own sky again.
+// Measured at sunset over the pixels hazeAway actually drives, as red/blue against the sky
+// right above them (sky 2.99): pull 0 -> gap 0.76, 0.10 -> 0.84, 0.18 -> 0.90, 0.25 -> 0.95,
+// 0.35 -> 1.03. Matching improves all the way to zero, but a little zenith in the away-haze
+// is real — the sky away from the sun IS cooler higher up — so this takes most of the
+// improvement and keeps the falloff.
+const HAZE_AWAY_ZENITH = 0.12;
+const HAZE_TOWARD_GLOW = 0.85;
 const UNIFORM_COLORS = ['zenith', 'horizon', 'haze', 'glow', 'hazeAway', 'hazeToward'];
 const LIGHT_COLORS = ['light', 'hemiSky', 'hemiGround'];
 const COLOR_KEYS = [...UNIFORM_COLORS, ...LIGHT_COLORS];
 const NUM_KEYS = ['lightI', 'hemiI', 'env', 'halo', 'sunPower', 'fogNear', 'fogFar'];
 const TABLE = STOPS.map((s) => {
   const o = { alt: THREE.MathUtils.degToRad(s.alt) };
-  for (const k of UNIFORM_COLORS) o[k] = lin(s[k]);
+  for (const k of UNIFORM_COLORS) if (s[k] != null) o[k] = lin(s[k]);
+  if (o.hazeAway == null) {
+    o.hazeAway = o.horizon.clone().lerp(o.zenith, HAZE_AWAY_ZENITH);
+  }
+  if (o.hazeToward == null) {
+    o.hazeToward = o.horizon.clone().lerp(o.glow, HAZE_TOWARD_GLOW);
+  }
   for (const k of LIGHT_COLORS) o[k] = new THREE.Color(s[k]);
   for (const k of NUM_KEYS) o[k] = s[k];
   o.cloudSun = raw(...s.cloudSun);
