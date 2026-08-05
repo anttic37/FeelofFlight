@@ -58,26 +58,44 @@ const raw = (r, g, b) => new THREE.Color().setRGB(r, g, b);
 // The +45 row is the palette the game was tuned at, value for value, so midday is unchanged
 // from before time of day existed.
 const STOPS = [
+  // MOONLIGHT HAS TO LIGHT THE WORLD, NOT JUST THE CLOUDS.
+  //
+  // The clouds carry their own light budget — sunColor and ambientSky multiplied by the
+  // cloud pass's own sunBoost — while the terrain is lit by the scene lights, and only the
+  // scene lights were being taken down at night. Measured at midnight against a matching
+  // noon frame, cloud mean over ground mean was 1.0 at noon and 5.8 at midnight: the ground
+  // fell to 19 while the clouds stayed at 111, which is a black world under a lit sky.
+  //
+  // Fixed from both ends, since the two are independent: the moon's own light terms come up
+  // about 4x (ground 19 -> 36) and the cloud radiance comes down to 0.55 (cloud 111 -> 80),
+  // landing at a ratio of 2.2. Clouds still read brighter than terrain, which is right —
+  // they are nearer the light and scatter hard — but the night is now 5.6x darker than noon
+  // rather than a black frame with white cut-outs in it.
   { alt: -90,
     zenith: 0x05070f, horizon: 0x0b1120, haze: 0x141c30, glow: 0x46557e,
-    light: 0x9fb6dc, lightI: 0.18,
-    hemiSky: 0x33415e, hemiGround: 0x191d26, hemiI: 0.11,
-    env: 0.07, halo: 0.10, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
-    cloudSun: [0.34, 0.42, 0.60], cloudAmb: [0.055, 0.075, 0.130] },
+    light: 0x9fb6dc, lightI: 0.86,
+    hemiSky: 0x33415e, hemiGround: 0x191d26, hemiI: 0.36,
+    env: 0.30, halo: 0.10, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
+    cloudSun: [0.187, 0.231, 0.330], cloudAmb: [0.030, 0.041, 0.072] },
 
   { alt: -20,
     zenith: 0x070b18, horizon: 0x101a30, haze: 0x1a2440, glow: 0x4c5c86,
-    light: 0x9fb6dc, lightI: 0.16,
-    hemiSky: 0x394765, hemiGround: 0x1c202a, hemiI: 0.10,
-    env: 0.08, halo: 0.12, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
-    cloudSun: [0.32, 0.40, 0.58], cloudAmb: [0.060, 0.082, 0.140] },
+    light: 0x9fb6dc, lightI: 0.77,
+    hemiSky: 0x394765, hemiGround: 0x1c202a, hemiI: 0.33,
+    env: 0.28, halo: 0.12, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
+    cloudSun: [0.150, 0.187, 0.271], cloudAmb: [0.028, 0.038, 0.065] },
 
+  // Moonrise. The moon is only a few degrees up, so the ground is genuinely dim here and the
+  // fix is NOT to crank the light — a 6 degree moon out-lighting a 45 degree one is worse
+  // than the problem. The clouds come down instead: they run bright near moonrise because a
+  // low light source puts them in forward scatter, which is real but exaggerated by the
+  // cloud pass's sunBoost.
   { alt: -6,
     zenith: 0x121d3c, horizon: 0x2c3a5e, haze: 0x3a4a70, glow: 0x6b7ba4,
-    light: 0xa9bee0, lightI: 0.12,
-    hemiSky: 0x45557a, hemiGround: 0x24272f, hemiI: 0.12,
-    env: 0.12, halo: 0.25, sunPower: 0.05, fogNear: 1300, fogFar: 6800,
-    cloudSun: [0.36, 0.44, 0.62], cloudAmb: [0.085, 0.110, 0.180] },
+    light: 0xa9bee0, lightI: 0.50,
+    hemiSky: 0x45557a, hemiGround: 0x24272f, hemiI: 0.26,
+    env: 0.24, halo: 0.25, sunPower: 0.05, fogNear: 1300, fogFar: 6800,
+    cloudSun: [0.119, 0.145, 0.205], cloudAmb: [0.028, 0.037, 0.059] },
 
   { alt: -2,
     zenith: 0x1d3057, horizon: 0x8a5f5a, haze: 0x9c6f60, glow: 0xd88a55,
