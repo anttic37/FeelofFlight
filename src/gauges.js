@@ -44,15 +44,95 @@ function ring(g, cx, cy, r, a, b, color, w) {
   g.beginPath(); g.arc(cx, cy, r, a, b); g.stroke();
 }
 
+function roundRectPath(g, x, y, w, h, r) {
+  g.beginPath();
+  g.moveTo(x + r, y);
+  g.arcTo(x + w, y, x + w, y + h, r);
+  g.arcTo(x + w, y + h, x, y + h, r);
+  g.arcTo(x, y + h, x, y, r);
+  g.arcTo(x, y, x + w, y, r);
+  g.closePath();
+}
+
+// A real panel screw: bright on the top-left where the light is, dark under, and a slot.
+// Tiny, but it is most of what says "instrument bolted into a panel" rather than "circle".
+function screw(g, x, y) {
+  const head = g.createLinearGradient(x - 2.6, y - 2.6, x + 2.6, y + 2.6);
+  head.addColorStop(0, '#79838f');
+  head.addColorStop(0.5, '#454e59');
+  head.addColorStop(1, '#232931');
+  g.fillStyle = head;
+  g.beginPath(); g.arc(x, y, 2.6, 0, 6.2832); g.fill();
+  g.strokeStyle = 'rgba(0,0,0,0.6)'; g.lineWidth = 0.7;
+  g.beginPath(); g.arc(x, y, 2.6, 0, 6.2832); g.stroke();
+  g.strokeStyle = 'rgba(0,0,0,0.55)'; g.lineWidth = 1;
+  g.beginPath(); g.moveTo(x - 1.6, y - 0.7); g.lineTo(x + 1.6, y + 0.7); g.stroke();
+}
+
+// THE DEPTH IS ALL IN THE SHADING, and it is four separate passes rather than one gradient:
+// a bolted housing plate behind the dial, a rim lit from above and bouncing at the bottom,
+// a face that falls off DARK toward its edge, and an inner shadow cast by the rim lip onto
+// that face. A single flat fill plus one linear gradient — what this was — reads as a
+// sticker; the vignette and the lip shadow are what make it read as a recess with glass in
+// it. Baked once, so all of this is free per frame.
 function bezel(g, cx, cy) {
+  const H = R + 4;
+
+  // --- housing plate, top-lit
+  const plate = g.createLinearGradient(cx, cy - H, cx, cy + H);
+  plate.addColorStop(0, '#3c444f');
+  plate.addColorStop(0.45, '#262c34');
+  plate.addColorStop(1, '#161b21');
+  g.fillStyle = plate;
+  roundRectPath(g, cx - H, cy - H, H * 2, H * 2, 10);
+  g.fill();
+  g.strokeStyle = 'rgba(0,0,0,0.6)'; g.lineWidth = 1;
+  roundRectPath(g, cx - H, cy - H, H * 2, H * 2, 10);
+  g.stroke();
+
+  const s = H - 6;
+  screw(g, cx - s, cy - s); screw(g, cx + s, cy - s);
+  screw(g, cx - s, cy + s); screw(g, cx + s, cy + s);
+
+  // --- rim: bright along the top edge, dark through the middle, a little bounce underneath
   const rim = g.createLinearGradient(cx, cy - R, cx, cy + R);
-  rim.addColorStop(0, '#404b59');
-  rim.addColorStop(1, '#141a23');
+  rim.addColorStop(0, '#616d7c');
+  rim.addColorStop(0.42, '#2a313a');
+  rim.addColorStop(0.78, '#1b212a');
+  rim.addColorStop(1, '#49535f');
   g.fillStyle = rim;
   g.beginPath(); g.arc(cx, cy, R, 0, 6.2832); g.fill();
-  g.fillStyle = FACE;
-  g.beginPath(); g.arc(cx, cy, R - 4.5, 0, 6.2832); g.fill();
-  ring(g, cx, cy, R - 4.5, 0, 6.2832, 'rgba(0,0,0,0.5)', 1.2);
+
+  // --- face, offset toward the light so the vignette is not a symmetric donut
+  const face = g.createRadialGradient(cx - R * 0.22, cy - R * 0.26, R * 0.08, cx, cy, R);
+  face.addColorStop(0, '#1b2431');
+  face.addColorStop(0.5, '#111924');
+  face.addColorStop(1, '#05080c');
+  g.fillStyle = face;
+  g.beginPath(); g.arc(cx, cy, R - 5, 0, 6.2832); g.fill();
+
+  // --- shadow the rim lip casts down onto the face
+  const lip = g.createRadialGradient(cx, cy, R - 17, cx, cy, R - 5);
+  lip.addColorStop(0, 'rgba(0,0,0,0)');
+  lip.addColorStop(1, 'rgba(0,0,0,0.72)');
+  g.fillStyle = lip;
+  g.beginPath(); g.arc(cx, cy, R - 5, 0, 6.2832); g.fill();
+  ring(g, cx, cy, R - 5, 0, 6.2832, 'rgba(0,0,0,0.65)', 1.4);
+}
+
+// Glass, laid over the markings once the dial is drawn: a soft diagonal sheen across the
+// upper left and a faint bright arc where the cover curves away at the top.
+function glass(g, cx, cy) {
+  g.save();
+  g.beginPath(); g.arc(cx, cy, R - 5, 0, 6.2832); g.clip();
+  const sheen = g.createLinearGradient(cx - R, cy - R, cx + R * 0.5, cy + R * 0.75);
+  sheen.addColorStop(0, 'rgba(214,236,255,0.13)');
+  sheen.addColorStop(0.38, 'rgba(214,236,255,0.045)');
+  sheen.addColorStop(0.52, 'rgba(214,236,255,0)');
+  g.fillStyle = sheen;
+  g.fillRect(cx - R, cy - R, R * 2, R * 2);
+  g.restore();
+  ring(g, cx, cy, R - 6.6, 200 * D2R, 320 * D2R, 'rgba(226,242,255,0.10)', 1.6);
 }
 
 // tick fan between two absolute angles (degrees, clockwise on screen)
@@ -90,6 +170,12 @@ function caption(g, cx, cy, text) {
 function needle(g, cx, cy, ang, len, color, w = 2.6, tail = 10) {
   g.save();
   g.translate(cx, cy); g.rotate(ang);
+  // A needle sits ABOVE the face on a real instrument, and the shadow it drops is what
+  // says so. Canvas shadow offsets ignore the current transform, so this stays down-right
+  // whatever angle the needle is at, instead of swinging around with it.
+  g.shadowColor = 'rgba(0,0,0,0.55)';
+  g.shadowBlur = 3;
+  g.shadowOffsetX = 1.3; g.shadowOffsetY = 1.9;
   g.fillStyle = color;
   g.beginPath();
   g.moveTo(-tail, 0); g.lineTo(0, -w); g.lineTo(len, 0); g.lineTo(0, w);
@@ -97,9 +183,15 @@ function needle(g, cx, cy, ang, len, color, w = 2.6, tail = 10) {
   g.restore();
 }
 
+// Three flat arcs rather than a radial gradient: this runs for every dial every frame, and
+// a cached-nothing gradient per hub per frame is pure garbage for the same picture.
 function hub(g, cx, cy) {
-  g.fillStyle = '#33404f';
-  g.beginPath(); g.arc(cx, cy, 3.6, 0, 6.2832); g.fill();
+  g.fillStyle = '#11171e';
+  g.beginPath(); g.arc(cx, cy, 4.4, 0, 6.2832); g.fill();
+  g.fillStyle = '#4a5562';
+  g.beginPath(); g.arc(cx, cy, 3.0, 0, 6.2832); g.fill();
+  g.fillStyle = '#7b8899';
+  g.beginPath(); g.arc(cx - 0.8, cy - 0.9, 1.4, 0, 6.2832); g.fill();
 }
 
 // small dark digital window under the hub
@@ -204,6 +296,9 @@ export class Gauges {
     ticks(g, cx, cy, A0, A0 + SWEEP, 20, 2, R - 6, 3.5, 7);
     for (const v of [-2, 0, 2, 4, 6]) label(g, cx, cy, A0 + SWEEP * tg(v), String(v), R - 19, 8.5);
     caption(g, cx, cy, 'G LOAD');
+
+    // glass last, so it lies over the markings rather than under them
+    for (let i = 0; i < N; i++) glass(g, this.cx[i], cy);
 
     return c;
   }
