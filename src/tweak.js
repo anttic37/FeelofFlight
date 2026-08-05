@@ -130,6 +130,9 @@ export function initTweakPanel({ sc, applyResize }) {
     slider(sec, 'flat base', () => L.flatBase, v => L.flatBase = v, 0, 1, 0.01);
     // How hard this layer follows the weather field: 0 is the old uniform sky.
     slider(sec, 'weather', () => L.weatherAmount, v => L.weatherAmount = v, 0, 1.4, 0.01);
+    // Second shape octave. Only earns its texture fetch on layers whose cloud size stretches
+    // the 64-texel shape field coarse enough to threshold into holes — past roughly 12 km.
+    slider(sec, 'shape octave', () => L.shapeOctave, v => L.shapeOctave = v, 0, 1.5, 0.01);
   });
 
   // ---- persistence: store only what differs from the code defaults

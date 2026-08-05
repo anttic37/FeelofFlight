@@ -172,6 +172,7 @@ uniform float lCoverage[NLAYERS];
 uniform float lShapeScale[NLAYERS];
 uniform float lDetailScale[NLAYERS];
 uniform float lDetailStrength[NLAYERS];
+uniform float lShapeOctave[NLAYERS];
 uniform float lWorleyMix[NLAYERS];
 uniform float lDensity[NLAYERS];
 uniform float lFlatBase[NLAYERS];
@@ -258,6 +259,30 @@ float cloudDensity(vec3 p, float lod) {
     vec4 s = texture(shapeTex, sp);
     float base = mix(s.r, s.g * 0.65 + s.b * 0.35, lWorleyMix[i]);
 
+    // SECOND SHAPE OCTAVE, and this is what closes the "holey cheese".
+    //
+    // shapeTex is 64 cubed stretched over featureSize, so a layer at 24.8 km has 388 m
+    // TEXELS. Thresholding a trilinearly interpolated lattice that coarse gives sponge
+    // topology — connected sheets riddled with holes the size of a texel — and 388 m holes
+    // in a distant sheet is exactly what reads as cheese. MEASURED by isolating layers at a
+    // fixed pose, as hole area over cloud area: layer 1 at 5.7 km (89 m texels) 0.33%, layer
+    // 2 at 24.8 km 1.39%, layer 3 at 26 km 1.34%. Four times holier, purely from stretch.
+    //
+    // No coverage or detail setting can fix it, which is why it survived every knob: they
+    // all move the THRESHOLD, and the holes are in the lattice the threshold is cutting.
+    // Detail strength at zero left it at 0.71%, and more coverage made it worse.
+    //
+    // A second sample at 4.7x frequency (irrational-ish, and offset, so the two lattices
+    // never line up) puts real structure below the texel size, so the crossing follows the
+    // field instead of the grid. Gated per layer because it costs a 3D fetch and layer 1
+    // does not need it.
+    if (lShapeOctave[i] > 0.001) {
+      vec4 s2 = texture(shapeTex, sp * 4.7 + vec3(0.37, 0.21, 0.55));
+      float b2 = mix(s2.r, s2.g * 0.65 + s2.b * 0.35, lWorleyMix[i]);
+      float w = lShapeOctave[i] * 0.5;
+      base = (base + b2 * w) / (1.0 + w);
+    }
+
     // Altitude envelope. flatBase pushes the lower shoulder tight, which is what makes a
     // cumulus sit on a crisp condensation level instead of fading in from nothing.
     float lo = mix(0.30, 0.04, lFlatBase[i]);
@@ -285,6 +310,12 @@ float cloudDensity(vec3 p, float lod) {
       // The midpoint has to flip with dm: the mix above inverts the field with altitude,
       // and an uninverted mean would bias every high sample one way.
       float mid = mix(detailMid, 1.0 - detailMid, smoothstep(0.25, 0.75, a));
+      // TRIED AND REMOVED, so it does not get re-invented: weighting this erosion by
+      // (1 - shape) to spare dense cores, on the theory that flat erosion is what perforates
+      // a sheet. It measured as a no-op — hole area 0.53% against 0.55% at full weight — and
+      // it cost a little silhouette raggedness (0.083 -> 0.080). The reason is that the
+      // layers that go holey are the THIN ones, where shape is small everywhere, so (1-shape)
+      // is near 1 and the weighting never engages. The strength itself is the lever there.
       shape = remap(shape, (dm - mid) * lDetailStrength[i], 1.0, 0.0, 1.0);
     }
     total += max(shape, 0.0) * altEnv * lDensity[i];
@@ -713,7 +744,7 @@ class CloudPass extends Pass {
         time: { value: 0 },
         lBase: arr(0), lTop: arr(0), lCoverage: arr(0), lShapeScale: arr(0),
         lDetailScale: arr(0), lDetailStrength: arr(0), lWorleyMix: arr(0),
-        lDensity: arr(0), lFlatBase: arr(0), lWeatherAmount: arr(0),
+        lDensity: arr(0), lFlatBase: arr(0), lWeatherAmount: arr(0), lShapeOctave: arr(0),
         weatherScale: { value: 1 / 18000 },
         slabMin: { value: 0 }, slabMax: { value: 1 }, lightStep: { value: 200 },
         lightAbsorb: { value: 0.030 },
@@ -755,6 +786,7 @@ class CloudPass extends Pass {
         lDetailScale: m.lDetailScale, lDetailStrength: m.lDetailStrength,
         lWorleyMix: m.lWorleyMix, lDensity: m.lDensity, lFlatBase: m.lFlatBase,
         lWeatherAmount: m.lWeatherAmount, weatherScale: m.weatherScale,
+        lShapeOctave: m.lShapeOctave,
         slabMin: m.slabMin, slabMax: m.slabMax,
         islandCenter: m.islandCenter, islandFull: m.islandFull,
         islandFade: m.islandFade, islandFloor: m.islandFloor, islandWarp: m.islandWarp,
@@ -830,6 +862,7 @@ class CloudPass extends Pass {
       u.lWorleyMix.value[i] = L.worleyMix; u.lDensity.value[i] = L.density;
       u.lFlatBase.value[i] = L.flatBase;
       u.lWeatherAmount.value[i] = L.weatherAmount;
+      u.lShapeOctave.value[i] = L.shapeOctave;
       if (L.density > 0 && L.top > L.base) { lo = Math.min(lo, L.base); hi = Math.max(hi, L.top); }
     }
     if (!isFinite(lo)) { lo = 0; hi = 1; }
@@ -956,24 +989,33 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
         coverage: num('l1cov', 0.40), featureSize: num('l1size', 5700),
         detailSize: num('l1det', 760), detailStrength: num('l1dstr', 2.0),
         worleyMix: num('l1worley', 0.37), density: num('l1den', 0.43),
-        flatBase: num('l1flat', 0.80), weatherAmount: num('l1wx', 0.85) },
+        // 5.7 km over 64 texels is 89 m per texel — fine enough that the lattice reads as
+        // texture rather than as holes, so this layer needs no second octave.
+        flatBase: num('l1flat', 0.80), weatherAmount: num('l1wx', 0.85),
+        shapeOctave: num('l1oct', 0.0) },
       // featureSize 11 km -> 24.8 km and flatBase to 1.0: big flat-bottomed masses rather
       // than more of the same cumulus one deck up.
       { name: 'big masses', base: num('l2base', 3550), top: num('l2top', 5900),
         coverage: num('l2cov', 0.38), featureSize: num('l2size', 24800),
         detailSize: num('l2det', 1360), detailStrength: num('l2dstr', 1.72),
         worleyMix: num('l2worley', 0.75), density: num('l2den', 0.45),
-        flatBase: num('l2flat', 1.00), weatherAmount: num('l2wx', 0.70) },
+        flatBase: num('l2flat', 1.00), weatherAmount: num('l2wx', 0.70),
+        shapeOctave: num('l2oct', 0.75) },
       // The veil is the big change: 1200 m thick -> 5650 m, and density 0.30 -> 1.38. It
       // stops being a thin sheet at one altitude and becomes real high cloud with depth,
       // which is what the slab now extends to 12.1 km to hold.
       { name: 'high veil', base: num('l3base', 6450), top: num('l3top', 12100),
         coverage: num('l3cov', 0.39), featureSize: num('l3size', 26000),
-        detailSize: num('l3det', 4260), detailStrength: num('l3dstr', 4.0),
+        // Detail was 4.0 at 4260 m, hard against the old slider ceiling, and on a layer this
+        // thin that is what perforates it: veil-only hole area 1.53% there against 1.06% at
+        // 1.8 @ 2600, and the smaller detail also makes the OUTLINE raggeder rather than
+        // less (edge ratio 0.251 -> 0.276). Strictly better on both counts.
+        detailSize: num('l3det', 2600), detailStrength: num('l3dstr', 1.8),
         // The veil responds least: high cloud is synoptic, so it does not break into the
         // same clusters and clear lanes the convective decks do.
         worleyMix: num('l3worley', 0.48), density: num('l3den', 1.38),
-        flatBase: num('l3flat', 0.0), weatherAmount: num('l3wx', 0.30) },
+        flatBase: num('l3flat', 0.0), weatherAmount: num('l3wx', 0.30),
+        shapeOctave: num('l3oct', 0.75) },
     ],
     // ISLAND CAP. radius is how far the full deck reaches from the island centre, fade
     // is how far it takes to die out beyond that, and seaFloorDensity is what survives
