@@ -98,10 +98,18 @@ export function initTweakPanel({ sc, applyResize }) {
     v => v.toFixed(3));
   slider('light', 'ms fill', () => p.msFalloff, v => p.msFalloff = v, 0, 0.9, 0.01);
   slider('light', 'ms scatter', () => p.msScatter, v => p.msScatter = v, 0.1, 1, 0.01);
+  // 1.0 = every scattering octave on the single-scattering lobe, i.e. the old behaviour.
+  slider('light', 'ms phase', () => p.msPhase, v => p.msPhase = v, 0.1, 1, 0.01);
   slider('light', 'powder', () => p.powderMix, v => p.powderMix = v, 0, 1, 0.01);
   // How finely the march samples inside cloud. This is what decides whether any of the
   // detail above is resolved at all — at 600 the clouds go back to flat blobs.
   slider('light', 'step fine', () => p.stepFine, v => p.stepFine = v, 25, 600, 5);
+
+  head('weather');
+  // The scale of the CLUSTERING, not of a cloud — how far apart the busy and clear parts of
+  // the map are. Per-layer response lives with each layer below.
+  slider('weather', 'field size', () => p.weatherSize, v => p.weatherSize = v, 3000, 60000, 500,
+    v => (v / 1000).toFixed(1) + ' km');
 
   p.layers.forEach((L, i) => {
     const sec = 'L' + (i + 1);
@@ -120,6 +128,8 @@ export function initTweakPanel({ sc, applyResize }) {
     slider(sec, 'detail', () => L.detailStrength, v => L.detailStrength = v, 0, 8, 0.02);
     slider(sec, 'billow', () => L.worleyMix, v => L.worleyMix = v, 0, 1, 0.01);
     slider(sec, 'flat base', () => L.flatBase, v => L.flatBase = v, 0, 1, 0.01);
+    // How hard this layer follows the weather field: 0 is the old uniform sky.
+    slider(sec, 'weather', () => L.weatherAmount, v => L.weatherAmount = v, 0, 1.4, 0.01);
   });
 
   // ---- persistence: store only what differs from the code defaults

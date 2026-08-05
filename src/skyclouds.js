@@ -181,6 +181,10 @@ uniform float slabMax;
 uniform float lightStep;
 uniform float lightAbsorb;
 
+// WEATHER. One very low frequency field over the whole map, driving each layer's coverage.
+uniform float weatherScale;
+uniform float lWeatherAmount[NLAYERS];
+
 // island cap
 uniform vec2  islandCenter;
 uniform float islandFull;   // full cover out to this radius, metres
@@ -221,6 +225,28 @@ float cloudDensity(vec3 p, float lod) {
   vec3 wind = vec3(windDirection.x, 0.0, windDirection.y) * windSpeed * time;
   float total = 0.0;
 
+  // THE WEATHER FIELD: a low-frequency term so the sky's STATISTICS vary across the map, not
+  // just its contents.
+  //
+  // It drives COVERAGE rather than density, because coverage is a threshold and a threshold
+  // is what decides size. Where the bar drops, neighbouring blobs clear it and MERGE into big
+  // masses; where it rises, only the cores survive as small separate puffs. So one field buys
+  // both organisation (clusters and clear lanes) and size variety, which is how the old
+  // weather-map system produced them.
+  //
+  // MEASURED, and smaller than expected, so do not oversell it: twelve plan views on a 9 km
+  // grid with the island cap disabled, compared at matched cloudiness (10.6% vs 10.1%), give
+  // coverage spread 8.63 -> 10.07 and cloud-size spread 14.0 -> 16.6. Real, about +17% and
+  // +19%, not a transformation. The reason is that layers 2 and 3 already carry 25 km feature
+  // sizes, so the field was never as uniform as it looked — pushing weatherAmount to 1.15
+  // makes it WORSE (spread 9.29), so 0.85 is near the useful maximum.
+  //
+  // Sampled once for all layers, not once per layer: it depends only on p.xz, and this sits
+  // in the hottest loop in the file. The w slice is chosen away from the one islandMask uses
+  // so the two fields do not correlate and put cloud edges on the island cap boundary.
+  float weather = texture(shapeTex, vec3((p.xz + wind.xz * 0.4) * weatherScale, 0.61)).r;
+  float weatherC = (weather - 0.5) * 2.0;
+
   for (int i = 0; i < NLAYERS; i++) {
     if (lDensity[i] <= 0.0) continue;
     float span = lTop[i] - lBase[i];
@@ -239,7 +265,8 @@ float cloudDensity(vec3 p, float lod) {
 
     // Coverage threshold against a HEIGHT-VARYING bar, so the crossing is not an
     // iso-height surface — this is what keeps the top from going flat.
-    float bar = 1.0 - lCoverage[i] * altEnv;
+    float cov = lCoverage[i] * clamp(1.0 + weatherC * lWeatherAmount[i], 0.0, 2.0);
+    float bar = 1.0 - cov * altEnv;
     float shape = remap(base, bar, min(bar + 0.32, 1.0), 0.0, 1.0);
     if (shape <= 0.0) continue;
 
@@ -319,6 +346,7 @@ uniform float sunBoost;
 uniform float ambientBoost;
 uniform float msFalloff;
 uniform float msScatter;
+uniform float msPhase;
 uniform float powderMix;
 uniform float stepFine;
 uniform float cameraNear;
@@ -330,7 +358,11 @@ float hg(float c, float g) {
   float g2 = g * g;
   return (1.0 - g2) / (4.0 * PI * pow(max(1.0 + g2 - 2.0 * g * c, 1e-4), 1.5));
 }
-float cloudPhase(float c) { return hg(c, 0.62) * 0.7 + hg(c, -0.3) * 0.3; }
+// k scales the eccentricity: 1 is the single-scattering lobe, lower is progressively more
+// isotropic. Each order of scattering spreads light out, so a deep interior should not be
+// lit through the same sharp forward lobe as a thin edge.
+float cloudPhaseG(float c, float k) { return hg(c, 0.62 * k) * 0.7 + hg(c, -0.3 * k) * 0.3; }
+float cloudPhase(float c) { return cloudPhaseG(c, 1.0); }
 
 // THE STEP MUST BE SCALED TO A LAYER, NOT TO THE SLAB.
 //
@@ -393,21 +425,31 @@ float cloudPhase(float c) { return hg(c, 0.62) * 0.7 + hg(c, -0.3) * 0.3; }
 // the standard cheap stand-in. Normalising by the tau=0 sum keeps a fully lit top at 1.0,
 // so the march returns a true 0..1 fraction of sunlight and sunBoost stays an exposure
 // control rather than a fudge factor.
-float lightMarch(vec3 p) {
+// EACH OCTAVE GETS ITS OWN PHASE, weighted into both the sum and its normaliser.
+//
+// msPhase 1.0 makes every octave use the single-scattering lobe, which factors straight out
+// of the ratio and reproduces the previous result exactly — so this is inert at the default
+// and cannot silently move a tuned sky. Below 1.0 the later octaves broaden toward isotropic,
+// which is the physical behaviour: light that has bounced several times has forgotten which
+// way it came in. It shows up as a cloud keeping its sharp bright rim while the interior
+// fills more evenly, instead of the whole body tracking one forward lobe together.
+float lightMarch(vec3 p, float cosT) {
   float accum = 0.0;
   for (int i = 0; i < LIGHT_STEPS; i++) {
     p += sunDir * lightStep;
     accum += cloudDensity(p, 1.0) * lightStep;
   }
   float tau = accum * lightAbsorb;
-  float ms = 0.0, norm = 0.0, contrib = 1.0, extinct = 1.0;
+  float ms = 0.0, norm = 0.0, contrib = 1.0, extinct = 1.0, ecc = 1.0;
   for (int o = 0; o < MS_OCTAVES; o++) {
-    ms   += contrib * exp(-tau * extinct);
-    norm += contrib;
+    float ph = cloudPhaseG(cosT, ecc);
+    ms   += contrib * exp(-tau * extinct) * ph;
+    norm += contrib * ph;
     contrib *= msFalloff;
     extinct *= msScatter;
+    ecc *= msPhase;
   }
-  return ms / max(norm, 1e-4);
+  return ms / max(norm, 1e-6);
 }
 
 vec2 intersectSlab(vec3 ro, vec3 rd, float yMin, float yMax) {
@@ -504,7 +546,7 @@ void main() {
       // Refine on contact. Holding fine for one empty sample too (miss < 2) keeps a thin
       // gap between two lobes from throwing the march straight back to the coarse stride.
       step = fine;
-      float light = lightMarch(p);
+      float light = lightMarch(p, cosT);
       vec3 col = sunColor * light * phase * sunBoost + ambientSky * ambientBoost;
 
       // Powder, moved here off the light march. This is the dark rim on a thin edge seen
@@ -671,7 +713,8 @@ class CloudPass extends Pass {
         time: { value: 0 },
         lBase: arr(0), lTop: arr(0), lCoverage: arr(0), lShapeScale: arr(0),
         lDetailScale: arr(0), lDetailStrength: arr(0), lWorleyMix: arr(0),
-        lDensity: arr(0), lFlatBase: arr(0),
+        lDensity: arr(0), lFlatBase: arr(0), lWeatherAmount: arr(0),
+        weatherScale: { value: 1 / 18000 },
         slabMin: { value: 0 }, slabMax: { value: 1 }, lightStep: { value: 200 },
         lightAbsorb: { value: 0.030 },
         islandCenter: { value: new THREE.Vector2() },
@@ -680,8 +723,8 @@ class CloudPass extends Pass {
         absorptionCoeff: { value: 0.055 }, maxDist: { value: 46000 },
         baseDarken: { value: 0.65 }, silverStrength: { value: 1.1 },
         sunBoost: { value: 18 }, ambientBoost: { value: 0.16 },
-        msFalloff: { value: 0.5 }, msScatter: { value: 0.5 },
-        powderMix: { value: 0.4 }, stepFine: { value: 60 },
+        msFalloff: { value: 0.13 }, msScatter: { value: 0.37 }, msPhase: { value: 1.0 },
+        powderMix: { value: 0.55 }, stepFine: { value: 120 },
         windDirection: { value: new THREE.Vector2() }, windSpeed: { value: 0 },
         cameraNear: { value: camera.near }, cameraFar: { value: camera.far },
       },
@@ -711,6 +754,7 @@ class CloudPass extends Pass {
         lBase: m.lBase, lTop: m.lTop, lCoverage: m.lCoverage, lShapeScale: m.lShapeScale,
         lDetailScale: m.lDetailScale, lDetailStrength: m.lDetailStrength,
         lWorleyMix: m.lWorleyMix, lDensity: m.lDensity, lFlatBase: m.lFlatBase,
+        lWeatherAmount: m.lWeatherAmount, weatherScale: m.weatherScale,
         slabMin: m.slabMin, slabMax: m.slabMax,
         islandCenter: m.islandCenter, islandFull: m.islandFull,
         islandFade: m.islandFade, islandFloor: m.islandFloor, islandWarp: m.islandWarp,
@@ -785,6 +829,7 @@ class CloudPass extends Pass {
       u.lDetailStrength.value[i] = L.detailStrength;
       u.lWorleyMix.value[i] = L.worleyMix; u.lDensity.value[i] = L.density;
       u.lFlatBase.value[i] = L.flatBase;
+      u.lWeatherAmount.value[i] = L.weatherAmount;
       if (L.density > 0 && L.top > L.base) { lo = Math.min(lo, L.base); hi = Math.max(hi, L.top); }
     }
     if (!isFinite(lo)) { lo = 0; hi = 1; }
@@ -812,7 +857,9 @@ class CloudPass extends Pass {
     u.baseDarken.value = p.baseDarken; u.silverStrength.value = p.silver;
     u.sunBoost.value = p.sunBoost; u.ambientBoost.value = p.ambientBoost;
     u.msFalloff.value = p.msFalloff; u.msScatter.value = p.msScatter;
+    u.msPhase.value = p.msPhase;
     u.powderMix.value = p.powderMix; u.stepFine.value = p.stepFine;
+    u.weatherScale.value = 1 / Math.max(500, p.weatherSize);
     u.windDirection.value.set(p.windX, p.windZ); u.windSpeed.value = p.windSpeed;
     u.time.value = p.time;
 
@@ -909,22 +956,24 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
         coverage: num('l1cov', 0.40), featureSize: num('l1size', 5700),
         detailSize: num('l1det', 760), detailStrength: num('l1dstr', 2.0),
         worleyMix: num('l1worley', 0.37), density: num('l1den', 0.43),
-        flatBase: num('l1flat', 0.80) },
+        flatBase: num('l1flat', 0.80), weatherAmount: num('l1wx', 0.85) },
       // featureSize 11 km -> 24.8 km and flatBase to 1.0: big flat-bottomed masses rather
       // than more of the same cumulus one deck up.
       { name: 'big masses', base: num('l2base', 3550), top: num('l2top', 5900),
         coverage: num('l2cov', 0.38), featureSize: num('l2size', 24800),
         detailSize: num('l2det', 1360), detailStrength: num('l2dstr', 1.72),
         worleyMix: num('l2worley', 0.75), density: num('l2den', 0.45),
-        flatBase: num('l2flat', 1.00) },
+        flatBase: num('l2flat', 1.00), weatherAmount: num('l2wx', 0.70) },
       // The veil is the big change: 1200 m thick -> 5650 m, and density 0.30 -> 1.38. It
       // stops being a thin sheet at one altitude and becomes real high cloud with depth,
       // which is what the slab now extends to 12.1 km to hold.
       { name: 'high veil', base: num('l3base', 6450), top: num('l3top', 12100),
         coverage: num('l3cov', 0.39), featureSize: num('l3size', 26000),
         detailSize: num('l3det', 4260), detailStrength: num('l3dstr', 4.0),
+        // The veil responds least: high cloud is synoptic, so it does not break into the
+        // same clusters and clear lanes the convective decks do.
         worleyMix: num('l3worley', 0.48), density: num('l3den', 1.38),
-        flatBase: num('l3flat', 0.0) },
+        flatBase: num('l3flat', 0.0), weatherAmount: num('l3wx', 0.30) },
     ],
     // ISLAND CAP. radius is how far the full deck reaches from the island centre, fade
     // is how far it takes to die out beyond that, and seaFloorDensity is what survives
@@ -984,6 +1033,19 @@ export async function createSkyClouds({ renderer, scene, camera, sunDir }) {
     // means less bounced light filling the interior, so MORE contrast and darker cores.
     msFalloff: num('msfall', 0.13),
     msScatter: num('msscat', 0.37),
+    // How much each scattering octave broadens toward isotropic. 1.0 keeps every octave on
+    // the single-scattering lobe, which factors out of the weighted average and reproduces
+    // the previous behaviour exactly — so that is the value to set to undo this.
+    //
+    // NEARLY INERT AT msFalloff 0.13, which is where this sky is tuned: at that falloff the
+    // later octaves carry 13% and 1.7% of the sum, so broadening their phase moves the lit
+    // top by 3% (p95 1.017 -> 0.989). At msFalloff 0.6 it is worth 15% (1.284 -> 1.092).
+    // If the clouds want that lit-through interior the old renderer had, msFalloff is the
+    // knob, not this one — 0.13 -> 0.35 -> 0.60 takes interior p5 0.286 -> 0.315 -> 0.349.
+    msPhase: num('msphase', 0.55),
+    // WEATHER FIELD SIZE in metres: the scale of the clustering, not of a cloud. Around
+    // 18 km puts a few weather systems across the visible map rather than one flat state.
+    weatherSize: num('wsize', 18000),
     // View-side powder: dark rims on thin edges seen toward the sun.
     powderMix: num('powder', 0.55),
     // In-cloud march step in metres at close range, the control over how much shape
