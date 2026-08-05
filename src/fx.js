@@ -8,6 +8,10 @@ import * as THREE from 'three';
 // on the deck in overdrive it would evict the wash and dust it shares the pool with — the
 // recycling is round-robin, and the newest spawn always wins.
 const POOL = 200;
+// Flame gets its own pool rather than sharing: it is additive where the smoke is not, and
+// at ~46/s it would otherwise evict the smoke and dust from the shared round-robin.
+const FLAME_POOL = 40;
+const COL_FLAME = new THREE.Color(1.0, 0.42, 0.10);
 const COL_SMOKE = new THREE.Color(0xd3d3cd); // grey-white, runway
 const COL_DUST = new THREE.Color(0xb29062);  // sandy-brown, grass
 const COL_SPRAY = new THREE.Color(0xe4f1f4); // pale, water
@@ -43,7 +47,18 @@ export function createFX(scene) {
   let emitAcc = 0;
   let washAcc = 0;
   let odAcc = 0;
+  let flAcc = 0;
   const p = new THREE.Vector3();   // scratch: exhaust spawn point, body -> world
+
+  // --- flame pool: additive, tiny, gone in a tenth of a second
+  const flames = [];
+  const flAge = new Float32Array(FLAME_POOL);
+  const flLife = new Float32Array(FLAME_POOL);   // -1 = free
+  const flVel = new Float32Array(FLAME_POOL * 3);
+  const flS0 = new Float32Array(FLAME_POOL);
+  const flS1 = new Float32Array(FLAME_POOL);
+  const flOp = new Float32Array(FLAME_POOL);
+  let flCursor = 0;
 
   for (let i = 0; i < POOL; i++) {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -54,6 +69,39 @@ export function createFX(scene) {
     group.add(s);
     sprites.push(s);
     life[i] = -1;
+  }
+
+  for (let i = 0; i < FLAME_POOL; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: tex, transparent: true, depthWrite: false, opacity: 0,
+      blending: THREE.AdditiveBlending, color: COL_FLAME,
+      // not tone mapped, like the sun sprite and the beacon: flame should sit at the top of
+      // the range and bloom, not be pulled back down the ACES curve with the landscape
+      toneMapped: false,
+    }));
+    s.visible = false;
+    s.renderOrder = 6;   // above the smoke, so it is never dimmed by its own exhaust
+    group.add(s);
+    flames.push(s);
+    flLife[i] = -1;
+  }
+
+  function spawnFlame(x, y, z, opac, size0, size1, dur, vx, vy, vz) {
+    const i = flCursor;
+    flCursor = (flCursor + 1) % FLAME_POOL;
+    const s = flames[i];
+    s.position.set(x, y, z);
+    s.material.rotation = Math.random() * Math.PI * 2;
+    s.scale.set(size0, size0, 1);
+    s.visible = true;
+    flAge[i] = 0;
+    flLife[i] = dur;
+    flS0[i] = size0;
+    flS1[i] = size1;
+    flOp[i] = opac;
+    flVel[i * 3] = vx;
+    flVel[i * 3 + 1] = vy;
+    flVel[i * 3 + 2] = vz;
   }
 
   function spawn(x, y, z, color, opac, size0, size1, dur, vx, vy, vz) {
@@ -135,7 +183,12 @@ export function createFX(scene) {
     // a stationary blob the aeroplane visibly flies away from.
     const od = phys.overdrive || 0;
     if (od > 0.05 && !phys.crashed) {
-      odAcc += dt * od * 60;
+      // THIN. Both numbers matter and only one of them is obvious: at 60 puffs a second with
+      // a one second life there are ~60 alive at once, all stacked along the same line
+      // astern — which is exactly where the chase camera sits. Twenty overlapping puffs at
+      // 0.5 alpha each are effectively opaque however "light" any single one looks, so the
+      // rate had to come down with the opacity or it stays a wall you fly inside.
+      odAcc += dt * od * 22;
       while (odAcc >= 1) {
         odAcc -= 1;
         // the stacks sit just behind and below the cowling, both sides
@@ -145,15 +198,33 @@ export function createFX(scene) {
         spawn(
           p.x, p.y, p.z,
           COL_EXHAUST,
-          0.52 * od,
-          0.45 + Math.random() * 0.35, 6.5 + Math.random() * 3.5,
-          0.85 + Math.random() * 0.55,
+          0.075 * od,
+          0.4 + Math.random() * 0.3, 3.2 + Math.random() * 1.8,
+          0.7 + Math.random() * 0.4,
           phys.vel.x * 0.72 + (Math.random() - 0.5) * 2,
           phys.vel.y * 0.72 + 0.6 + Math.random(),
           phys.vel.z * 0.72 + (Math.random() - 0.5) * 2,
         );
       }
-    } else odAcc = 0;
+
+      // FLAME at the stacks. Additive and very short-lived, so it reads as light coming off
+      // the aeroplane rather than as more matter hanging behind it — which is the whole
+      // reason it lives in its own pool instead of the smoke's: additive stacked on additive
+      // brightens, it never occludes, so it can be dense without costing visibility.
+      flAcc += dt * od * 46;
+      while (flAcc >= 1) {
+        flAcc -= 1;
+        const side = (Math.random() < 0.5 ? -1 : 1) * (0.62 + Math.random() * 0.14);
+        p.set(side, -0.22, 2.5 + Math.random() * 0.5).applyQuaternion(phys.quat).add(phys.pos);
+        spawnFlame(
+          p.x, p.y, p.z,
+          0.55 + Math.random() * 0.45,
+          0.28 + Math.random() * 0.22, 0.75 + Math.random() * 0.4,
+          0.10 + Math.random() * 0.09,
+          phys.vel.x, phys.vel.y, phys.vel.z,
+        );
+      }
+    } else { odAcc = 0; flAcc = 0; }
 
     if (phys.grounded && phys.speed > 8) {
       emitAcc += dt * (1 + Math.min(1, (phys.speed - 8) / 32)); // 1-2 puffs/sec
@@ -197,6 +268,27 @@ export function createFX(scene) {
       s.scale.set(sc, sc, 1);
       const u = 1 - t;
       s.material.opacity = op[i] * u * Math.sqrt(u);
+    }
+
+    // flame: no drag and no buoyancy — it is gone long before either would show. Fades on
+    // t^2 so it dies hard rather than lingering as a soft orange smear.
+    for (let i = 0; i < FLAME_POOL; i++) {
+      if (flLife[i] < 0) continue;
+      flAge[i] += dt;
+      const s = flames[i];
+      if (flAge[i] >= flLife[i]) {
+        flLife[i] = -1;
+        s.visible = false;
+        continue;
+      }
+      s.position.x += flVel[i * 3] * dt;
+      s.position.y += flVel[i * 3 + 1] * dt;
+      s.position.z += flVel[i * 3 + 2] * dt;
+      const t = flAge[i] / flLife[i];
+      const sc = flS0[i] + (flS1[i] - flS0[i]) * t;
+      s.scale.set(sc, sc, 1);
+      const u = 1 - t;
+      s.material.opacity = flOp[i] * u * u;
     }
   }
 
