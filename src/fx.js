@@ -8,6 +8,7 @@ const POOL = 120;
 const COL_SMOKE = new THREE.Color(0xd3d3cd); // grey-white, runway
 const COL_DUST = new THREE.Color(0xb29062);  // sandy-brown, grass
 const COL_SPRAY = new THREE.Color(0xe4f1f4); // pale, water
+const COL_EXHAUST = new THREE.Color(0x4a4844); // dark, oily — engine smoke, not dust
 
 function makePuffTexture() {
   const c = document.createElement('canvas');
@@ -38,6 +39,8 @@ export function createFX(scene) {
   let cursor = 0;
   let emitAcc = 0;
   let washAcc = 0;
+  let odAcc = 0;
+  const p = new THREE.Vector3();   // scratch: exhaust spawn point, body -> world
 
   for (let i = 0; i < POOL; i++) {
     const s = new THREE.Sprite(new THREE.SpriteMaterial({
@@ -122,6 +125,32 @@ export function createFX(scene) {
         }
       } else washAcc = 0;
     } else washAcc = 0;
+
+    // EXHAUST SMOKE while the engine is being forced past its stop. Spawned at the stacks
+    // and given the aircraft's own velocity minus a bit, so it falls astern instead of
+    // hanging in the air where it was born — at 90 m/s a puff with no inherited velocity is
+    // a stationary blob the aeroplane visibly flies away from.
+    const od = phys.overdrive || 0;
+    if (od > 0.05 && !phys.crashed) {
+      odAcc += dt * od * 26;
+      while (odAcc >= 1) {
+        odAcc -= 1;
+        // the stacks sit just behind and below the cowling, both sides
+        const back = 2.4 + Math.random() * 1.2;
+        const side = (Math.random() < 0.5 ? -1 : 1) * 0.7;
+        p.set(side, -0.25, back).applyQuaternion(phys.quat).add(phys.pos);
+        spawn(
+          p.x, p.y, p.z,
+          COL_EXHAUST,
+          0.30 * od,
+          0.35 + Math.random() * 0.25, 3.4 + Math.random() * 1.8,
+          0.55 + Math.random() * 0.35,
+          phys.vel.x * 0.72 + (Math.random() - 0.5) * 2,
+          phys.vel.y * 0.72 + 0.6 + Math.random(),
+          phys.vel.z * 0.72 + (Math.random() - 0.5) * 2,
+        );
+      }
+    } else odAcc = 0;
 
     if (phys.grounded && phys.speed > 8) {
       emitAcc += dt * (1 + Math.min(1, (phys.speed - 8) / 32)); // 1-2 puffs/sec

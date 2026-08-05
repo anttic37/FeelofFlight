@@ -941,6 +941,8 @@ export function buildPlane() {
     wheelR: rightGear.wheelSpin,
     tailWheelSpin,
     beacon,
+    // shared by all eight stacks, so one material drives the whole glow
+    exhaustMat: materials.exhaust,
     blinkT: 0,
   };
 }
@@ -956,6 +958,19 @@ export function updatePlaneVisual(plane, input = {}, physics = compatibilityPhys
   const throttle = THREE.MathUtils.clamp(physics.throttle ?? 0, 0, 1);
   plane.blades.rotation.z -= (4.5 + throttle * 57) * dt;
   plane.propDisc.material.opacity = Math.min(0.28, Math.max(0, throttle - 0.10) * 0.48);
+
+  // OVERDRIVE: the stacks run hot. Emissive rather than an added sprite, so it is the metal
+  // itself glowing and it sits correctly behind the wing when you look from ahead. Pushed
+  // past 1 on purpose — the bloom threshold is 1.25, so this is what makes it bleed light
+  // rather than just turn orange. The flicker is combustion, not a sine wave: two
+  // incommensurate rates so it never settles into a visible beat.
+  if (plane.exhaustMat) {
+    const od = THREE.MathUtils.clamp(physics.overdrive ?? 0, 0, 1);
+    const t = physics.time ?? 0;
+    const flick = 1 + 0.16 * Math.sin(t * 47.3) + 0.09 * Math.sin(t * 111.7);
+    plane.exhaustMat.emissive.setRGB(1.0, 0.30, 0.06);
+    plane.exhaustMat.emissiveIntensity = od * od * 2.6 * flick;
+  }
 
   const roll = input.rollSm ?? 0;
   const pitch = input.pitchSm ?? 0;

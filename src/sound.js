@@ -134,10 +134,14 @@ export class SoundFX {
     const t = this.ctx.currentTime;
     const thr = phys.throttle, spd = phys.speed;
 
-    const engFreq = 42 + thr * 78 + spd * 0.25;
+    // OVERDRIVE lifts the note past where the throttle alone can take it, and opens the
+    // filter further than full power does — the engine has to sound like it is being asked
+    // for something it does not normally give, or the extra 40% is invisible to the ear.
+    const od = Math.min(1, Math.max(0, phys.overdrive ?? 0));
+    const engFreq = 42 + thr * 78 + spd * 0.25 + od * 26;
     this.oscs.forEach(o => o.frequency.setTargetAtTime(engFreq, t, 0.06));
-    this.engFilter.frequency.setTargetAtTime(300 + thr * 950 + spd * 4, t, 0.08);
-    this.engGain.gain.setTargetAtTime(this.muted ? 0 : 0.045 + thr * 0.16, t, 0.08);
+    this.engFilter.frequency.setTargetAtTime(300 + thr * 950 + spd * 4 + od * 1100, t, 0.08);
+    this.engGain.gain.setTargetAtTime(this.muted ? 0 : 0.045 + thr * 0.16 + od * 0.06, t, 0.08);
 
     // wind: gain cap and filter keep rising past 95 m/s with overspeed — the
     // scream gets louder, brighter and rougher the deeper into the red you go

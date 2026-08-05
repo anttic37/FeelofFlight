@@ -14,6 +14,9 @@ const RHO = 1.225;
 // computed at reset time because the seeded layout moves the strip
 const SPAWN_SPEED = 55;
 
+// Overdrive: the fraction of extra thrust on top of the normal 100% gate.
+const OD_GAIN = 0.40;
+
 const GEAR_TIME = 1.6;      // s to extend/retract
 const STANCE_PITCH = 0.10;  // taildragger nose-up at rest
 const FLAP_TIME = 1.2;      // s full travel up <-> full
@@ -37,6 +40,7 @@ export class FlightModel {
     this.cd0 = 0.05;
     this.inducedK = 0.07;
     this.maxThrust = 5200;
+    this.overdrive = 0;   // 0..1 spooled, 1 = the extra OD_GAIN is fully in
     this.inertia = new THREE.Vector3(3200, 4800, 1600); // pitch, yaw, roll
 
     // control effectiveness / stability (torques at reference q)
@@ -254,6 +258,16 @@ export class FlightModel {
     // throttle spool lag
     this.throttle += (controls.throttle - this.throttle) * Math.min(1, dt * 1.4);
 
+    // OVERDRIVE. The engine has 40% more than the gate normally lets through; forcing the
+    // lever past its stop opens it. Spooled separately and SLOWER than the throttle so it
+    // arrives as a surge you feel building rather than a step in the numbers.
+    //
+    // It multiplies thrust only. Nothing else in here is touched, so the whole airframe —
+    // prop torque, P-factor, the drag rise, Vne buffet — responds to the extra power on its
+    // own terms rather than through a special case, and running it fast enough to shake the
+    // wings is something the flight model already knows how to punish.
+    this.overdrive += ((controls.overdrive || 0) - this.overdrive) * Math.min(1, dt * 0.9);
+
     const agl = this.altitude;
 
     // wind: steady SW breeze + slow gusts (magnitude ±35%, heading wander ±10°),
@@ -318,7 +332,7 @@ export class FlightModel {
 
     const fwd = t.v2.set(0, 0, -1).applyQuaternion(this.quat);
     const propEff = Math.max(0.35, 1 - airSpeed / 220);
-    force.addScaledVector(fwd, this.maxThrust * this.throttle * propEff);
+    force.addScaledVector(fwd, this.maxThrust * this.throttle * propEff * (1 + OD_GAIN * this.overdrive));
 
     let liftN = 0;
     if (aero) {

@@ -95,6 +95,11 @@ function updateWingFlex(dt) {
   // fast and ragged instead of being averaged away
   const sm = phys.stallMargin || 0;
   if (sm > 0.02) input.wingFlexSm += fbm1(phys.time * 13.7, 17) * sm * sm * 0.5;
+  // OVERDRIVE TREMBLE. Higher frequency and far smaller than the stall shudder, which is a
+  // warning and should stay the louder of the two — this is the airframe buzzing under
+  // power, not complaining. Also after the smoothing, or it averages into nothing.
+  const od = phys.overdrive || 0;
+  if (od > 0.02) input.wingFlexSm += Math.sin(phys.time * 71.3) * od * 0.035;
 }
 
 function reset(message) {
@@ -231,7 +236,7 @@ window.__ff = {
   heightAt, surfaceAt, RUNWAYS, seed: terrainSeed,
   step(dt) {
     input.update(dt);
-    const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake };
+    const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake, overdrive: input.overdrive };
     // free cam and pause freeze the sim, as in the real loop. This has to be its OWN
     // branch: folding it into the `if (!phys.crashed)` condition drops the healthy
     // aeroplane into the else, which starts a wreck and drops it out of the sky.
@@ -260,6 +265,7 @@ hud.msg('FLY — G FOR GEAR, T FOR RUNWAY START', 2600);
 
 const clock = new THREE.Clock();
 let simTime = 0;
+let odWasOn = false;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(0.05, clock.getDelta());
   input.update(dt);
@@ -274,10 +280,16 @@ renderer.setAnimationLoop(() => {
   // the sky holds still with everything else when paused or in the free camera — a pause
   // you can watch the sun set through is not a pause
   if (!frozen) dayNight.update(dt);
-  const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake };
+  const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake, overdrive: input.overdrive };
   const steps = 2;
   if (!frozen) for (let i = 0; i < steps && !phys.crashed; i++) phys.update(dt / steps, controls);
 
+  // OVERDRIVE announce, on the input's latch rather than the spooled value, so the message
+  // lands the instant the engine takes it instead of part way up the ramp.
+  if (input._odOn !== odWasOn) {
+    odWasOn = input._odOn;
+    if (!frozen) hud.msg(odWasOn ? 'OVERDRIVE' : 'OVERDRIVE OFF', odWasOn ? 1400 : 900);
+  }
   if (phys.justGearMoved) {
     phys.justGearMoved = false;
     sound.gearMove();

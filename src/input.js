@@ -1,6 +1,11 @@
 // Keyboard + gamepad. Raw targets are smoothed here (the surfaces follow these),
 // and the airframe's angular inertia adds the rest of the weight.
 
+// How long you have to keep pushing the throttle past its stop before the engine gives you
+// the last 40%, and how fast that intent bleeds away when you stop asking.
+const OD_ARM_SECONDS = 1.0;
+const OD_DROP_SECONDS = 0.45;
+
 export class Input {
   constructor() {
     this.keys = new Set();
@@ -8,6 +13,9 @@ export class Input {
     this.pitchSm = 0; this.rollSm = 0; this.yawSm = 0;     // smoothed (drives surfaces + physics)
     this.wingFlexSm = 0;                                   // G-load wing bend, written by main from physics
     this.throttle = 0.65;
+    this.overdrive = 0;   // spooled 0..1, what the engine and the airframe actually feel
+    this.odCharge = 0;    // 0..1 build-up while forcing the lever, for the HUD
+    this._odOn = false;
     this.invertY = false;
     this.brake = false;
     this.onReset = null;
@@ -80,6 +88,26 @@ export class Input {
     this.roll = Math.max(-1, Math.min(1, roll));
     this.yaw = Math.max(-1, Math.min(1, yaw));
     this.throttle = Math.max(0, Math.min(1, this.throttle + thrRate * dt));
+
+    // OVERDRIVE: keep asking for more once the lever is already against the stop.
+    //
+    // There is no spare axis for it and no new key to learn — the gesture IS the throttle
+    // input, held past the point where it stops doing anything. That reads as forcing the
+    // engine rather than switching a mode on, which is the feel wanted: full power is still
+    // full power, and this is the bit beyond it you have to lean on.
+    //
+    // Charge only builds while actively pushing, so it cannot arm by parking at 100%.
+    const pushing = !fc && thrRate > 0.01 && this.throttle >= 0.999;
+    this.odCharge = pushing
+      ? Math.min(1, this.odCharge + dt / OD_ARM_SECONDS)
+      : Math.max(0, this.odCharge - dt / OD_DROP_SECONDS);
+    // Engage at full charge, and hold until the charge has bled well down — without the
+    // hysteresis it chatters on and off at the threshold as the key repeats.
+    if (this.odCharge >= 1) this._odOn = true;
+    else if (this.odCharge < 0.55) this._odOn = false;
+    const want = this._odOn ? 1 : 0;
+    // spools in slower than it drops, so backing off is immediate and winding up is not
+    this.overdrive += (want - this.overdrive) * Math.min(1, dt * (want ? 1.8 : 4.5));
 
     const s = Math.min(1, dt * 7);
     this.pitchSm += (this.pitch - this.pitchSm) * s;
