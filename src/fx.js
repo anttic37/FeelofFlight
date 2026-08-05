@@ -4,7 +4,10 @@ import * as THREE from 'three';
 // blending (smoke/dust must read solid, not glowy), soft radial canvas
 // sprite, fixed pool recycled round-robin — zero allocation at runtime.
 
-const POOL = 120;
+// 120 was sized for ground contact alone. Exhaust runs ~60 puffs/s for about a second, so
+// on the deck in overdrive it would evict the wash and dust it shares the pool with — the
+// recycling is round-robin, and the newest spawn always wins.
+const POOL = 200;
 const COL_SMOKE = new THREE.Color(0xd3d3cd); // grey-white, runway
 const COL_DUST = new THREE.Color(0xb29062);  // sandy-brown, grass
 const COL_SPRAY = new THREE.Color(0xe4f1f4); // pale, water
@@ -132,7 +135,7 @@ export function createFX(scene) {
     // a stationary blob the aeroplane visibly flies away from.
     const od = phys.overdrive || 0;
     if (od > 0.05 && !phys.crashed) {
-      odAcc += dt * od * 26;
+      odAcc += dt * od * 60;
       while (odAcc >= 1) {
         odAcc -= 1;
         // the stacks sit just behind and below the cowling, both sides
@@ -142,9 +145,9 @@ export function createFX(scene) {
         spawn(
           p.x, p.y, p.z,
           COL_EXHAUST,
-          0.30 * od,
-          0.35 + Math.random() * 0.25, 3.4 + Math.random() * 1.8,
-          0.55 + Math.random() * 0.35,
+          0.52 * od,
+          0.45 + Math.random() * 0.35, 6.5 + Math.random() * 3.5,
+          0.85 + Math.random() * 0.55,
           phys.vel.x * 0.72 + (Math.random() - 0.5) * 2,
           phys.vel.y * 0.72 + 0.6 + Math.random(),
           phys.vel.z * 0.72 + (Math.random() - 0.5) * 2,

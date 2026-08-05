@@ -967,9 +967,12 @@ export function updatePlaneVisual(plane, input = {}, physics = compatibilityPhys
   if (plane.exhaustMat) {
     const od = THREE.MathUtils.clamp(physics.overdrive ?? 0, 0, 1);
     const t = physics.time ?? 0;
-    const flick = 1 + 0.16 * Math.sin(t * 47.3) + 0.09 * Math.sin(t * 111.7);
-    plane.exhaustMat.emissive.setRGB(1.0, 0.30, 0.06);
-    plane.exhaustMat.emissiveIntensity = od * od * 2.6 * flick;
+    const flick = 1 + 0.20 * Math.sin(t * 47.3) + 0.11 * Math.sin(t * 111.7);
+    // Ramped LINEARLY, not squared: od*od held the glow near nothing through most of the
+    // spool-up, so the light only arrived once the surge was already over. This lights as
+    // the power builds, which is the point of it.
+    plane.exhaustMat.emissive.setRGB(1.0, 0.26, 0.05);
+    plane.exhaustMat.emissiveIntensity = od * 6.5 * flick;
   }
 
   const roll = input.rollSm ?? 0;

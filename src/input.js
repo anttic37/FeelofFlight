@@ -93,18 +93,24 @@ export class Input {
     //
     // There is no spare axis for it and no new key to learn — the gesture IS the throttle
     // input, held past the point where it stops doing anything. That reads as forcing the
-    // engine rather than switching a mode on, which is the feel wanted: full power is still
-    // full power, and this is the bit beyond it you have to lean on.
+    // engine rather than switching a mode on: full power is still full power, and this is
+    // the bit beyond it you have to lean on to get.
     //
-    // Charge only builds while actively pushing, so it cannot arm by parking at 100%.
-    const pushing = !fc && thrRate > 0.01 && this.throttle >= 0.999;
+    // IT LATCHES. Once lit it stays lit on its own, and the only thing that puts it out is
+    // pulling the power back off the gate. Requiring the key to stay held would make it a
+    // "hold to boost" button, and then the throttle no longer means what it says — you would
+    // be at 100% with the engine quietly dropping to 100% behind your back. Off the gate and
+    // back on costs the full second again, so there is a real price to touching the throttle.
+    const atMax = this.throttle >= 0.999;
+    // charge only accumulates while ACTIVELY pushing, so it cannot arm by parking at 100%
+    const pushing = !fc && thrRate > 0.01 && atMax;
     this.odCharge = pushing
       ? Math.min(1, this.odCharge + dt / OD_ARM_SECONDS)
       : Math.max(0, this.odCharge - dt / OD_DROP_SECONDS);
-    // Engage at full charge, and hold until the charge has bled well down — without the
-    // hysteresis it chatters on and off at the threshold as the key repeats.
     if (this.odCharge >= 1) this._odOn = true;
-    else if (this.odCharge < 0.55) this._odOn = false;
+    if (!atMax) { this._odOn = false; this.odCharge = 0; }
+    // hold the arming bar full while it is lit, so the HUD reads "in" rather than draining
+    if (this._odOn) this.odCharge = 1;
     const want = this._odOn ? 1 : 0;
     // spools in slower than it drops, so backing off is immediate and winding up is not
     this.overdrive += (want - this.overdrive) * Math.min(1, dt * (want ? 1.8 : 4.5));

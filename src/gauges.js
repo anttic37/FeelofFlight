@@ -1,3 +1,5 @@
+import { OD_GAIN } from './physics.js';
+
 // Light-aircraft instrument panel: a row of real round dials across the bottom
 // of the screen in place of text readouts. Layout follows the classic six-pack
 // reading order — airspeed, attitude, altimeter, heading, vertical speed — plus
@@ -244,10 +246,17 @@ export class Gauges {
 
     // TACHOMETER — engine dies with the airframe
     cx = this.cx[TAC];
-    const rpm = dead ? 0 : 600 + phys.throttle * 2400;
-    needle(g, cx, cy, sweepAng(rpm / RPM_MAX), R - 12, INK);
+    // Reads POWER, not lever position, so overdrive shows as the needle going past the
+    // redline and the window saying 150%. This is the clearest statement in the game that
+    // there is something beyond full throttle, and it costs one multiply.
+    const od = dead ? 0 : (phys.overdrive || 0);
+    const power = dead ? 0 : phys.throttle * (1 + OD_GAIN * od);
+    const rpm = dead ? 0 : 600 + power * 2400;
+    // clamped just past full scale so the needle PINS against the stop rather than
+    // wrapping back around the dial and reading as a low RPM
+    needle(g, cx, cy, sweepAng(Math.min(1.04, rpm / RPM_MAX)), R - 12, od > 0.05 ? WARN : INK);
     hub(g, cx, cy);
-    digital(g, cx, cy, Math.round(phys.throttle * 100) + '%', INK);
+    digital(g, cx, cy, Math.round(power * 100) + '%', od > 0.05 ? WARN : INK);
 
     // G METER — stress rides the rim as a filling red arc
     cx = this.cx[GEE];

@@ -14,8 +14,10 @@ const RHO = 1.225;
 // computed at reset time because the seeded layout moves the strip
 const SPAWN_SPEED = 55;
 
-// Overdrive: the fraction of extra thrust on top of the normal 100% gate.
-const OD_GAIN = 0.40;
+// Overdrive: the fraction of extra thrust on top of the normal 100% gate, so 0.50 is a
+// 150% engine. Exported because the tachometer reads out the same number — the gauge saying
+// 150% and the airframe getting 140% would be a lie told by two files that disagree.
+export const OD_GAIN = 0.50;
 
 const GEAR_TIME = 1.6;      // s to extend/retract
 const STANCE_PITCH = 0.10;  // taildragger nose-up at rest
