@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { heightAt, runwayInfluence } from './heightcore.js';
+import { heightAt, runwayInfluence, RUNWAYS } from './heightcore.js';
 
 // Radio masts on the high ground and a wind farm along a ridge. Both exist for the same
 // reason: an island of bare hills gives you nothing to judge SIZE or DISTANCE against, and a
@@ -15,20 +15,58 @@ import { heightAt, runwayInfluence } from './heightcore.js';
 
 const flat = { flatShading: true, roughness: 1 };
 
+// NOTHING TALL GOES IN AN APPROACH. runwayInfluence only covers the strip and the ground it
+// flattens — it says nothing about the several kilometres of air you fly down to reach the
+// threshold, so on its own it happily allowed a 46 m turbine on short final.
+//
+// This is the obstacle surface instead: a corridor off each threshold, along the extended
+// centreline, WIDENING with distance the way a real one does. Local coordinates come from
+// the same (_c, _s) basis the runway meshes are built in, so the corridor cannot disagree
+// with the strip it belongs to.
+const APPROACH_LEN = 5200;
+function inApproach(x, z) {
+  for (const r of RUNWAYS) {
+    const dx = x - r.x, dz = z - r.z;
+    const lx = dx * r._c - dz * r._s;          // across the strip
+    const lz = dx * r._s + dz * r._c;          // along it
+    const past = Math.abs(lz) - r.length / 2;  // distance out beyond a threshold
+    if (past < -40 || past > APPROACH_LEN) continue;
+    if (Math.abs(lx) < 330 + 0.17 * Math.max(0, past)) return true;
+  }
+  return false;
+}
+
+// A crest is simply a point most of whose surroundings are below it. Sampled at 230 m, which
+// is wide enough to ignore the fine ridge noise and narrow enough to still resolve one hill.
+function onCrest(x, z, h, need = 5) {
+  let lower = 0;
+  for (let a = 0; a < 8; a++) {
+    const th = (a * Math.PI) / 4;
+    if (heightAt(x + Math.cos(th) * 230, z + Math.sin(th) * 230) < h) lower++;
+  }
+  return lower >= need;
+}
+
+function siteOK(x, z, minH, maxSlope) {
+  const h = heightAt(x, z);
+  if (h < minH) return null;
+  if (runwayInfluence(x, z) > 0.01) return null;
+  if (inApproach(x, z)) return null;
+  const gx = heightAt(x + 26, z) - heightAt(x - 26, z);
+  const gz = heightAt(x, z + 26) - heightAt(x, z - 26);
+  const slope = Math.hypot(gx, gz) / 52;
+  if (slope > maxSlope) return null;
+  return { x, z, h, slope, score: h - slope * 900 };
+}
+
 function pickSites(count, { minH, maxSlope, spacing, reach = 7200, skip = 0 }) {
   const cands = [];
   const STEP = 180;
   for (let x = -reach; x <= reach; x += STEP) {
     for (let z = -reach; z <= reach; z += STEP) {
       if (Math.hypot(x, z) > reach) continue;
-      const h = heightAt(x, z);
-      if (h < minH) continue;
-      if (runwayInfluence(x, z) > 0.01) continue;      // never on a strip or its approach
-      const gx = heightAt(x + 26, z) - heightAt(x - 26, z);
-      const gz = heightAt(x, z + 26) - heightAt(x, z - 26);
-      const slope = Math.hypot(gx, gz) / 52;
-      if (slope > maxSlope) continue;
-      cands.push({ x, z, h, slope, score: h - slope * 900 });
+      const c = siteOK(x, z, minH, maxSlope);
+      if (c) cands.push(c);
     }
   }
   cands.sort((a, b) => b.score - a.score);
@@ -39,6 +77,62 @@ function pickSites(count, { minH, maxSlope, spacing, reach = 7200, skip = 0 }) {
     out.push(c);
   }
   return out;
+}
+
+// A WIND FARM FOLLOWS A RIDGE. Turbines chosen by "highest spot with clearance" land as a
+// scatter of unrelated poles, because the filter has no notion of the LINE the hilltops form
+// — and a real farm is sited along a crest precisely because that is where the wind is.
+//
+// So: take the best site as a seed and walk outward from it in both directions, each step
+// choosing the heading that stays highest. Following the local maximum IS following the
+// crest, and biasing toward carrying straight on stops the walk from turning back down its
+// own ridge at the first bump.
+function walkRidge(seed, perSide, spacing, minH, maxSlope) {
+  const line = [seed];
+  for (const sign of [1, -1]) {
+    // start along the contour: the ridge runs across the slope, not down it
+    const gx = heightAt(seed.x + 40, seed.z) - heightAt(seed.x - 40, seed.z);
+    const gz = heightAt(seed.x, seed.z + 40) - heightAt(seed.x, seed.z - 40);
+    let dx = -gz, dz = gx;
+    const L = Math.hypot(dx, dz) || 1;
+    dx = (dx / L) * sign; dz = (dz / L) * sign;
+    let cur = seed;
+    for (let i = 0; i < perSide; i++) {
+      let best = null;
+      // TWO STEP LENGTHS. With one fixed stride the walk dies at the first steep shoulder and
+      // the farm comes out as two turbines — a shorter probe lets it step around a bad patch
+      // and pick the ridge back up, which is what actually happened here.
+      for (const step of [spacing, spacing * 0.62]) {
+        for (let a = -0.75; a <= 0.75001; a += 0.125) {
+          const ca = Math.cos(a), sa = Math.sin(a);
+          const nx = dx * ca - dz * sa, nz = dx * sa + dz * ca;
+          const px = cur.x + nx * step, pz = cur.z + nz * step;
+          if (Math.hypot(px, pz) > 7000) continue;
+          if (line.some(o => Math.hypot(o.x - px, o.z - pz) < spacing * 0.55)) continue;
+          const c = siteOK(px, pz, minH, maxSlope);
+          if (!c) continue;
+          // THE WALK PICKS THE BEST CANDIDATE, WHICH IS NOT THE SAME AS A GOOD ONE. Without
+          // these two it takes the least-bad step even when every option leaves the crest,
+          // and the row ends up with a turbine 360 m below its neighbours sitting in a
+          // hollow with six of its eight surroundings ABOVE it.
+          // 4 of 8, not 5: a point in the MIDDLE of a ridge has higher ground on both sides
+          // along the crest, so demanding a majority rejects exactly the positions a row of
+          // turbines wants and left the farm with two. The hollow this is here to exclude
+          // scored 2. The drop limit is likewise generous enough to follow a crest that
+          // undulates, while still refusing to descend into a valley.
+          if (cur.h - c.h > 110) continue;
+          if (!onCrest(px, pz, c.h, 4)) continue;
+          const score = c.score - Math.abs(a) * 55 - (step < spacing ? 40 : 0);
+          if (!best || score > best.score2) best = { ...c, score2: score, nx, nz };
+        }
+        if (best) break;
+      }
+      if (!best) break;
+      line.push(best);
+      cur = best; dx = best.nx; dz = best.nz;
+    }
+  }
+  return line;
 }
 
 export function createLandmarks(scene) {
@@ -87,13 +181,21 @@ export function createLandmarks(scene) {
   const _c = new THREE.Color();
   for (let i = 0; i < masts.length; i++) mastLamps.setColorAt(i, _c.setRGB(1, 0.23, 0.18));
 
-  // ── WIND FARM ───────────────────────────────────────────────────────────
-  // Skips the very top of the candidate list so the turbines take the next tier of ground
-  // rather than fighting the masts for the same three summits.
-  const turbines = pickSites(7, { minH: 150, maxSlope: 0.26, spacing: 1150, skip: 12 });
-  // all facing roughly into the prevailing wind, with a little scatter so the farm does not
-  // look stamped — real ones yaw together but never exactly
-  turbines.forEach((t, i) => { t.yaw = 0.63 + Math.sin(i * 2.4) * 0.22; });
+  // ── WIND FARM, ALONG A RIDGE ────────────────────────────────────────────
+  // The seed skips the very top of the candidate list so the farm takes the next tier of
+  // ground rather than fighting the masts for the same three summits, then the line is
+  // walked out from it along the crest.
+  // the seed has to be on a crest too, or the line starts on a shoulder and walks downhill
+  const seedPool = pickSites(24, { minH: 150, maxSlope: 0.26, spacing: 1, skip: 14 });
+  const seed = seedPool.find(s => onCrest(s.x, s.z, s.h, 6)) || seedPool[0];
+  // maxSlope 0.44, not the 0.26 the seed was chosen with: a crest has steep FLANKS by
+  // definition, and measuring slope over +/-26 m on a ridge line picks that up. Holding the
+  // walk to runway-grade ground stopped it dead after two turbines.
+  const turbines = seed ? walkRidge(seed, 4, 620, 120, 0.44) : [];
+  // ALL YAWED TOGETHER. A farm faces the prevailing wind as one — the earlier per-turbine
+  // scatter was meant to look natural and instead read as a set of unrelated poles, which is
+  // the opposite of what a row of turbines looks like.
+  turbines.forEach((t) => { t.yaw = 0.63; });
 
   const TOW_H = 46, BLADE = 21;
   place(new THREE.CylinderGeometry(0.85, 1.9, TOW_H, 8), white, turbines, TOW_H / 2);
