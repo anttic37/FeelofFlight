@@ -56,7 +56,21 @@ export function createWater(scene, heightAt) {
     uMid: { value: new THREE.Color().setRGB(0.030, 0.150, 0.260) },
     uHaze: { value: SKY.haze.clone() },
     uShallow: { value: new THREE.Color().setRGB(0.085, 0.400, 0.430) },
-    uGlint: { value: 26.0 },
+    // Exponent and amplitude of the sun glitter. BOTH matter and they pull against each
+    // other: the exponent sets how wide the path is, the amplitude sets how far into
+    // clipping the middle of it goes. At 26 and 9.0 anything within ~23 degrees of the
+    // mirror direction reached 1.0 and the path stopped being sparkle at all — it became
+    // one white sheet, which is the "total white specular".
+    // Swept at a 6 degree sun with the camera low and looking straight down the path, as
+    // the percentage of water pixels at pure white / near white:
+    //   exp 26 amp 9.0 (was)   2.00%  9.23%     <- the white sheet
+    //   exp 60 amp 4.0         0      3.53%
+    //   exp 96 amp 3.2         0      2.09%     <- here
+    //   exp 96 amp 1.8         0      0.92%     (path getting faint)
+    // A tighter lobe is what turns a sheet back into sparkle: fewer pixels qualify at all,
+    // so the ones that do can stay bright without the whole path fusing into white.
+    uGlint: { value: 96.0 },
+    uGlintAmp: { value: 3.2 },
     uHazeNear: { value: 1800.0 },
     uHazeFar: { value: 15000.0 },
     uChop: { value: 1.0 },
@@ -102,7 +116,7 @@ vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
       .replace('#include <common>', `#include <common>
 uniform float uTime;
 uniform vec3 uSunDir, uZenith, uHorizon, uDeep, uMid, uShallow, uHaze;
-uniform float uGlint, uChop, uHazeNear, uHazeFar, uCaps, uFoam;
+uniform float uGlint, uGlintAmp, uChop, uHazeNear, uHazeFar, uCaps, uFoam;
 uniform vec2 uWind;
 uniform vec3 uSubsurface;
 varying float vShoreDepth;
@@ -212,7 +226,16 @@ vec2 q = vWorldPos.xz;
 // cat's-paws of dark ripple between glassier lanes. Without this the chop is uniform
 // across the whole surface, which is a large part of why it read as a noise texture
 // rather than as water.
-float gust = 0.50 + 1.00 * (0.5 + pnoise(q * 0.0016 + vec2(uTime * 0.012, 0.0)));
+// THE DRIFT RATE IS WHAT MAKES THIS READ AS PAINTED ON. The pattern is 625 m across and
+// the time term moved it at speed/freq = 0.012/0.0016 = 7.5 m/s, so from an aeroplane doing
+// 70 it is pinned to the sea like a texture rather than blowing across it. 0.045 puts it at
+// 28 m/s, which is a squall line moving over the water at a believable clip and, more to the
+// point, visibly moving relative to you.
+//
+// The contrast came down with it: +/-50% of the chop amplitude over a 625 m patch is what
+// made these read as distinct light and dark FEATURES rather than as the sea being unevenly
+// ruffled. +/-28% still breaks up the uniform chop without drawing shapes.
+float gust = 0.72 + 0.56 * (0.5 + pnoise(q * 0.0016 + vec2(uTime * 0.045, 0.0)));
 
 //                    freq     across  angle   speed  amplitude
 vec2 g2 = waveOctave(q, 0.040,  0.55,  -0.31,  0.10,  1.09);  // kept for whitecaps
@@ -230,8 +253,10 @@ vec3 wN = normalize(vec3(-g.x, 1.0, -g.y));
 vec3 body = mix(uShallow, uMid, smoothstep(0.0, 4.0, vShoreDepth));
 body = mix(body, uDeep, smoothstep(4.0, 22.0, vShoreDepth));
 // slow drifting patches: real seas are never one flat tint
-float pat = wnoise(vWorldPos.xz * 0.0052 + vec2(uTime * 0.011, -uTime * 0.008))
-          + wnoise(vWorldPos.xz * 0.0016 + vec2(-uTime * 0.006, uTime * 0.004));
+// Same problem as the gusts: 192 m and 625 m tints creeping at 2-4 m/s are features painted
+// on the sea. Sped up to drift like the water they are tinting.
+float pat = wnoise(vWorldPos.xz * 0.0052 + vec2(uTime * 0.032, -uTime * 0.024))
+          + wnoise(vWorldPos.xz * 0.0016 + vec2(-uTime * 0.020, uTime * 0.013));
 body *= 0.90 + 0.10 * pat;
 
 // ── Fresnel: transparent underfoot, mirror at the horizon ──
@@ -320,7 +345,7 @@ diffuseColor.rgb = mix(diffuseColor.rgb, mix(skyAt(normalize(vec3(-V.x, 0.035, -
       .replace('#include <emissivemap_fragment>', `#include <emissivemap_fragment>
 float glint = pow(max(dot(R, uSunDir), 0.0), uGlint);
 // (1 - hz) so the glitter dies with the haze rather than burning through it
-totalEmissiveRadiance += vec3(1.0, 0.97, 0.90) * glint * F * 9.0 * (0.25 + 0.75 * fMid) * (1.0 - hz);`)
+totalEmissiveRadiance += vec3(1.0, 0.97, 0.90) * glint * F * uGlintAmp * (0.25 + 0.75 * fMid) * (1.0 - hz);`)
 
       // As the normal octaves fade out their energy has to go somewhere or distant water
       // turns into a mirror. Roughness rises to carry it, which is what keeps the far sea
