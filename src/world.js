@@ -14,6 +14,7 @@ import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
 import { SUN_DIR, SKY, createSkyMaterial } from './atmosphere.js';
 import { createRunways } from './runways.js';
 import { createWater } from './water.js';
+import { createLandmarks } from './landmarks.js';
 
 // Scene construction for the procedural island: sky/sun/lights, the static
 // terrain mesh, vegetation scatter, runways, water. Clouds are not scene
@@ -306,6 +307,9 @@ export function createWorld(scene) {
 
   const runways = createRunways(scene);
   const water = createWater(scene, heightAt);
+  // masts on the summits and a wind farm on the next tier down — built after the runways so
+  // the site scan can reject anything sitting on a strip or its approach
+  const landmarks = createLandmarks(scene);
   // NEAR-FIELD PROPS, OFF. They existed to give a sense of speed close to the ground,
   // and they do — but they read as scattered white pebbles and teal cones sitting ON
   // the terrain rather than as anything growing out of it, and at altitude they are a
@@ -331,6 +335,7 @@ export function createWorld(scene) {
     scatter.update(planePos, time);
     runways.update(time);
     water.update(time);
+    landmarks.update(time);
   }
 
   // the atmosphere handles go out so daynight.js can drive them; everything else here is

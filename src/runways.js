@@ -32,6 +32,10 @@ export function createRunways(scene) {
   const markMat = new THREE.MeshBasicMaterial({ color: 0xd6d6ca });
   const lightGeo = new THREE.SphereGeometry(0.42, 6, 5);
   const lightMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+  // the stalk under each lamp, and the low plates along the verge
+  const poleStalkGeo = new THREE.CylinderGeometry(0.055, 0.075, 0.95, 5);
+  const stalkMat = new THREE.MeshStandardMaterial({ color: 0x6f7276, flatShading: true, roughness: 1 });
+  const boardGeo = new THREE.BoxGeometry(0.14, 0.62, 1.5);
   const amber = new THREE.Color(0xffb347), green = new THREE.Color(0x53e07a);
   const mtx = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
   q.identity();
@@ -74,27 +78,55 @@ export function createRunways(scene) {
     }
     g.add(marks);
 
-    // edge lights (amber) + threshold rows (green), unlit so they read as emissive
+    // edge lights (amber) + threshold rows (green), unlit so they read as emissive.
+    // EACH ONE STANDS ON A POLE now: the lamps used to be spheres floating at 0.5 with
+    // nothing under them, which from low down read as beads hovering over the grass. The
+    // stalk is what makes them read as fittings planted in the ground.
     const rows = Math.floor(r.length / 30) + 1;
-    const lights = new THREE.InstancedMesh(lightGeo, lightMat, rows * 2 + 10);
+    const nLights = rows * 2 + 10;
+    const lights = new THREE.InstancedMesh(lightGeo, lightMat, nLights);
+    const poles = new THREE.InstancedMesh(poleStalkGeo, stalkMat, nLights);
+    const LAMP_Y = 0.95;
     let li = 0;
     s.set(1, 1, 1);
+    const placeLight = (lx, lz, col) => {
+      p.set(lx, LAMP_Y, lz);
+      lights.setMatrixAt(li, mtx.compose(p, q, s));
+      lights.setColorAt(li, col);
+      p.set(lx, LAMP_Y * 0.5, lz);           // stalk spans ground to lamp
+      poles.setMatrixAt(li, mtx.compose(p, q, s));
+      li++;
+    };
     for (let k = 0; k < rows; k++) {
       const lz = -(rows - 1) * 15 + k * 30;
-      for (const side of [-1, 1]) {
-        p.set(side * (r.width / 2 + 1.7), 0.5, lz);
-        lights.setMatrixAt(li, mtx.compose(p, q, s));
-        lights.setColorAt(li++, amber);
-      }
+      for (const side of [-1, 1]) placeLight(side * (r.width / 2 + 1.7), lz, amber);
     }
     for (const end of [-1, 1]) {
       for (let k = 0; k < 5; k++) {
-        p.set(-r.width / 2 + (k + 0.5) * (r.width / 5), 0.5, end * (r.length / 2 + 2.5));
-        lights.setMatrixAt(li, mtx.compose(p, q, s));
-        lights.setColorAt(li++, green);
+        placeLight(-r.width / 2 + (k + 0.5) * (r.width / 5), end * (r.length / 2 + 2.5), green);
       }
     }
-    g.add(lights);
+    poles.count = li;
+    poles.castShadow = true;
+    g.add(lights, poles);
+
+    // EDGE MARKER BOARDS down both verges, the low white plates that make the runway edge
+    // legible on the ground when the lights are not lit. Spaced wider than the lamps so the
+    // two patterns do not merge into one dotted line from the air.
+    const boardN = Math.max(2, Math.floor(r.length / 90));
+    const boards = new THREE.InstancedMesh(boardGeo, markMat, boardN * 2);
+    let bi = 0;
+    for (let k = 0; k < boardN; k++) {
+      const lz = -r.length / 2 + 45 + k * 90;
+      for (const side of [-1, 1]) {
+        p.set(side * (r.width / 2 + 4.2), 0.42, lz);
+        boards.setMatrixAt(bi++, mtx.compose(p, q, s));
+      }
+    }
+    boards.count = bi;
+    boards.castShadow = true;
+    g.add(boards);
+
     group.add(g);
   }
 
