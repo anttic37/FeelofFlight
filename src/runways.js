@@ -137,37 +137,53 @@ export function createRunways(scene) {
   const concrete = new THREE.MeshStandardMaterial({ color: 0xd7d2c4, ...flat });
   const glass = new THREE.MeshStandardMaterial({ color: 0x2b4256, ...flat, roughness: 0.35, metalness: 0.25 });
   const steel = new THREE.MeshStandardMaterial({ color: 0x8d9298, ...flat });
-  const shaftGeo = new THREE.CylinderGeometry(2.0, 2.9, 11, 8);
-  const galleryGeo = new THREE.CylinderGeometry(4.3, 4.3, 0.35, 8);
-  const glassGeo = new THREE.CylinderGeometry(3.5, 3.15, 2.6, 8);
-  const capGeo = new THREE.CylinderGeometry(3.9, 3.7, 0.5, 8);
-  const mastGeo = new THREE.CylinderGeometry(0.09, 0.09, 3.2, 4);
-  const beaconGeo = new THREE.SphereGeometry(0.55, 8, 6);
-  const beacons = [];
-  for (const r of RUNWAYS) {
+  // INSTANCED ACROSS THE STRIPS, which is what pays for the extra detail. Every part used
+  // to be its own Mesh per runway, so an eight-strip island spent 48 draw calls on towers
+  // alone; as instanced parts it is eleven however many strips the seed produces, and the
+  // plinth, the gallery railing and the antenna cross-arm are then free.
+  const UP = new THREE.Vector3(0, 1, 0);
+  const tq = new THREE.Quaternion(), tp = new THREE.Vector3(), ts = new THREE.Vector3(1, 1, 1);
+  const NT = RUNWAYS.length;
+  const towerAt = RUNWAYS.map((r) => {
     // opposite side from the windsock, a third of the way along the strip
     const lx = -(r.width / 2 + 34), lz = -r.length / 2 + 110;
     const tx = r.x + lx * r._c + lz * r._s, tz = r.z - lx * r._s + lz * r._c;
-    const tower = new THREE.Group();
-    tower.position.set(tx, heightAt(tx, tz) - 0.6, tz);
-    tower.rotation.y = r.heading;
-    const shaft = new THREE.Mesh(shaftGeo, concrete);
-    shaft.position.y = 5.5;
-    const gallery = new THREE.Mesh(galleryGeo, concrete);
-    gallery.position.y = 11.1;
-    const cab = new THREE.Mesh(glassGeo, glass);
-    cab.position.y = 12.5;
-    const cap = new THREE.Mesh(capGeo, concrete);
-    cap.position.y = 14;
-    const mast = new THREE.Mesh(mastGeo, steel);
-    mast.position.y = 15.8;
-    const beacon = new THREE.Mesh(beaconGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }));
-    beacon.position.y = 17.6;
-    for (const m of [shaft, gallery, cab, cap]) { m.castShadow = true; m.receiveShadow = true; }
-    tower.add(shaft, gallery, cab, cap, mast, beacon);
-    group.add(tower);
-    beacons.push({ beacon, ph: beacons.length * 1.37 });
-  }
+    return { x: tx, y: heightAt(tx, tz) - 0.6, z: tz, h: r.heading };
+  });
+  const towerPart = (geo, mat, yy, shadow = true) => {
+    const im = new THREE.InstancedMesh(geo, mat, NT);
+    for (let i = 0; i < NT; i++) {
+      const t = towerAt[i];
+      tq.setFromAxisAngle(UP, t.h);
+      tp.set(t.x, t.y + yy, t.z);
+      mtx.compose(tp, tq, ts);
+      im.setMatrixAt(i, mtx);
+    }
+    im.instanceMatrix.needsUpdate = true;
+    im.castShadow = shadow; im.receiveShadow = shadow;
+    group.add(im);
+    return im;
+  };
+
+  // A splayed plinth and a tapering shaft read as something built to stand up in wind; the
+  // old single barrel read as a pipe. The glazed band partway up is the stairwell, and it
+  // is what gives the shaft a sense of scale from the air.
+  towerPart(new THREE.CylinderGeometry(3.5, 4.2, 1.8, 8), concrete, 0.9);
+  towerPart(new THREE.CylinderGeometry(2.0, 2.9, 10.2, 8), concrete, 6.9);
+  towerPart(new THREE.CylinderGeometry(2.32, 2.32, 1.5, 8), glass, 8.4, false);
+  towerPart(new THREE.CylinderGeometry(4.3, 4.3, 0.35, 8), concrete, 12.2);
+  // gallery railing: a thin ring standing on the balcony edge
+  towerPart(new THREE.TorusGeometry(4.15, 0.06, 4, 14).rotateX(Math.PI / 2), steel, 13.1, false);
+  towerPart(new THREE.CylinderGeometry(3.5, 3.15, 2.6, 8), glass, 13.7);
+  towerPart(new THREE.CylinderGeometry(3.9, 3.7, 0.5, 8), concrete, 15.2);
+  towerPart(new THREE.CylinderGeometry(0.09, 0.09, 3.4, 4), steel, 17.0, false);
+  // antenna cross-arms, the detail that makes a mast read as a mast
+  towerPart(new THREE.BoxGeometry(2.4, 0.07, 0.07), steel, 17.7, false);
+  towerPart(new THREE.BoxGeometry(1.6, 0.07, 0.07), steel, 18.4, false);
+  const beaconGeo = new THREE.SphereGeometry(0.55, 8, 6);
+  const beaconInst = towerPart(beaconGeo, new THREE.MeshBasicMaterial({ color: 0xffffff }), 19.0, false);
+  const _bc = new THREE.Color();
+  for (let i = 0; i < NT; i++) beaconInst.setColorAt(i, _bc.setRGB(1, 1, 1));
 
   // APPROACH LIGHTS: five crossbars marching out from each threshold along the
   // extended centreline. Placed in WORLD space and sampled onto the terrain —
@@ -195,25 +211,83 @@ export function createRunways(scene) {
   appLights.count = ai;
   group.add(appLights);
 
-  // hangar shed beside the primary strip only, door facing the runway
+  // ── AIRFIELD BUILDINGS, beside the primary strip ────────────────────────
+  //
+  // One red shed with a pyramid on top does not read as an aerodrome — it reads as a barn
+  // that happens to be near a runway, which is what it looked like. What makes a small
+  // field legible from the air is the APRON and the fact that things face it: a pale
+  // concrete pad with the hangar mouth opening onto it, vehicles and tanks parked on it,
+  // and everything squared to the runway rather than scattered.
+  //
+  // All of it is axis-aligned boxes and cylinders inside one group that carries the strip's
+  // heading, so nothing here depends on getting a rotation order right.
   const r0 = RUNWAYS[0];
-  const hx = r0.x + -46 * r0._c + 150 * r0._s, hz = r0.z - -46 * r0._s + 150 * r0._c;
-  const hangar = new THREE.Group();
-  hangar.position.set(hx, heightAt(hx, hz), hz);
-  hangar.rotation.y = r0.heading;
-  const body = new THREE.Mesh(new THREE.BoxGeometry(15, 5.6, 11), red);
-  body.position.y = 2.4; // sunk slightly into the graded ground
-  body.castShadow = true;
-  body.receiveShadow = true;
-  const roof = new THREE.Mesh(new THREE.ConeGeometry(9.8, 3.4, 4).rotateY(Math.PI / 4), cream);
-  roof.scale.set(1.2, 1, 0.9);
-  roof.position.y = 6.9;
-  roof.castShadow = true;
-  const door = new THREE.Mesh(new THREE.PlaneGeometry(8.5, 4.4), new THREE.MeshStandardMaterial({ color: 0x4d3f36, ...flat }));
-  door.rotation.y = Math.PI / 2;
-  door.position.set(7.51, 2.1, 0);
-  hangar.add(body, roof, door);
-  group.add(hangar);
+  const hx = r0.x + -52 * r0._c + 150 * r0._s, hz = r0.z - -52 * r0._s + 150 * r0._c;
+  const yard = new THREE.Group();
+  yard.position.set(hx, heightAt(hx, hz), hz);
+  yard.rotation.y = r0.heading;
+  group.add(yard);
+
+  const panel = new THREE.MeshStandardMaterial({ color: 0xb9bcb4, ...flat });   // corrugated metal
+  const roofMet = new THREE.MeshStandardMaterial({ color: 0x53585c, ...flat });
+  const apronMat = new THREE.MeshStandardMaterial({ color: 0x9d9c94, ...flat });
+  const doorMat = new THREE.MeshStandardMaterial({ color: 0x6c7076, ...flat });
+
+  const add = (geo, mat, x, y, z, cast = true) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, z);
+    m.castShadow = cast; m.receiveShadow = true;
+    yard.add(m);
+    return m;
+  };
+
+  // apron: the pad everything else sits on, running toward the runway edge
+  add(new THREE.BoxGeometry(52, 0.35, 34), apronMat, 12, 0.12, 0, false);
+
+  // MAIN HANGAR. Wide and shallow with a low ridge, which is the proportion of a real
+  // general-aviation hangar; the old one was a house. The mouth faces the apron.
+  add(new THREE.BoxGeometry(20, 7.2, 15), panel, -8, 3.4, 0);
+  const ridge = add(new THREE.ConeGeometry(11.2, 2.6, 4).rotateY(Math.PI / 4), roofMet, -8, 8.2);
+  ridge.scale.set(1.28, 1, 0.96);
+  // eaves: a thin slab a little wider than the walls, so the roof has a lip and the wall
+  // gets a shadow line under it instead of meeting the roof in a bare seam
+  add(new THREE.BoxGeometry(21.6, 0.3, 16.4), roofMet, -8, 6.95, 0);
+  // the door itself, inset, with sliding leaves
+  add(new THREE.BoxGeometry(0.4, 5.6, 12.4), doorMat, 2.1, 2.9, 0, false);
+  for (let i = 0; i < 6; i++) {
+    add(new THREE.BoxGeometry(0.22, 5.4, 0.18), panel, 2.35, 2.9, -5.2 + i * 2.08, false);
+  }
+  // office lean-to on the far end, lower and in the trim colour
+  add(new THREE.BoxGeometry(6.4, 3.4, 7), red, -21, 1.7, 3.4);
+  add(new THREE.BoxGeometry(7.0, 0.26, 7.6), roofMet, -21, 3.5, 3.4);
+  add(new THREE.BoxGeometry(0.16, 1.1, 4.6), glass, -17.75, 2.3, 3.4, false);
+
+  // FUEL: two horizontal tanks on stands. rotateZ puts a cylinder's axis along X, which is
+  // the one cylinder transform that needs no thinking about.
+  const tankGeo = new THREE.CylinderGeometry(1.5, 1.5, 6.4, 12).rotateZ(Math.PI / 2);
+  for (const z of [-11.5, -7.6]) {
+    add(tankGeo, cream, 20, 2.3, z);
+    add(new THREE.BoxGeometry(0.5, 1.4, 0.5), steel, 17.6, 0.9, z, false);
+    add(new THREE.BoxGeometry(0.5, 1.4, 0.5), steel, 22.4, 0.9, z, false);
+  }
+
+  // A windsock is not the only thing that moves on an airfield, but it is the only thing
+  // that has to — these just have to be THERE, so they are static and cheap.
+  add(new THREE.BoxGeometry(4.2, 1.5, 1.9), cream, 9, 0.95, 9.5);     // fuel bowser
+  add(new THREE.BoxGeometry(1.7, 1.2, 1.7), red, 7.2, 1.5, 9.5);      // its cab
+  add(new THREE.BoxGeometry(2.6, 1.1, 1.4), panel, 14, 0.75, 12.2);   // tug
+
+  // perimeter posts along the back of the yard, instanced
+  const postGeo = new THREE.CylinderGeometry(0.09, 0.09, 1.5, 5);
+  const posts = new THREE.InstancedMesh(postGeo, steel, 14);
+  for (let i = 0; i < 14; i++) {
+    tq.identity();
+    tp.set(-30 + i * 4.4, 0.75, -17.5);
+    mtx.compose(tp, tq, ts);
+    posts.setMatrixAt(i, mtx);
+  }
+  posts.instanceMatrix.needsUpdate = true;
+  yard.add(posts);
 
   scene.add(group);
 
@@ -224,13 +298,22 @@ export function createRunways(scene) {
     }
     // aerodrome beacon: a rotating lamp seen from a fixed point reads as a
     // sharp flash, not a fade — hence the narrow pulse rather than a sine
-    for (const b of beacons) {
-      const ph = (time * 0.55 + b.ph) % 1;
+    // Instanced now, so the flash is per-instance colour and per-instance scale rather than
+    // a material and a transform per tower.
+    for (let i = 0; i < NT; i++) {
+      const ph = (time * 0.55 + i * 1.37) % 1;
       const flash = ph < 0.11 ? 1 : (ph < 0.5 && ph > 0.39 ? 0.75 : 0.06);
-      b.beacon.material.color.setRGB(flash, flash * (0.55 + 0.45 * flash), flash * 0.35);
+      beaconInst.setColorAt(i, _bc.setRGB(flash, flash * (0.55 + 0.45 * flash), flash * 0.35));
       const sc = 0.55 + flash * 0.75;
-      b.beacon.scale.set(sc, sc, sc);
+      const t = towerAt[i];
+      tq.setFromAxisAngle(UP, t.h);
+      tp.set(t.x, t.y + 19.0, t.z);
+      mtx.compose(tp, tq, ts.set(sc, sc, sc));
+      beaconInst.setMatrixAt(i, mtx);
     }
+    ts.set(1, 1, 1);
+    beaconInst.instanceMatrix.needsUpdate = true;
+    if (beaconInst.instanceColor) beaconInst.instanceColor.needsUpdate = true;
   }
   return { update };
 }
