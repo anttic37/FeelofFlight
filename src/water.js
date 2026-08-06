@@ -98,6 +98,7 @@ uniform float uTime;
 attribute float shoreDepth;
 attribute float waveAmp;
 varying float vShoreDepth;
+varying float vWaveAmp;
 varying vec3 vWorldPos;`)
       // Long swells only: wavelengths ~150 / ~165 / ~200 m, all well above the 55 m
       // grid pitch's Nyquist limit, so there is no vertex-sampling shimmer.
@@ -105,6 +106,7 @@ varying vec3 vWorldPos;`)
       // the waterline sideways across the beach slope and saw-tooths the coast.
       .replace('#include <begin_vertex>', `#include <begin_vertex>
 vShoreDepth = shoreDepth;
+vWaveAmp = waveAmp;
 float wDamp = clamp((shoreDepth - 1.8) * 0.55, 0.0, 1.0) * waveAmp;
 transformed.y += wDamp * (0.15
   + sin(position.x * 0.042 + uTime * 0.9) * 0.34
@@ -120,6 +122,7 @@ uniform float uGlint, uGlintAmp, uChop, uHazeNear, uHazeFar, uCaps, uFoam;
 uniform vec2 uWind;
 uniform vec3 uSubsurface;
 varying float vShoreDepth;
+varying float vWaveAmp;
 varying vec3 vWorldPos;
 
 // Value noise. Unlike products of sines it never forms a repeating lattice, which is
@@ -204,6 +207,21 @@ vec3 skyAt(vec3 d) {
 vec3 V = normalize(cameraPosition - vWorldPos);
 float viewDist = length(cameraPosition - vWorldPos);
 
+// THE TWO SHEETS WERE DOUBLE-BLENDING, which is the stray polygon of deep blue that shows
+// up over the shallows. The detailed sheet is deliberately see-through in shallow water so
+// the sand reads through it — and 0.9 m underneath sits the far ocean, carrying a hardcoded
+// shoreDepth of 60, i.e. deep-ocean colour, on 3.75 km quads. So the "seabed" you saw through
+// the shallows was the far plane, and its tessellation gave the edges. MEASURED: hiding the
+// far plane changed 12.3% of the frame, with a peak delta of 254 — it was not a subtle tint,
+// it was the dominant surface in those pixels.
+//
+// vWaveAmp is 0 only on the far plane, which makes it a free identity test. Discarded where
+// the detailed sheet covers AND is still opaque; past 15 km the sheet has begun its own
+// dissolve toward the horizon and the far plane has to be there to back it, or the sea would
+// fade to sky in the middle distance.
+if (vWaveAmp < 0.5 && viewDist < 15000.0
+    && abs(vWorldPos.x) < 8100.0 && abs(vWorldPos.z) < 8100.0) discard;
+
 // ── surface normal: four octaves, each fading as it approaches sub-pixel ──
 // AMPLITUDES ARE SMALL ON PURPOSE. The previous set produced slopes around 45 degrees;
 // open water sits nearer 5-15, and everything above that reads as crumpled foil rather
@@ -213,8 +231,21 @@ float viewDist = length(cameraPosition - vWorldPos);
 // There is a fourth octave at ~2.4 m now. The old set bottomed out at 8.7 m, so close
 // water had nothing finer than a car-length and looked like slow blobs; wind chop is
 // what makes the surface near the aircraft read as water at all.
-float fChop  = 1.0 - smoothstep(30.0, 260.0, viewDist);
-float fFine  = 1.0 - smoothstep(160.0, 1400.0, viewDist);
+// THE TWO FINEST OCTAVES WERE BEING DELETED WHILE STILL SEVERAL PIXELS WIDE, which is most
+// of why close water had no texture in it. A normal only has to go away once it approaches
+// the pixel scale; below that it aliases and its energy belongs in roughness. Above it, it
+// is free detail. At 62 degrees over 720 px a pixel is 0.0015 rad, so:
+//
+//   chop  2.4 m faded out by  260 m -> still 6.14 px wide
+//   fine  7.6 m faded out by 1400 m -> still 3.61 px wide
+//   mid    25 m faded out by 9000 m ->      1.85 px   (correct)
+//   swell 102 m faded out by 52 km  ->      1.31 px   (correct)
+//
+// The two coarse octaves were sized right and the two fine ones were thrown away three
+// times and twice too early. These fade out at ~2.2 px instead, which is where they stop
+// being resolvable rather than where they stop being convenient.
+float fChop  = 1.0 - smoothstep(60.0, 720.0, viewDist);
+float fFine  = 1.0 - smoothstep(300.0, 2300.0, viewDist);
 float fMid   = 1.0 - smoothstep(900.0, 9000.0, viewDist);
 float fSwell = 1.0 - smoothstep(6000.0, 52000.0, viewDist);
 // Every octave lives in wind space and travels ALONG the wind. Longer waves are less
@@ -351,7 +382,10 @@ totalEmissiveRadiance += vec3(1.0, 0.97, 0.90) * glint * F * uGlintAmp * (0.25 +
       // turns into a mirror. Roughness rises to carry it, which is what keeps the far sea
       // reading as textured rather than as polished glass.
       .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
-roughnessFactor = mix(0.055, 0.34, smoothstep(400.0, 26000.0, viewDist));`);
+// Starts further out than it did, because the fine octaves now survive to 720 and 2300 m.
+// Roughness is here to carry the energy of normals that have GONE; ramping it up while they
+// are still being drawn just smears detail that is still resolvable.
+roughnessFactor = mix(0.055, 0.34, smoothstep(1200.0, 26000.0, viewDist));`);
   };
 
   // ── detailed sheet ──────────────────────────────────────────────────────
