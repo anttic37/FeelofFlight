@@ -32,7 +32,7 @@ const PARAMS = new URLSearchParams(location.search);
 // longest contiguous run of vertical discontinuity in a frame, at a pose where the wall
 // is unmistakable: width 120 scores 182, width 60 scores 77, width 40 scores 48. Height
 // alone does almost nothing — 2300 -> 1200 scored 150.
-const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 80;
+const WEATHER_REPEAT = +(PARAMS.get('wrepeat')) || 90;
 
 // How hard to round the joins between blobs in the weather map. 0 restores plain max(),
 // which is what produced the creases — see the smax() comment in renderWeatherMap.
@@ -628,7 +628,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // blobs sit on empty background, so the same coverage that gave a fair-weather sky
   // before now puts the camera inside a cloud. Re-tuned by sweeping: 0.20 gives rounded,
   // varied, well-separated cumulus; 0.27 starts closing the gaps; 0.34 is overcast.
-  clouds.coverage = 0.215;
+  clouds.coverage = 0.19;
   clouds.localWeatherRepeat.set(WEATHER_REPEAT, WEATHER_REPEAT);
   // WIND HAS TO COME OUT OF THE WEATHER MAP NOW, and this is the price of baking
   // the island cap into it. localWeatherOffset accumulates velocity * dt in TILE
@@ -649,7 +649,26 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     const o = weatherOffsetFor(WEATHER_REPEAT);
     clouds.localWeatherOffset.set(o, o);
   }
-  clouds.turbulenceDisplacement = 0; // tuned off — 120 frayed the edges, 350 sprayed them
+  // 25, not 0 and not 120: enough to break the edges up without the fraying that ruled the
+  // higher values out. The old note said "tuned off" — that was against a different weather
+  // field, and the amount a cloud edge can take depends on how solid the body behind it is.
+  clouds.turbulenceDisplacement = 25;
+
+  // --- SCATTERING. All of these sat at library defaults until now, which is why none of them
+  // appeared here before: the panel exposed them, and these are what came back.
+  // scatteringCoefficient below 1 and a real absorption term together take the plastic
+  // brightness off the interior; the two anisotropy lobes at 0.22 / -0.38 are a much weaker
+  // forward lobe than the stock 0.7, so a cloud stops flaring white the moment the sun gets
+  // behind it and keeps its form instead.
+  clouds.scatteringCoefficient = 0.76;
+  clouds.absorptionCoefficient = 0.09;
+  clouds.scatterAnisotropy1 = 0.22;
+  clouds.scatterAnisotropy2 = -0.38;
+  clouds.scatterAnisotropyMix = 0.5;
+  // more sky fill, less bounce off the ground — an island is mostly sea, and sea returns very
+  // little upward compared to the land this defaulted for
+  clouds.skyLightScale = 1.18;
+  clouds.groundBounceScale = 0.56;
 
   // WHAT THE UNDERLYING SHAPE ACTUALLY IS, since it took setting shapeAmount to zero to
   // see it: the weather map is 2D. A cloud is that 2D footprint EXTRUDED vertically and
@@ -711,16 +730,23 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // any step size, so the long strides were only ever saving work nobody
   // needed. The artifact was invisible before only because the clouds were too
   // small and far to show it.
-  clouds.clouds.minStepSize = 50;
+  clouds.clouds.maxIterationCount = 410;
+  clouds.clouds.minStepSize = 65;
   clouds.clouds.maxStepSize = 120;
   // RANGE IS NOT THE CAMERA'S FAR PLANE. Capping this at 12-15 km to "match" the
   // far plane was wrong reasoning: the far plane clips scene GEOMETRY, while the
   // clouds are raymarched in post and composited, so nothing bounded them but
   // this number — and it was slicing the sky flat, cutting distant clouds in
   // half and leaving a hard band along the horizon.
-  clouds.clouds.maxRayDistance = 60000;
+  // 18 km, DELIBERATELY BACK INSIDE the range this warns about, and the warning above is
+  // still true in general — it is the island cap that makes it safe here. Cloud density is
+  // masked to a radius around the island, so past about 20 km there is nothing left to cut;
+  // the flat slice and the hard horizon band happened when this bounded real cloud. Checked
+  // rather than assumed: sampling the horizon band against 60 km finds no step in cloud cover
+  // across it. Raise the cap radius and this has to come back up with it.
+  clouds.clouds.maxRayDistance = 18000;
   // ...and the step has to be allowed to grow again, or the iteration budget
-  // (500) runs out at 50 m a step and the cut simply moves to 25 km instead.
+  // runs out at 65 m a step and the cut simply moves closer instead.
   // Growth was never what caused the combing — maxStepSize 1000 was, and that
   // stays capped at 120.
   clouds.clouds.perspectiveStepScale = 1.005;
@@ -728,8 +754,8 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // The secondary march toward the sun is what self-shadows a cloud. Two
   // iterations at 100 m is enough for cloudscapes viewed from far away and too
   // coarse from inside one, where it banded the nearer masses.
-  clouds.clouds.maxIterationCountToSun = 6;
-  clouds.clouds.minSecondaryStepSize = 40;
+  clouds.clouds.maxIterationCountToSun = 7;
+  clouds.clouds.minSecondaryStepSize = 80;
   clouds.clouds.secondaryStepScale = 1.6;
 
   // 512 across three cascades put visible steps in the cloud self-shadowing at
@@ -820,9 +846,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // global coverage turned the upper sky to fizzy mush). The library's uniforms are vec4, so
   // four slots always exist — the unused one is simply left at zero density below.
   //
-  //   410-840     small puffs, the layer you climb through
-  //   1740-3560   the deep one, where the masses build
-  //   5100-5700   a thin sheet above them
+  //   640-1070    small puffs, the layer you climb through
+  //   2490-3630   the deep one, where the masses build
+  //   6610-7210   a thin sheet above them
   //
   // NOTE THE ROLES SWAPPED. The deep layer used to be the third; it is now the second, so
   // the profiles below no longer line up with the reasoning that named them — see the
@@ -845,8 +871,8 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // Watch the bar against the masked sea, which sits at 0.07: drive it near zero and the
     // sea makes faint cloud too, which draws a thin haze line along the whole horizon at
     // cloud-base height — a full-width straight edge, and a nasty one to diagnose.
-    { channel: 'r', altitude: 410, height: 430, densityScale: 0.145,
-      weatherExponent: 0.75, shapeAlteringBias: 0.32, coverageFilterWidth: 0.635,
+    { channel: 'r', altitude: 640, height: 430, densityScale: 0.26,
+      weatherExponent: 0.75, shapeAlteringBias: 0.32, coverageFilterWidth: 0.70,
       shapeAmount: 0.75, shapeDetailAmount: 0.78, shadow: true, profile: BASE_SOFT },
     // THE DEEP ONE. 1820 m of it, and a high exponent so only the strongest cells survive to
     // fill it — that combination is what builds masses rather than curtains. Depth alone
@@ -868,9 +894,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // 0.97/0.55/1.14 px. BOTH_TAPER measures no better and is worse from above (1.79). So
     // the beard is a density problem, not a depth problem, and this is the first thing to
     // suspect if the layer ever grows one.
-    { channel: 'r', altitude: 1740, height: 1820, densityScale: 0.580,
-      weatherExponent: 3.10, shapeAlteringBias: 0.67, coverageFilterWidth: 0.565,
-      shapeAmount: 1.0, shapeDetailAmount: 1.0, shadow: true, profile: BASE_SOFT },
+    { channel: 'r', altitude: 2490, height: 1140, densityScale: 0.125,
+      weatherExponent: 2.45, shapeAlteringBias: 0.67, coverageFilterWidth: 0.505,
+      shapeAmount: 1.0, shapeDetailAmount: 0.87, shadow: true, profile: BASE_SOFT },
     // A thin sheet on its own channel, so it is decorrelated from the two below and drifts
     // across them instead of sitting directly on top. Low bias because it is shallow: the
     // widest part wants to be near the floor when there are only 600 m to play with.
@@ -879,9 +905,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // sheet for a different reason — the stock profile sits at 0.25 density on the floor, so
     // a thin layer gets sliced off flat along its underside and squared off at the end of
     // every streak, which is what hard cut edges near the horizon look like.
-    { channel: 'g', altitude: 5100, height: 600, densityScale: 0.285,
-      weatherExponent: 2.15, shapeAlteringBias: 0.22, coverageFilterWidth: 0.605,
-      shapeAmount: 1.0, shapeDetailAmount: 0.70, shadow: true, profile: BOTH_TAPER },
+    { channel: 'g', altitude: 6610, height: 600, densityScale: 0.26,
+      weatherExponent: 2.55, shapeAlteringBias: 0.46, coverageFilterWidth: 0.88,
+      shapeAmount: 1.0, shapeDetailAmount: 0.79, shadow: true, profile: BOTH_TAPER },
   ];
   // Names for the tuning panel, so its sections match what the layers actually are now
   // rather than what they were called when the roles were the other way round.
@@ -950,7 +976,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // modelling to lose. With four levels and real depth the trade is the other way round.
   // Absorption is NOT the lever here, for the record: 0 to 0.8 moved the range 15.6 to
   // 17.8, which is nothing.
-  const LUMINANCE_BOOST = 4;
+  const LUMINANCE_BOOST = 4.5;
   // Kept as UNSCALED originals plus a setter, rather than multiplied in place and forgotten.
   // Multiplying in place is one-way: the only record of the 1x value is gone the moment it
   // runs, so a second call compounds instead of setting, and the panel could never do more
