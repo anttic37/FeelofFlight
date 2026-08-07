@@ -42,15 +42,36 @@ const MIN_ALT = THREE.MathUtils.degToRad(1.7);
 // lands in the one moment almost nothing is keyed to it.
 const MOON_SWAP = THREE.MathUtils.degToRad(-6);
 
-// How far below the horizon the PHYSICAL atmosphere is allowed to follow the sun — it lights
-// the clouds and the aerial haze, and it has no moon, so an unfloored sun leaves black clouds
-// hanging in a moonlit world. Parked on the horizon it stands in for moonlight: measured at
-// midnight the brightest cloud reaches 62 against a ground of 31, so they read as lit without
-// becoming the lamp. That number climbs fast — 125 by +2 degrees and 169 by +5, which is the
-// clouds-are-the-only-lit-thing look already rejected once. Below the horizon it collapses
-// just as fast, to 13 by -1.5. Nothing above the model tracks this; the sky comes from the
-// palette, so this trades against the clouds alone.
+// How far below the horizon the PHYSICAL atmosphere follows the sun DURING THE DAY SIDE. It
+// only matters through dusk now — see MOON_GAIN for what happens after the handover — and it
+// keeps the last of the sunset on the cloud tops after the sun itself has gone.
 const NIGHT_FLOOR = THREE.MathUtils.degToRad(num('nightfloor', 0));
+
+// MOONLIGHT FOR A MODEL WITH NO MOON. Parking its sun on the horizon all night was wrong for
+// a reason brightness never showed: a sun on the horizon is a SUNSET, so the clouds came out
+// red — measured red/blue 2.16 — hanging over a sea at 0.63 and a black sky. That is exactly
+// the mismatch it looks like, three systems each lighting from a different idea of the time.
+// A sun HIGH in the sky is neutral, and moonlight is reflected sunlight, so the model gets
+// pointed along the moon instead and turned down until it reads as night. Measured at 0.25
+// absolute: red/blue 0.95, mean cloud luminance 40 against the 34 the red version had — the
+// same night, the right colour. For reference the day-side pairs are cloud 0.98 / sea 0.84 at
+// noon and 1.24 / 1.24 at dusk, so 0.95 / 0.63 sits about where noon does.
+const MOON_GAIN = num('moongain', 0.0625);          // x LUMINANCE_BOOST, i.e. 4 -> 0.25
+
+// The moon is half a turn away from the sun in bearing, so the handover REVERSES which side
+// of a cloud is lit. Nothing can interpolate through that — the two directions are nearly
+// opposite, so a lerp collapses to zero and a slerp swings the light through the zenith. The
+// light is faded down through the swap instead and the flip happens at the bottom of the
+// fade, which is both continuous in brightness and roughly what the eye expects anyway: the
+// last of the sunset goes, then the moon comes up on the other side. About 8 seconds at this
+// cycle length.
+// The fade has to go nearly to black, and that is not over-caution. Dimming to 6% still left
+// the reversal showing as a 4x jump in cloud brightness across two seconds, because the two
+// directions are not merely opposite in bearing — the sun was BEHIND these clouds and the
+// moon is in front of them, so the same dip multiplier lands on a back-lit cloud one side and
+// a front-lit one the other. Only the light going out hides that.
+const SWAP_FADE = THREE.MathUtils.degToRad(4);
+const SWAP_DIP = 0.015;
 
 // The env column below is a FRACTION of full daylight, scaled by this. 0.62 is the tuned
 // environmentIntensity the scene already shipped with, so the +45 row reproduces it exactly.
@@ -314,10 +335,29 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
       u2.sunColor.value.copy(P.cloudSun);
       u2.ambientSky.value.copy(P.cloudAmb);
     } else if (clouds && clouds.setSun) {
-      // takram lights the volume from its own atmosphere model, so it wants the direction
-      // and nothing else — colour comes out of the scattering rather than being handed in.
-      // The TRUE sun, not SUN_DIR: see where trueSunDir is built.
-      clouds.setSun(trueSunDir);
+      // takram lights the volume from its own atmosphere model, so it takes a direction and
+      // an intensity rather than a colour — what colour that produces is the model's answer,
+      // not ours. By day that is the true sun (NOT SUN_DIR, which hands over to the moon and
+      // would paint noon at midnight); by night it is the moon, turned right down, because
+      // the model has no moon of its own and a high light is the only neutral one it can
+      // make. See MOON_GAIN and SWAP_FADE.
+      clouds.setSun(useMoon ? SUN_DIR : trueSunDir);
+      if (clouds.setLuminanceScale) {
+        // k runs 0 -> 1 across the handover band, so the MAGNITUDE is continuous through it;
+        // dip bottoms out at k = 0.5, which is where the direction flips, so the reversal
+        // happens at the darkest moment rather than at full strength
+        const k = THREE.MathUtils.smoothstep(-sunAlt,
+          -(MOON_SWAP + SWAP_FADE), -(MOON_SWAP - SWAP_FADE));
+        const gain = (1 - k) + MOON_GAIN * k;
+        // SQUARED, not linear. A linear |2k-1| touches its minimum for an instant and is
+        // already back to 0.16 one degree either side, which is not long enough — the
+        // multipliers measured 0.098 and 0.100 across the flip while the picture went 6 to
+        // 26, all of it the reversal rather than the fade. Squaring holds the light down
+        // across the whole handover instead of at a single point in it.
+        const edge = 2 * k - 1;
+        const dip = SWAP_DIP + (1 - SWAP_DIP) * edge * edge;
+        clouds.setLuminanceScale(gain * dip);
+      }
     }
 
     state.sunAlt = sunAlt; state.isNight = useMoon;

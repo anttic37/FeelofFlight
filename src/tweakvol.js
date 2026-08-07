@@ -58,8 +58,13 @@ export function initVolTweakPanel({ vc, applyResize }) {
   // does both. Roughly 8 ms, hence mouse-up only.
   slider('sky', 'cloud size', () => repeat, v => repeat = v, 30, 200, 5,
     v => (40000 / v).toFixed(0) + ' m', { commit: v => { repeat = vc.setWeatherRepeat(v); } });
+  // THE RANGE WAS 40x TOO WIDE. This is tile units per second against a tile that is the
+  // whole weather map, so the usable band is tiny: 0.0005 already reads as a fresh breeze
+  // and everything past it is a time-lapse. At the old +/-0.02 the entire useful travel sat
+  // inside one step either side of centre, which is not a control. Centre is still zero.
   slider('sky', 'wind', () => C.localWeatherVelocity.x,
-    v => C.localWeatherVelocity.set(v, v * 0.35), -0.02, 0.02, 0.0005, v => v.toFixed(4));
+    v => C.localWeatherVelocity.set(v, v * 0.35), -0.001, 0.001, 0.00002,
+    v => v.toFixed(5));
   slider('sky', 'turbulence', () => C.turbulenceDisplacement,
     v => C.turbulenceDisplacement = v, 0, 500, 5, v => v.toFixed(0));
   note('turbulence frays cloud edges — 120 frayed, 350 sprayed, hence 0');
@@ -70,7 +75,11 @@ export function initVolTweakPanel({ vc, applyResize }) {
   // radiance get scaled to meet it. Too high and the whole cloud sits in the compressed
   // shoulder of the ACES curve, where a sunlit top and a shaded base land on the same white:
   // measured tonal range within cloud pixels was 15.6 at boost 8, 34.1 at 4, 46.3 at 2.
-  slider('light', 'exposure bridge', () => boost, v => { boost = v; vc.setLuminanceBoost(v); },
+  // The MIDDAY value. daynight scales it down through dusk and hard down for moonlight, so
+  // this is a reference rather than the number actually in the uniform right now — which is
+  // also why it has its own setter: sharing one with daynight means daynight, writing every
+  // frame, always wins and the slider appears not to work.
+  slider('light', 'exposure bridge', () => boost, v => { boost = v; vc.setDayLuminance(v); },
     1, 12, 0.1);
   slider('light', 'scattering', () => C.scatteringCoefficient,
     v => C.scatteringCoefficient = v, 0, 3, 0.02);
@@ -199,7 +208,7 @@ export function initVolTweakPanel({ vc, applyResize }) {
     onReset: () => {
       L.forEach((layer, i) => Object.assign(layer, defaults.layers[i]));
       repeat = vc.setWeatherRepeat(vc.WEATHER_REPEAT);
-      boost = vc.setLuminanceBoost(vc.LUMINANCE_BOOST);
+      boost = vc.setDayLuminance(vc.LUMINANCE_BOOST);
     },
   });
 }

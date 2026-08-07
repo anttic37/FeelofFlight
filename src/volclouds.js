@@ -965,7 +965,14 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
       if (u && u.value && u.value.clone) lumBase.set(tag + '|' + key, u.value.clone());
     }
   }
-  const setLuminanceBoost = (boost) => {
+  // TWO WRITERS, SO TWO FACTORS. The panel sets how bright the model is at midday; daynight
+  // scales that down through dusk and right down for moonlight. Collapsing them into one
+  // setter means whichever wrote last wins, and since daynight writes every frame that is
+  // always daynight — the panel's slider would move and then be undone before it was seen.
+  let dayLuminance = LUMINANCE_BOOST;
+  let lumScale = 1;
+  const applyLuminance = () => {
+    const boost = dayLuminance * lumScale;
     for (const key of LUM_KEYS) {
       for (const [tag, fx] of [['aerial', aerial], ['clouds', clouds]]) {
         const u = fx.uniforms && fx.uniforms.get(key);
@@ -975,7 +982,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     }
     return boost;
   };
-  setLuminanceBoost(LUMINANCE_BOOST);
+  const setDayLuminance = (v) => { dayLuminance = v; applyLuminance(); return v; };
+  const setLuminanceScale = (s) => { lumScale = s; applyLuminance(); return s; };
+  applyLuminance();
 
   // THE LINK. CloudsEffect renders the cloud buffer and announces it by
   // dispatching change events carrying atmosphereOverlay / atmosphereShadow;
@@ -1059,7 +1068,8 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     clouds,
     aerial,
     setWeatherRepeat,
-    setLuminanceBoost,
+    setDayLuminance,      // the panel: how bright the model is at midday
+    setLuminanceScale,    // daynight: the day-to-moonlight multiplier on top of it
     LUMINANCE_BOOST,
     WEATHER_REPEAT,
     LAYER_NAMES,
