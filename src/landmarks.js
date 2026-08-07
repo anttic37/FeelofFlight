@@ -87,7 +87,7 @@ function pickSites(count, { minH, maxSlope, spacing, reach = 7200, skip = 0 }) {
 // choosing the heading that stays highest. Following the local maximum IS following the
 // crest, and biasing toward carrying straight on stops the walk from turning back down its
 // own ridge at the first bump.
-function walkRidge(seed, perSide, spacing, minH, maxSlope) {
+function walkRidge(seed, perSide, spacing, minH, maxSlope, avoid = []) {
   const line = [seed];
   for (const sign of [1, -1]) {
     // start along the contour: the ridge runs across the slope, not down it
@@ -109,6 +109,7 @@ function walkRidge(seed, perSide, spacing, minH, maxSlope) {
           const px = cur.x + nx * step, pz = cur.z + nz * step;
           if (Math.hypot(px, pz) > 7000) continue;
           if (line.some(o => Math.hypot(o.x - px, o.z - pz) < spacing * 0.55)) continue;
+          if (avoid.some(o => Math.hypot(o.x - px, o.z - pz) < spacing * 0.9)) continue;
           const c = siteOK(px, pz, minH, maxSlope);
           if (!c) continue;
           // THE WALK PICKS THE BEST CANDIDATE, WHICH IS NOT THE SAME AS A GOOD ONE. Without
@@ -181,17 +182,34 @@ export function createLandmarks(scene) {
   const _c = new THREE.Color();
   for (let i = 0; i < masts.length; i++) mastLamps.setColorAt(i, _c.setRGB(1, 0.23, 0.18));
 
-  // ── WIND FARM, ALONG A RIDGE ────────────────────────────────────────────
-  // The seed skips the very top of the candidate list so the farm takes the next tier of
-  // ground rather than fighting the masts for the same three summits, then the line is
-  // walked out from it along the crest.
-  // the seed has to be on a crest too, or the line starts on a shoulder and walks downhill
-  const seedPool = pickSites(24, { minH: 150, maxSlope: 0.26, spacing: 1, skip: 14 });
-  const seed = seedPool.find(s => onCrest(s.x, s.z, s.h, 6)) || seedPool[0];
-  // maxSlope 0.44, not the 0.26 the seed was chosen with: a crest has steep FLANKS by
-  // definition, and measuring slope over +/-26 m on a ridge line picks that up. Holding the
-  // walk to runway-grade ground stopped it dead after two turbines.
-  const turbines = seed ? walkRidge(seed, 4, 620, 120, 0.44) : [];
+  // ── WIND FARMS: A SHORT LINE ON EACH RIDGE ──────────────────────────────
+  //
+  // Several ridges with 3-5 turbines each, not one long chain. A chain walked as far as the
+  // terrain allows gives whatever the island happens to hand you — three on one seed and
+  // nine on another — and nine in a row reads as a fence. Short rows on separate crests read
+  // as what they are: someone picked the windy ridges and put a handful on each.
+  //
+  // Seeds skip the top of the candidate list so the farms take the tier below the masts
+  // rather than fighting them for the same summits, and must themselves be on a crest or the
+  // row starts on a shoulder and walks downhill from there.
+  const PER_SIDE = 2;          // 2 either side of the seed = up to 5 in a row
+  const MIN_ROW = 3;           // a row of two is not a wind farm, it is two turbines
+  const seedPool = pickSites(30, { minH: 150, maxSlope: 0.26, spacing: 1900, skip: 14 });
+  const turbines = [];
+  const farms = [];
+  for (const s of seedPool) {
+    if (farms.length >= 3) break;
+    if (!onCrest(s.x, s.z, s.h, 6)) continue;
+    // do not start a row on top of one already placed
+    if (turbines.some(t => Math.hypot(t.x - s.x, t.z - s.z) < 1500)) continue;
+    // maxSlope 0.44, not the 0.26 the seed was chosen with: a crest has steep FLANKS by
+    // definition, and measuring slope over +/-26 m along a ridge picks that up. Holding the
+    // walk to runway-grade ground stopped it dead after two turbines.
+    const row = walkRidge(s, PER_SIDE, 620, 120, 0.44, turbines);
+    if (row.length < MIN_ROW) continue;
+    farms.push(row);
+    turbines.push(...row);
+  }
   // ALL YAWED TOGETHER. A farm faces the prevailing wind as one — the earlier per-turbine
   // scatter was meant to look natural and instead read as a set of unrelated poles, which is
   // the opposite of what a row of turbines looks like.

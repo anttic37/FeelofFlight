@@ -44,14 +44,21 @@ function ring(g, cx, cy, r, a, b, color, w) {
   g.beginPath(); g.arc(cx, cy, r, a, b); g.stroke();
 }
 
-function roundRectPath(g, x, y, w, h, r) {
-  g.beginPath();
+// Appends a subpath WITHOUT beginPath, so several can be collected into one path — which is
+// what clipping to all seven housings at once needs. Repeated clip() calls intersect rather
+// than union, so they cannot be done one dial at a time.
+function roundRectSub(g, x, y, w, h, r) {
   g.moveTo(x + r, y);
   g.arcTo(x + w, y, x + w, y + h, r);
   g.arcTo(x + w, y + h, x, y + h, r);
   g.arcTo(x, y + h, x, y, r);
   g.arcTo(x, y, x + w, y, r);
   g.closePath();
+}
+
+function roundRectPath(g, x, y, w, h, r) {
+  g.beginPath();
+  roundRectSub(g, x, y, w, h, r);
 }
 
 // A real panel screw: bright on the top-left where the light is, dark under, and a slot.
@@ -303,8 +310,59 @@ export class Gauges {
     return c;
   }
 
+  // THE PANEL IS LIT BY THE SAME SUN AS THE ISLAND.
+  //
+  // These dials are a 2D canvas, so nothing lights them — they read identically at noon and
+  // at midnight, which is the one thing that gives away that the cockpit and the world are
+  // different pictures. Everything outside goes warm at sunset and dark at night while the
+  // instruments sit there at full daylight brightness.
+  //
+  // Two passes over the finished panel. A MULTIPLY carries the sun's own colour and level, so
+  // the faces go amber at dusk and deep blue-grey at night for free. Then, as that falls
+  // away, a warm additive glow fades UP: real panel lighting, which is what stops the
+  // instruments becoming unreadable in the dark and is a large part of why a lit cockpit at
+  // night feels like a cockpit.
+  _light(g, sky) {
+    if (!sky) return;
+    const lv = sky.lightLevel == null ? 1 : sky.lightLevel;
+    const c = sky.lightColor;
+    // never fully black: an unlit dial you cannot read is realism nobody wants
+    const k = 0.30 + 0.70 * lv;
+    const panel = Math.max(0, 1 - lv * 1.45);      // comes up as the daylight goes
+    if (k > 0.995 && panel <= 0.01) return;
+
+    // CLIPPED TO THE HOUSINGS, and that is not tidiness. 'multiply' changes the blend but
+    // NOT the compositing — it is still source-over, so alpha unions and a full-canvas fill
+    // turns the transparent background into an opaque slab behind the panel. Measured before
+    // clipping: midnight came out BRIGHTER than noon, because what was being sampled was
+    // mostly newly-painted background rather than dials.
+    g.save();
+    g.beginPath();
+    const Hh = R + 4;
+    for (let i = 0; i < N; i++) {
+      roundRectSub(g, this.cx[i] - Hh, this.cy - Hh, Hh * 2, Hh * 2, 10);
+    }
+    g.clip();
+
+    if (k < 0.995) {
+      g.globalCompositeOperation = 'multiply';
+      const r = Math.round(255 * (0.55 + 0.45 * (c ? c.r : 1)) * k);
+      const gg = Math.round(255 * (0.55 + 0.45 * (c ? c.g : 1)) * k);
+      const b = Math.round(255 * (0.55 + 0.45 * (c ? c.b : 1)) * k);
+      g.fillStyle = `rgb(${r},${gg},${b})`;
+      g.fillRect(0, 0, this.W, HGT);
+    }
+    if (panel > 0.01) {
+      g.globalCompositeOperation = 'lighter';
+      g.fillStyle = `rgba(150,58,16,${(panel * 0.30).toFixed(3)})`;
+      g.fillRect(0, 0, this.W, HGT);
+    }
+    g.globalCompositeOperation = 'source-over';
+    g.restore();
+  }
+
   // pitch/bank/heading come in already resolved from the quaternion by hud.js
-  update(phys, input, att) {
+  update(phys, input, att, sky) {
     const g = this.g, cy = this.cy;
     g.clearRect(0, 0, this.W, HGT);
     g.drawImage(this.bake, 0, 0, this.W, HGT);
@@ -361,6 +419,9 @@ export class Gauges {
     needle(g, cx, cy, sweepAng((gl + 3) / 10), R - 12, gl > 4.5 || gl < -1.5 ? WARN : INK);
     hub(g, cx, cy);
     digital(g, cx, cy, phys.gLoad.toFixed(1), st > 0.35 ? WARN : INK);
+
+    // last, over everything, so needles and digits are lit along with their faces
+    this._light(g, sky);
   }
 
   _attitude(g, cx, cy, att) {

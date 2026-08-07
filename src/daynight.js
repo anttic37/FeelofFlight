@@ -193,7 +193,12 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
   P.cloudAmb = new THREE.Color();
 
   const moonDir = new THREE.Vector3();
-  const state = { sunAlt: 0, isNight: false, phase: 0, clock: 0 };
+  // lightColor/lightLevel are published for the INSTRUMENT PANEL, which is a 2D canvas and
+  // therefore lit by nothing at all unless it is told what the sun is doing.
+  const state = {
+    sunAlt: 0, isNight: false, phase: 0, clock: 0,
+    lightColor: new THREE.Color(1, 1, 1), lightLevel: 1,
+  };
   let clouds = null;
 
   const sample = (alt) => {
@@ -288,6 +293,11 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
 
     state.sunAlt = sunAlt; state.isNight = useMoon;
     state.phase = clock / CYCLE; state.clock = clock;
+    // What the panel is lit BY: the directional colour, and a level that folds in the fill
+    // terms so a dial does not go black the moment the sun dips below the horizon while the
+    // sky is plainly still bright.
+    state.lightColor.copy(P.light);
+    state.lightLevel = Math.min(1, P.lightI / 2.6 + P.hemiI * 0.55 + P.env * 0.30);
     moonDir.copy(SUN_DIR);
   }
 

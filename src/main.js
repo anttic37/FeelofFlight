@@ -255,7 +255,7 @@ window.__ff = {
     trails.update(dt, phys);
     fx.update(dt, phys);
     world.update(chase.free ? chase.camera.position : phys.pos, simTime += dt);
-    hud.update(phys, input);
+    hud.update(phys, input, dayNight.state);
   },
   render() { draw(); },
 };
@@ -360,7 +360,7 @@ renderer.setAnimationLoop(() => {
   // island stops loading under you
   world.update(chase.free ? chase.camera.position : phys.pos, simTime);
   sound.update(dt, phys);
-  hud.update(phys, input);
+  hud.update(phys, input, dayNight.state);
   // the panel needs no per-frame tick: every control writes into the params object the
   // cloud pass already re-reads each frame
 

@@ -90,7 +90,9 @@ export class HUD {
     this._att = { pitchDeg: 0, bank: 0, hdg: 0 };
   }
 
-  update(phys, input) {
+  // sky is daynight's state: the panel is lit by it, so the instruments belong to the same
+  // time of day as everything out the window
+  update(phys, input, sky) {
     this.stall.style.display = phys.stalled ? 'block' : 'none';
     const vy = phys.vel.y;
 
@@ -106,7 +108,7 @@ export class HUD {
     att.pitchDeg = Math.asin(Math.max(-1, Math.min(1, _fwd.y))) * 180 / Math.PI;
     att.bank = Math.atan2(_right.y, _up.y);
     att.hdg = hdgRad;
-    this.gauges.update(phys, input, att);
+    this.gauges.update(phys, input, att, sky);
 
     const gt = phys.gearTransit;
     const gs = (gt > 0.02 && gt < 0.98) ? 'transit' : (phys.gearDown ? 'down' : 'up');
