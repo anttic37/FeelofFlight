@@ -126,8 +126,12 @@ export function initVolTweakPanel({ vc, applyResize }) {
   toggle('quality', 'turbulence on', () => C.turbulence, v => C.turbulence = v);
   toggle('quality', 'haze', () => C.haze, v => C.haze = v);
 
-  const NAMES = ['puffs', 'sheet', 'masses', 'cirrus'];
-  L.forEach((layer, i) => {
+  // ONE SECTION PER LIVE LAYER, not per uniform slot. The library's uniforms are vec4 so
+  // cloudLayers is always four long whatever is actually in use; iterating it directly puts a
+  // full set of sliders on a slot held at zero density, which reads as a layer that has
+  // stopped working rather than one that was deliberately dropped.
+  const NAMES = vc.LAYER_NAMES || [];
+  L.slice(0, NAMES.length).forEach((layer, i) => {
     const sec = 'L' + (i + 1);
     head(`${sec} ${NAMES[i] || ''}`);
     slider(sec, 'base', () => layer.altitude, v => layer.altitude = v, 0, 12000, 10, m);
@@ -183,7 +187,9 @@ export function initVolTweakPanel({ vc, applyResize }) {
         secondaryStepScale: M.secondaryStepScale,
         multiScatteringOctaves: M.multiScatteringOctaves,
       },
-      layers: L.map(l => ({
+      // live layers only — a copied set including the zeroed spare slot is just noise to
+      // paste back into the source
+      layers: L.slice(0, NAMES.length).map(l => ({
         altitude: l.altitude, height: l.height, densityScale: l.densityScale,
         weatherExponent: l.weatherExponent, shapeAlteringBias: l.shapeAlteringBias,
         coverageFilterWidth: l.coverageFilterWidth,

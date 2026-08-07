@@ -808,111 +808,90 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // The flat-based look still comes from the two shallower layers, which carry
   // most of the sky.
   const BOTH_TAPER = [-1, -2.4, -0.909, 1];
+  // THREE LAYERS, NOT FOUR, AND EVERY NUMBER HERE WAS SET BY EYE FROM THE PANEL rather than
+  // derived. That is the point of the panel, and it is worth saying plainly: the previous set
+  // was reasoned out one constraint at a time and this one beat it in a couple of minutes of
+  // dragging. Where the old reasoning still explains WHY a control does what it does it is
+  // kept below, because that is what makes the next pass quick — but it no longer explains
+  // these particular values, and it should not be read as if it does.
+  //
+  // The cirrus veil is gone: too high to fly among, and it was the one layer that had to be
+  // held on a knife edge (its threshold sat deliberately just below zero, so any nudge to
+  // global coverage turned the upper sky to fizzy mush). The library's uniforms are vec4, so
+  // four slots always exist — the unused one is simply left at zero density below.
+  //
+  //   410-840     small puffs, the layer you climb through
+  //   1740-3560   the deep one, where the masses build
+  //   5100-5700   a thin sheet above them
+  //
+  // NOTE THE ROLES SWAPPED. The deep layer used to be the third; it is now the second, so
+  // the profiles below no longer line up with the reasoning that named them — see the
+  // profile note on each.
   const LAYERS = [
-    // the general population — small to medium
-    // SEPARATION comes from the exponent. At 1.0 the surviving coverage was a
-    // connected carpet whose arms extruded into long chained masses; raising it
-    // keeps only each blob's core, so clouds come out discrete with sky between
-    // them, which is what a fair-weather field actually looks like.
-    // FOUR SEPARATE LEVELS, not one deck. These used to sit at 580/620/680 — three
-    // layers on essentially the same base, on the reasoning that one airmass has one
-    // condensation level. True of a single fair-weather cumulus field, and it built a
-    // sky with no depth: everything happened in one 2 km slab and there was nothing
-    // above it but cirrus. Spreading them out gives four things to fly between and
-    // through, and it is what a real sky does once there is more than one airmass in it:
-    //
-    //   850-1400    small puffs, the layer you climb through
-    //   2500-2960   a thin sheet well above them
-    //   3960-6450   big masses, the deep one
-    //   6000-6890   cirrus, overlapping the tops of the masses
-    //
-    // The DENSITIES came down hard with this spread — 0.20 / 0.13 / 0.15 / 0.32 against
-    // 0.44 / 0.60 / 0.82 / 0.45 before. That is the necessary counterpart: four decks
-    // stacked over 6 km means far more of them along any given ray, so each has to be
-    // thinner or the sky closes up into an overcast wall.
+    // SEPARATION comes from the exponent. At 1.0 the surviving coverage is a connected
+    // carpet whose arms extrude into long chained masses; raising it keeps only each blob's
+    // core, so clouds come out discrete with sky between them. This layer runs BELOW 1.0 on
+    // purpose — it is the low scatter, and letting it connect up is what makes it read as a
+    // broken field near the ground rather than as separate puffs floating in a row.
     // SIZE COMES FROM THE PER-LAYER BAR, not from global coverage and not from
-    // localWeatherRepeat. Rearranging the library's threshold, a layer produces
-    // nothing unless weather^exponent > (1 - cfw - coverage*heightScale)/(1 - cfw),
-    // so coverageFilterWidth is per-layer coverage: raising it lowers the bar, each
-    // cell's above-bar region widens, and in the lifted districts neighbours merge.
-    // Global coverage does the same thing but to EVERY layer, including the cirrus
-    // veil — at 0.42 the veil's bar goes negative and the upper sky turns into a
-    // fizzy overcast sheet, which is what ruled that lever out. Per-layer keeps the
-    // veil exactly as thin as it was.
-    // ...and the density has to be put BACK when cfw goes up, because peak density is
-    // coverage * heightScale / cfw — a wider filter spreads the same coverage over a
-    // longer ramp and thins the cloud. Raising cfw without this makes clouds broader
-    // and fainter, which reads as less cloud, not more.
-    // cfw 0.60, NOT 0.66 — at 0.66 against coverage 0.30 this layer's bar works out to
-    // (1 - 0.66 - 0.30)/0.34, which is nearly zero, so ANY weather above nothing made
-    // faint cloud. Including the masked sea, which drew a thin haze line along the
-    // whole horizon at cloud-base height: a full-width straight edge, the exact
-    // artifact this has been chasing for days, arriving from a completely new
-    // direction. At 0.60 the bar is 0.25 (weather > 0.46) against the sea's 0.07.
-    { channel: 'r', altitude: 850, height: 550, densityScale: 0.20,
-      weatherExponent: 2.35, shapeAlteringBias: 0.36, coverageFilterWidth: 0.61,
-      shapeAmount: 0.83, shapeDetailAmount: 1.0, shadow: true, profile: BASE_SOFT },
-    // the strongest cells of that same field, building a little deeper
-    // 2.1, not 2.8. Past about 2.2 this layer keeps so little of the field that
-    // its surviving regions shrink to a couple of weather texels, and at that
-    // size they take the texel grid's shape instead of their own — isolated
-    // rectangular clouds. The exponent buys separation right up until it starts
-    // buying rectangles.
-    { channel: 'r', altitude: 2500, height: 460, densityScale: 0.13,
-      weatherExponent: 1.15, shapeAlteringBias: 0.49, coverageFilterWidth: 0.45,
+    // localWeatherRepeat. Rearranging the library's threshold, a layer produces nothing
+    // unless weather^exponent > (1 - cfw - coverage*heightScale)/(1 - cfw), so
+    // coverageFilterWidth is per-layer coverage: raising it lowers the bar, each cell's
+    // above-bar region widens, and in the lifted districts neighbours merge. Global coverage
+    // does the same to EVERY layer at once, which is why it is the blunt one.
+    // ...and density has to come BACK when cfw goes up, because peak density is
+    // coverage * heightScale / cfw — a wider filter spreads the same coverage over a longer
+    // ramp and THINS the cloud. Raise cfw alone and it reads as less cloud, not more.
+    // Watch the bar against the masked sea, which sits at 0.07: drive it near zero and the
+    // sea makes faint cloud too, which draws a thin haze line along the whole horizon at
+    // cloud-base height — a full-width straight edge, and a nasty one to diagnose.
+    { channel: 'r', altitude: 410, height: 430, densityScale: 0.145,
+      weatherExponent: 0.75, shapeAlteringBias: 0.32, coverageFilterWidth: 0.635,
+      shapeAmount: 0.75, shapeDetailAmount: 0.78, shadow: true, profile: BASE_SOFT },
+    // THE DEEP ONE. 1820 m of it, and a high exponent so only the strongest cells survive to
+    // fill it — that combination is what builds masses rather than curtains. Depth alone
+    // cannot do it: every layer draws on the same weather field and so inherits the same
+    // footprint, so making one taller without thinning the field just extrudes it upward.
+    // THE BIAS HAS TO RISE WITH THE DEPTH. shapeAlteringFunction is 1 - (2*hf^bias - 1)^2,
+    // peaking at hf = 0.5^(1/bias) — a tenth of the way up at 0.3, a third at 0.62. That peak
+    // is where the coverage boost is strongest, so a tall layer at a low bias crams its width
+    // into the bottom tenth and tapers away above: a pancake with a spike, not a tower. 0.67
+    // puts the widest part just over a third up, which is where a cumulus actually carries it.
+    // PROFILE: this is now the deep layer but it keeps BASE_SOFT, which was chosen for the
+    // shallow ones — full density on the floor, softened over the bottom ~19%. The both-ends
+    // taper exists precisely for depth like this, since cells that only just clear the
+    // threshold otherwise hang below as thin full-strength columns and grow a beard of
+    // tendrils. Checked rather than assumed before leaving it: masking cloud by what
+    // disappears when the layers are zeroed, then measuring each image column's underside
+    // against the median of its 41-column neighbourhood, no column on seed 3282622387 hangs
+    // more than 10 px below its neighbours from 900 m, 1400 m or 2600 m — mean deviation
+    // 0.97/0.55/1.14 px. BOTH_TAPER measures no better and is worse from above (1.79). So
+    // the beard is a density problem, not a depth problem, and this is the first thing to
+    // suspect if the layer ever grows one.
+    { channel: 'r', altitude: 1740, height: 1820, densityScale: 0.580,
+      weatherExponent: 3.10, shapeAlteringBias: 0.67, coverageFilterWidth: 0.565,
       shapeAmount: 1.0, shapeDetailAmount: 1.0, shadow: true, profile: BASE_SOFT },
-    // a decorrelated set of the biggest ones. The stock density profile ramps UP
-    // with height (0.25 + 0.75h), so density peaks exactly where the layer
-    // ceiling cuts it off — that gives every cloud a flat sliced top, and on a
-    // deep layer it turns marginal cells into thin vertical spikes, a sky full
-    // of spray plumes. Tapering the other way keeps the mass low, so only strong
-    // cores climb and the tops end where the cloud ends.
-    // THE BIG ONES. Size variation cannot come from a layer's height, because
-    // every layer draws on the same weather field and so inherits the same
-    // footprint — making one taller only builds curtains. It comes from the
-    // EXPONENT, pushed the opposite way to the separation above: a LOW exponent
-    // lets more of the field through, so neighbouring blobs merge into masses
-    // several times the width of the scattered puffs. Depth still has to stay
-    // moderate (880, not the 1150 that looked right on paper) or that wide
-    // footprint extrudes straight back into vertical curtains. It also wants the
-    // both-ends taper, hence the higher densityScale to make up for the hump only
-    // peaking around a third of the way up.
-    // THE BIAS HAS TO RISE WITH THE HEIGHT. shapeAlteringFunction is
-    // 1 - (2*hf^bias - 1)^2, whose peak sits at hf = 0.5^(1/bias) — 10% of the way up
-    // at bias 0.3, 37% at 0.62. That peak is where the coverage boost is strongest, so
-    // at 0.3 a tall layer gets all its width crammed into the bottom tenth and tapers
-    // away above: a pancake with a spike, not a tower. Moving the peak to a third of
-    // the way up is what lets these build.
-    { channel: 'g', altitude: 3960, height: 2490, densityScale: 0.15,
-      weatherExponent: 1.25, shapeAlteringBias: 0.62, coverageFilterWidth: 0.64,
-      shapeAmount: 1.0, shapeDetailAmount: 1.0, shadow: true, profile: BOTH_TAPER },
-    // Thin high veil. It needs a profile that reaches zero at BOTH ends, not just
-    // the top: the stock one sits at 0.25 density on the layer's floor, so the
-    // veil was sliced off flat along its underside and squared off at the end of
-    // every streak — those were the hard cut edges up near the horizon. Channel b
-    // resolves into long thin ribbons (see the note above), which is right for
-    // cirrus, but only once the ends actually feather out. This is
-    // A*exp(b*h) + m*h + c solved for f(0) = f(1) = 0, peaking about 0.32 a third
-    // of the way up; densityScale carries the rest.
-    // cfw = 1 - coverage is the rule that HOLDS the veil steady: its bar is
-    // (1 - cfw - coverage*hs)/(1 - cfw), so matching them keeps it at zero — thin and
-    // translucent — and letting coverage rise alone drives the bar negative, the remap
-    // clamps to full density over most of the layer, and the upper sky turns into a
-    // fizzy grey sheet with sun rays combed through it.
-    //
-    // 0.86 against coverage 0.20 deliberately breaks that rule in the loose direction.
-    // It puts the bar BELOW zero on purpose, which is the fizzy-sheet failure mode — but
-    // only just, and paired with a 800 m layer and densityScale 0.45 it buys visible
-    // cirrus streaks across the whole sky instead of a barely-there wash. Worth knowing
-    // that this one is deliberately near an edge: push coverage up without pulling cfw
-    // down and the upper sky goes to mush quickly.
-    { channel: 'b', altitude: 6000, height: 890, densityScale: 0.32,
-      weatherExponent: 4.0, shapeAlteringBias: 0.68, coverageFilterWidth: 0.79, shadow: false,
-      shapeAmount: 0.87, shapeDetailAmount: 1.0, profile: [-1, -3, -0.95, 1] },
+    // A thin sheet on its own channel, so it is decorrelated from the two below and drifts
+    // across them instead of sitting directly on top. Low bias because it is shallow: the
+    // widest part wants to be near the floor when there are only 600 m to play with.
+    // PROFILE: BOTH_TAPER, which reaches zero at the base as well as the ceiling. Chosen
+    // originally for a deep layer and inherited here, but it happens to be right for a high
+    // sheet for a different reason — the stock profile sits at 0.25 density on the floor, so
+    // a thin layer gets sliced off flat along its underside and squared off at the end of
+    // every streak, which is what hard cut edges near the horizon look like.
+    { channel: 'g', altitude: 5100, height: 600, densityScale: 0.285,
+      weatherExponent: 2.15, shapeAlteringBias: 0.22, coverageFilterWidth: 0.605,
+      shapeAmount: 1.0, shapeDetailAmount: 0.70, shadow: true, profile: BOTH_TAPER },
   ];
+  // Names for the tuning panel, so its sections match what the layers actually are now
+  // rather than what they were called when the roles were the other way round.
+  const LAYER_NAMES = ['puffs', 'masses', 'high sheet'];
   for (let i = 0; i < clouds.cloudLayers.length; i++) {
     const layer = clouds.cloudLayers[i], spec = LAYERS[i];
-    if (!spec) { layer.densityScale = 0; continue; }
+    // The uniforms are vec4, so there are always four slots whatever we use. An unused one
+    // is zeroed AND taken out of the shadow mask: zero density draws nothing, but the mask
+    // is a separate bit and a dead layer left in it still costs the shadow pass work.
+    if (!spec) { layer.densityScale = 0; layer.shadow = false; continue; }
     const { profile, ...fields } = spec;
     Object.assign(layer, fields);
     if (profile) layer.densityProfile.set(...profile);
@@ -1083,6 +1062,7 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     setLuminanceBoost,
     LUMINANCE_BOOST,
     WEATHER_REPEAT,
+    LAYER_NAMES,
     // TIME OF DAY did not exist when this module was written — the sun was fixed, so its
     // direction was set once at construction and never touched again. daynight.js rewrites
     // SUN_DIR in place every frame, so this is the hook that lets the old clouds follow it.
