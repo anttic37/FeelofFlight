@@ -76,6 +76,13 @@ export function createWater(scene, heightAt) {
     uChop: { value: 1.0 },
     uCaps: { value: 0.22 },
     uFoam: { value: 1.0 },
+    // How much of the wave field reaches the BODY colour rather than only the reflection.
+    // Set against the LAND, since matching it is the whole point — the ground beside it is
+    // the reference for what "this planet" looks like. Measured from 520 m looking straight
+    // down, median local deviation and the share of dead-flat pixels: land 1.53 and 35%,
+    // sea 0.66 and 60% before, 1.60 and 34% at this value. 0.55 overshoots to 2.16 and 25%,
+    // which is the sea coming out GRAINIER than the ground — the same mismatch mirrored.
+    uBodyWave: { value: 0.35 },
     uWind: { value: new THREE.Vector2(0.82, 0.57).normalize() },
     uSubsurface: { value: new THREE.Color().setRGB(0.045, 0.185, 0.135) },
   };
@@ -118,7 +125,7 @@ vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
       .replace('#include <common>', `#include <common>
 uniform float uTime;
 uniform vec3 uSunDir, uZenith, uHorizon, uDeep, uMid, uShallow, uHaze;
-uniform float uGlint, uGlintAmp, uChop, uHazeNear, uHazeFar, uCaps, uFoam;
+uniform float uGlint, uGlintAmp, uChop, uHazeNear, uHazeFar, uCaps, uFoam, uBodyWave;
 uniform vec2 uWind;
 uniform vec3 uSubsurface;
 varying float vShoreDepth;
@@ -289,6 +296,29 @@ body = mix(body, uDeep, smoothstep(4.0, 22.0, vShoreDepth));
 float pat = wnoise(vWorldPos.xz * 0.0052 + vec2(uTime * 0.032, -uTime * 0.024))
           + wnoise(vWorldPos.xz * 0.0016 + vec2(-uTime * 0.020, uTime * 0.013));
 body *= 0.90 + 0.10 * pat;
+
+// ── SEEN FROM ABOVE THE SURFACE IS A LENS, NOT A MIRROR ──────────────────────────────
+// Fresnel is 0.02 at normal incidence, so looking straight down the reflection carries two
+// percent of the picture and the body colour carries the other ninety-eight — and the body
+// colour had no idea the waves were there. Every octave computed above was feeding the
+// reflection and the specular, both of which all but vanish from overhead. That is why
+// the sea reads as flat navy with foam pasted on: measured from 520 m looking down, 62% of
+// water pixels sat within 1/255 of their neighbourhood against 32% for the land beside it,
+// while the top 1% of water pixels were more than twice as loud as the land's. Not too
+// little variation — all of it in the wrong places.
+//
+// What is missing is refraction, not reflection. A facet tilted toward the sun lets more
+// light down into the water and returns more of it; one tilted away returns less. Lambert
+// on the TRANSMITTED side, normalised so a flat sea is unchanged and only the departure
+// from flat shows up.
+//
+// It needs no view-angle gating, which is the neat part: it multiplies the body colour,
+// whose weight in the final mix is already (1 - F). Looking down, F is 0.02 and this carries
+// everything; at grazing incidence F approaches 1, body drops out, and the term fades
+// exactly where a real sea stops being transparent and starts being a mirror.
+float lamFlat = max(uSunDir.y, 0.05);
+float lam = clamp(dot(wN, uSunDir), 0.0, 1.0);
+body *= mix(1.0, clamp(lam / lamFlat, 0.45, 1.7), uBodyWave);
 
 // ── Fresnel: transparent underfoot, mirror at the horizon ──
 // Schlick with F0 = 0.02, water's real normal-incidence reflectance.
