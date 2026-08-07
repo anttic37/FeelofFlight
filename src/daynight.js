@@ -42,6 +42,16 @@ const MIN_ALT = THREE.MathUtils.degToRad(1.7);
 // lands in the one moment almost nothing is keyed to it.
 const MOON_SWAP = THREE.MathUtils.degToRad(-6);
 
+// How far below the horizon the PHYSICAL atmosphere is allowed to follow the sun — it lights
+// the clouds and the aerial haze, and it has no moon, so an unfloored sun leaves black clouds
+// hanging in a moonlit world. Parked on the horizon it stands in for moonlight: measured at
+// midnight the brightest cloud reaches 62 against a ground of 31, so they read as lit without
+// becoming the lamp. That number climbs fast — 125 by +2 degrees and 169 by +5, which is the
+// clouds-are-the-only-lit-thing look already rejected once. Below the horizon it collapses
+// just as fast, to 13 by -1.5. Nothing above the model tracks this; the sky comes from the
+// palette, so this trades against the clouds alone.
+const NIGHT_FLOOR = THREE.MathUtils.degToRad(num('nightfloor', 0));
+
 // The env column below is a FRACTION of full daylight, scaled by this. 0.62 is the tuned
 // environmentIntensity the scene already shipped with, so the +45 row reproduces it exactly.
 const ENV_BASE = num('env', 0.62);
@@ -193,6 +203,7 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
   P.cloudAmb = new THREE.Color();
 
   const moonDir = new THREE.Vector3();
+  const trueSunDir = new THREE.Vector3();
   // lightColor/lightLevel are published for the INSTRUMENT PANEL, which is a 2D canvas and
   // therefore lit by nothing at all unless it is told what the sun is doing.
   const state = {
@@ -228,6 +239,17 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
     const az = useMoon ? sunAz + Math.PI : sunAz;
     const ca = Math.cos(alt);
     SUN_DIR.set(ca * Math.cos(az), Math.sin(alt), ca * Math.sin(az)).normalize();
+
+    // THE TRUE SUN, kept separately, because one consumer is a physical model rather than a
+    // palette. takram's atmosphere derives the whole sky from where the sun actually is, so
+    // handing it SUN_DIR paints full daylight at midnight — the moon arrives as a light 40
+    // degrees UP and the model has no idea it is not the sun. It gets the real thing, below
+    // the horizon and all, and produces its own twilight. NIGHT_FLOOR stops it at deep
+    // twilight rather than letting it run to true black: there is no moon in that model, so
+    // the alternative to a floor is a black sky over a moonlit world.
+    const trueAlt = Math.max(sunAlt, NIGHT_FLOOR);
+    const tca = Math.cos(trueAlt);
+    trueSunDir.set(tca * Math.cos(sunAz), Math.sin(trueAlt), tca * Math.sin(sunAz)).normalize();
 
     sample(sunAlt);
 
@@ -283,12 +305,19 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
       if (w.uHaze) w.uHaze.value.copy(P.haze);
     }
 
-    // --- clouds: the raymarch clones its sun too, and the shadow pass shares the object
+    // --- clouds. Two systems, and neither shares the live vector: skyclouds clones it into
+    // its own uniforms, volclouds stores it in earth-centred space behind a transform. Both
+    // therefore have to be pushed to, and which one this is decides how.
     if (clouds && clouds.cloudPass) {
       const u2 = clouds.cloudPass.march.uniforms;
       u2.sunDir.value.copy(SUN_DIR);
       u2.sunColor.value.copy(P.cloudSun);
       u2.ambientSky.value.copy(P.cloudAmb);
+    } else if (clouds && clouds.setSun) {
+      // takram lights the volume from its own atmosphere model, so it wants the direction
+      // and nothing else — colour comes out of the scattering rather than being handed in.
+      // The TRUE sun, not SUN_DIR: see where trueSunDir is built.
+      clouds.setSun(trueSunDir);
     }
 
     state.sunAlt = sunAlt; state.isNight = useMoon;

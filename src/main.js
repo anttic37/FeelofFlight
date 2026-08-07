@@ -132,7 +132,13 @@ const setPaused = (v) => {
 input.onPause = () => { setPaused(!paused); pausedByPanel = false; };
 
 input.onTweak = () => {
-  if (!tweak) { hud.msg('TUNING PANEL NEEDS THE CLOUDS — STILL LOADING', 1600); return; }
+  if (!tweak) {
+    // the panel is skyclouds-only; on the takram clouds it never gets built at all, so say
+    // which of the two it is rather than blaming the loader forever
+    hud.msg(CLOUD_KIND === 'new' ? 'TUNING PANEL NEEDS THE CLOUDS — STILL LOADING'
+                                 : 'TUNING PANEL IS FOR ?clouds=new ONLY', 2200);
+    return;
+  }
   const open = tweak.toggle();
   // opening the panel pauses for you, since the whole reason to open it is to stop
   // worrying about the aeroplane. Esc still toggles pause independently if you want to
@@ -194,21 +200,40 @@ if (new URLSearchParams(location.search).get('bloom') !== '0') {
 // after the world does and take over rendering when they land; until then, and
 // if the fetch fails outright, the bloom composer above keeps drawing a normal
 // (cloudless) sky rather than leaving a broken frame. ?vclouds=0 skips them.
+//
+// TWO CLOUD SYSTEMS LIVE SIDE BY SIDE, and the takram one (volclouds) is the default again
+// because it simply looks better. It is a physically-based renderer — precomputed atmospheric
+// scattering, real multiple scattering inside the volume, temporal reprojection paying for a
+// far denser march — against skyclouds, which is a hand-rolled raymarch of baked 3D noise.
+// The known cost of going back is the layer lid: minLayerHeights/maxLayerHeights are vec4
+// uniforms, one top and bottom for the WHOLE sky, so a layer ceiling is an iso-height plane
+// and that is the "cut" this system has always had.
+//
+// ?clouds=new selects skyclouds, which keeps the god rays, the ground cloud shadows and the
+// tuning panel. ?vclouds=0 skips clouds entirely.
+const CLOUD_KIND = new URLSearchParams(location.search).get('clouds') || 'old';
 let volClouds = null;
 let tweak = null;   // live tuning panel (P), built once the clouds land
 if (new URLSearchParams(location.search).get('vclouds') !== '0') {
-  import('./skyclouds.js')
-    .then(m => m.createSkyClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
+  const load = CLOUD_KIND === 'new'
+    ? import('./skyclouds.js').then(m => m.createSkyClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
+    : import('./volclouds.js').then(m => m.createVolumetricClouds({ renderer, scene, camera, sunDir: SUN_DIR }));
+  load
     .then(v => {
       volClouds = v;
+      // one handle whichever system is running — skyclouds sets window.__sc from inside
+      // itself, so without this the old clouds are unreachable from the console
+      window.__clouds = v;
       v.setSize(window.innerWidth, window.innerHeight);
-      // the cloud pass clones its sun direction and colours at construction, so it has to
-      // be pushed to explicitly rather than sharing the live vector
+      // Both systems copy the sun at construction rather than sharing the live vector, so
+      // either way daynight has to push to them — attachClouds handles whichever this is.
       dayNight.attachClouds(v);
       dayNight.update(0);
-      console.log('[flighfeel] sky clouds active');
-      // the panel binds to the live params object, so it can only be built once the
-      // clouds have actually landed
+      console.log(`[flighfeel] ${CLOUD_KIND === 'new' ? 'sky' : 'volumetric'} clouds active`);
+      // THE PANEL ONLY FITS skyclouds. It was rebuilt around that module's live params
+      // object; volclouds has no equivalent, and half of what it exposes is baked into a
+      // weather texture rather than a uniform. P says so rather than throwing.
+      if (CLOUD_KIND !== 'new') return;
       return import('./tweak.js').then(t => {
         tweak = t.initTweakPanel({
           sc: v,
