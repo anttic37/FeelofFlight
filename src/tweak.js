@@ -1,13 +1,11 @@
-// Live tuning panel for the cloud system. Press P.
+// Live tuning panel for SKYCLOUDS, the hand-rolled raymarch. Press P.
 //
 // Every control here writes straight into skyclouds' params object, which the cloud pass
 // reads afresh each frame — so there is nothing to apply, nothing to rebuild, and no
 // rebake. That was not true of the old panel: half its sliders were baked into a weather
 // texture and needed a regenerate, which made tuning by feel impossible.
 //
-// Settings persist to localStorage as a DIFF from the code defaults, keyed by section
-// and label, so a control that is later renamed or removed is skipped rather than
-// restoring a stale number into whatever now sits at that index.
+// The shell, and the reasoning behind the diff-based persistence, is in panel.js.
 
 // Key bumped to v2 deliberately: every existing v1 store holds a full 45-slider snapshot
 // written by the old save(), including cloud lighting values that predate the shading fix.
@@ -17,51 +15,15 @@
 // normally.
 const STORE = 'flighfeel-tweak-sky-v2';
 
+import { createPanel } from './panel.js';
+
 export function initTweakPanel({ sc, applyResize }) {
   const p = sc.params;
   const defaults = JSON.parse(JSON.stringify({ layers: p.layers, island: p.island }));
-  const rows = [];
-
-  const el = document.createElement('div');
-  el.style.cssText = `
-    position:fixed; top:0; right:0; width:380px; max-height:100vh; overflow-y:auto;
-    background:rgba(12,16,24,0.92); color:#cfd8e3; font:11px/1.45 ui-monospace,Consolas,monospace;
-    padding:8px 10px 40px; z-index:60; display:none; box-sizing:border-box;
-    border-left:1px solid rgba(255,255,255,0.12);`;
-  // the camera orbits on window-level pointer events, so the panel must swallow its own
-  el.addEventListener('pointerdown', e => e.stopPropagation());
-  el.addEventListener('pointermove', e => e.stopPropagation());
-  el.addEventListener('wheel', e => e.stopPropagation());
-
-  const head = (t, sub) => {
-    const h = document.createElement('div');
-    h.style.cssText = 'margin:10px 0 4px; color:#7fb2ff; letter-spacing:.08em; font-size:10px;';
-    h.textContent = t.toUpperCase();
-    el.appendChild(h);
-    if (sub) { const s = document.createElement('div');
-      s.style.cssText = 'color:#6b7789; margin:-2px 0 5px; font-size:10px;';
-      s.textContent = sub; el.appendChild(s); }
-  };
-
-  const slider = (section, label, get, set, min, max, step, fmt) => {
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex; align-items:center; gap:6px; margin:2px 0;';
-    const name = document.createElement('div');
-    name.style.cssText = 'width:112px; flex:0 0 112px; color:#9fb0c4;';
-    name.textContent = label;
-    const input = document.createElement('input');
-    input.type = 'range'; input.min = min; input.max = max; input.step = step;
-    input.value = get();
-    input.style.cssText = 'flex:1 1 auto; min-width:0; accent-color:#4a90e2;';
-    const val = document.createElement('div');
-    val.style.cssText = 'width:62px; flex:0 0 62px; text-align:right; color:#e6edf5;';
-    const show = () => { val.textContent = fmt ? fmt(get()) : (+get()).toFixed(2); };
-    show();
-    input.addEventListener('input', () => { set(+input.value); show(); });
-    row.append(name, input, val);
-    el.appendChild(row);
-    rows.push({ section, label, get, set, input, show });
-  };
+  const { head, slider, finish } = createPanel({
+    store: STORE,
+    footer: 'P closes. Everything here is live — no rebake.',
+  });
 
   head('render');
   slider('render', 'cloud res', () => p.cloudRes,
@@ -135,85 +97,16 @@ export function initTweakPanel({ sc, applyResize }) {
     slider(sec, 'shape octave', () => L.shapeOctave, v => L.shapeOctave = v, 0, 1.5, 0.01);
   });
 
-  // ---- persistence: store only what differs from the code defaults
-  //
-  // IT DID NOT ACTUALLY DO THAT, and the bug was close to invisible: save() wrote EVERY
-  // row, so the store held all 45 sliders whether or not they had been touched, and load()
-  // then restored all 45 over the code defaults on every single boot. The effect is that
-  // shipping a new default has NO EFFECT on anyone who has ever opened the panel — a
-  // retuned sunBoost/ambient/baseDarken went out, and every browser that had the panel
-  // open at some point quietly put the old numbers back and rendered exactly as before.
-  //
-  // Snapshot taken BEFORE load() runs, so it is the code default rather than whatever was
-  // restored, and a row that matches it is not persisted at all.
-  rows.forEach(r => { r.codeDefault = r.get(); });
-  const save = () => {
-    const diff = {};
-    for (const r of rows) {
-      const v = r.get();
-      if (v === r.codeDefault) continue;
-      diff[r.section + '|' + r.label] = v;
-    }
-    try { localStorage.setItem(STORE, JSON.stringify(diff)); } catch {}
-  };
-  const load = () => {
-    let d; try { d = JSON.parse(localStorage.getItem(STORE) || 'null'); } catch {}
-    if (!d) return 0;
-    let n = 0;
-    // cloud res last — it reallocates the buffer
-    const ordered = rows.slice().sort((a, b) => (a.label === 'cloud res' ? 1 : 0) - (b.label === 'cloud res' ? 1 : 0));
-    for (const r of ordered) {
-      const v = d[r.section + '|' + r.label];
-      if (typeof v !== 'number' || !isFinite(v)) continue;
-      r.set(v); r.input.value = v; r.show(); n++;
-    }
-    return n;
-  };
-
-  const bar = document.createElement('div');
-  bar.style.cssText = 'display:flex; gap:6px; margin:12px 0 4px;';
-  const btn = (label, fn) => {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.style.cssText = `flex:1; background:#1d2836; color:#cfd8e3; border:1px solid #33445c;
-      padding:5px 4px; font:11px ui-monospace,monospace; cursor:pointer; border-radius:3px;`;
-    b.addEventListener('click', fn);
-    bar.appendChild(b);
-  };
-  btn('Copy values', () => {
-    const out = { layers: p.layers, island: p.island,
+  return finish({
+    slowLast: ['cloud res'],   // reallocates the buffer
+    onCopy: () => ({ layers: p.layers, island: p.island,
       absorption: p.absorption, lightAbsorb: p.lightAbsorb, baseDarken: p.baseDarken,
       silver: p.silver, sunBoost: p.sunBoost, ambientBoost: p.ambientBoost,
       msFalloff: p.msFalloff, msScatter: p.msScatter, powderMix: p.powderMix,
-      maxDist: p.maxDist, windSpeed: p.windSpeed, cloudRes: p.cloudRes };
-    navigator.clipboard.writeText(JSON.stringify(out, null, 2));
-  });
-  btn('Reset', () => {
-    p.layers.forEach((L, i) => Object.assign(L, defaults.layers[i]));
-    Object.assign(p.island, defaults.island);
-    // Every row, not just the layer/island ones — the top-level lighting sliders were not
-    // covered by the two Object.assigns above, so Reset left them wherever they were.
-    rows.forEach(r => { r.set(r.codeDefault); r.input.value = r.codeDefault; r.show(); });
-  });
-  btn('Forget saved', () => { try { localStorage.removeItem(STORE); } catch {} });
-  el.appendChild(bar);
-
-  const foot = document.createElement('div');
-  foot.style.cssText = 'color:#6b7789; margin-top:6px; font-size:10px;';
-  foot.textContent = 'P closes. Everything here is live — no rebake.';
-  el.appendChild(foot);
-
-  document.body.appendChild(el);
-  const restored = load();
-  if (restored) console.log(`[flighfeel] tweak: restored ${restored} saved values`);
-  window.addEventListener('beforeunload', save);
-
-  return {
-    el,
-    toggle() {
-      el.style.display = el.style.display === 'none' ? 'block' : 'none';
-      if (el.style.display === 'none') save();
-      return el.style.display !== 'none';
+      maxDist: p.maxDist, windSpeed: p.windSpeed, cloudRes: p.cloudRes }),
+    onReset: () => {
+      p.layers.forEach((L, i) => Object.assign(L, defaults.layers[i]));
+      Object.assign(p.island, defaults.island);
     },
-  };
+  });
 }

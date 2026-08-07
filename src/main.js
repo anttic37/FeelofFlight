@@ -132,13 +132,7 @@ const setPaused = (v) => {
 input.onPause = () => { setPaused(!paused); pausedByPanel = false; };
 
 input.onTweak = () => {
-  if (!tweak) {
-    // the panel is skyclouds-only; on the takram clouds it never gets built at all, so say
-    // which of the two it is rather than blaming the loader forever
-    hud.msg(CLOUD_KIND === 'new' ? 'TUNING PANEL NEEDS THE CLOUDS — STILL LOADING'
-                                 : 'TUNING PANEL IS FOR ?clouds=new ONLY', 2200);
-    return;
-  }
+  if (!tweak) { hud.msg('TUNING PANEL NEEDS THE CLOUDS — STILL LOADING', 1600); return; }
   const open = tweak.toggle();
   // opening the panel pauses for you, since the whole reason to open it is to stop
   // worrying about the aeroplane. Esc still toggles pause independently if you want to
@@ -230,17 +224,15 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
       dayNight.attachClouds(v);
       dayNight.update(0);
       console.log(`[flighfeel] ${CLOUD_KIND === 'new' ? 'sky' : 'volumetric'} clouds active`);
-      // THE PANEL ONLY FITS skyclouds. It was rebuilt around that module's live params
-      // object; volclouds has no equivalent, and half of what it exposes is baked into a
-      // weather texture rather than a uniform. P says so rather than throwing.
-      if (CLOUD_KIND !== 'new') return;
-      return import('./tweak.js').then(t => {
-        tweak = t.initTweakPanel({
-          sc: v,
-          // the game's own resize path, so the panel never computes sizes itself
-          applyResize: () => v.setSize(window.innerWidth, window.innerHeight),
-        });
-      });
+      // A PANEL EACH. They share the shell in panel.js but nothing else, because the two
+      // expose nothing in common: skyclouds hands over a plain params object it re-reads
+      // per frame, while the takram one is a library effect whose per-layer fields are
+      // repacked into vec4 uniforms every frame. Both end up equally live; only the route
+      // there differs. The game's own resize path is passed in so neither computes sizes.
+      const applyResize = () => v.setSize(window.innerWidth, window.innerHeight);
+      return CLOUD_KIND === 'new'
+        ? import('./tweak.js').then(t => { tweak = t.initTweakPanel({ sc: v, applyResize }); })
+        : import('./tweakvol.js').then(t => { tweak = t.initVolTweakPanel({ vc: v, applyResize }); });
     })
     .catch(e => console.error('[flighfeel] sky clouds failed:', e));
 }

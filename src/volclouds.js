@@ -972,10 +972,31 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   // Absorption is NOT the lever here, for the record: 0 to 0.8 moved the range 15.6 to
   // 17.8, which is nothing.
   const LUMINANCE_BOOST = 4;
-  for (const key of ['SUN_SPECTRAL_RADIANCE_TO_LUMINANCE', 'SKY_SPECTRAL_RADIANCE_TO_LUMINANCE']) {
-    const u = aerial.uniforms.get(key);
-    if (u) u.value.multiplyScalar(LUMINANCE_BOOST);
+  // Kept as UNSCALED originals plus a setter, rather than multiplied in place and forgotten.
+  // Multiplying in place is one-way: the only record of the 1x value is gone the moment it
+  // runs, so a second call compounds instead of setting, and the panel could never do more
+  // than push it further up. These are shared with the clouds effect too — both read the same
+  // atmosphere constants — so the two have to be written together or the volume and the haze
+  // disagree about how bright the sun is.
+  const LUM_KEYS = ['SUN_SPECTRAL_RADIANCE_TO_LUMINANCE', 'SKY_SPECTRAL_RADIANCE_TO_LUMINANCE'];
+  const lumBase = new Map();
+  for (const key of LUM_KEYS) {
+    for (const [tag, fx] of [['aerial', aerial], ['clouds', clouds]]) {
+      const u = fx.uniforms && fx.uniforms.get(key);
+      if (u && u.value && u.value.clone) lumBase.set(tag + '|' + key, u.value.clone());
+    }
   }
+  const setLuminanceBoost = (boost) => {
+    for (const key of LUM_KEYS) {
+      for (const [tag, fx] of [['aerial', aerial], ['clouds', clouds]]) {
+        const u = fx.uniforms && fx.uniforms.get(key);
+        const base = lumBase.get(tag + '|' + key);
+        if (u && base) u.value.copy(base).multiplyScalar(boost);
+      }
+    }
+    return boost;
+  };
+  setLuminanceBoost(LUMINANCE_BOOST);
 
   // THE LINK. CloudsEffect renders the cloud buffer and announces it by
   // dispatching change events carrying atmosphereOverlay / atmosphereShadow;
@@ -1057,7 +1078,11 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
 
   return {
     clouds,
+    aerial,
     setWeatherRepeat,
+    setLuminanceBoost,
+    LUMINANCE_BOOST,
+    WEATHER_REPEAT,
     // TIME OF DAY did not exist when this module was written — the sun was fixed, so its
     // direction was set once at construction and never touched again. daynight.js rewrites
     // SUN_DIR in place every frame, so this is the hook that lets the old clouds follow it.
