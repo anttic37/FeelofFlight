@@ -102,18 +102,38 @@ const STOPS = [
   // landing at a ratio of 2.2. Clouds still read brighter than terrain, which is right —
   // they are nearer the light and scatter hard — but the night is now 5.6x darker than noon
   // rather than a black frame with white cut-outs in it.
+  // A NIGHT SKY IS NOT BLACK. These rows were authored by taking daylight down and down, and
+  // the bottom of that road is zero — but a real moonlit sky is a deep, definite blue, and
+  // black is the one colour it never is. The dome away from the moon rendered at 0.25 out of
+  // 255, which is not a dark sky, it is an unlit screen. Now 9.8, at rgb 6/9/25: ten times
+  // darker than noon and five times darker than dusk, with the brightest stars standing ten
+  // times above it.
+  //
+  // READ THIS BEFORE EDITING ANY HEX IN THIS TABLE. The values here are not the colours you
+  // get. lin() calls convertSRGBToLinear on a Color built from a hex, and three's colour
+  // management ALREADY linearises a hex on construction — so every sky colour in this table
+  // is converted twice and lands about eleven times darker than the hex reads. That is why a
+  // night zenith of 0x11 renders as nothing, and why the value below is a mid-slate 0x4e to
+  // produce a deep navy.
+  //
+  // It is left that way ON PURPOSE. Fixing lin() would be a one-line change and it would
+  // wreck the sky at every other hour: the dome carries 96-97% of what you see in daylight —
+  // measured by blanking its uniforms at noon, evening and dusk — so every daylight row would
+  // brighten elevenfold at once. The whole table is calibrated through the double conversion
+  // and has to be re-tuned as a unit if it is ever undone. Pick these by measuring the render,
+  // not by reading the hex.
   { alt: -90,
-    zenith: 0x05070f, horizon: 0x0b1120, haze: 0x141c30, glow: 0x46557e,
+    zenith: 0x4e566e, horizon: 0x5a637c, haze: 0x66708a, glow: 0x8a97b8,
     light: 0x9fb6dc, lightI: 0.86,
     hemiSky: 0x33415e, hemiGround: 0x191d26, hemiI: 0.36,
-    env: 0.30, halo: 0.10, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
+    env: 0.30, halo: 0.22, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
     cloudSun: [0.187, 0.231, 0.330], cloudAmb: [0.030, 0.041, 0.072] },
 
   { alt: -20,
-    zenith: 0x070b18, horizon: 0x101a30, haze: 0x1a2440, glow: 0x4c5c86,
+    zenith: 0x5a627c, horizon: 0x666f88, haze: 0x727b94, glow: 0x93a0bf,
     light: 0x9fb6dc, lightI: 0.77,
     hemiSky: 0x394765, hemiGround: 0x1c202a, hemiI: 0.33,
-    env: 0.28, halo: 0.12, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
+    env: 0.28, halo: 0.24, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
     cloudSun: [0.150, 0.187, 0.271], cloudAmb: [0.028, 0.038, 0.065] },
 
   // Moonrise. The moon is only a few degrees up, so the ground is genuinely dim here and the
@@ -121,15 +141,23 @@ const STOPS = [
   // than the problem. The clouds come down instead: they run bright near moonrise because a
   // low light source puts them in forward scatter, which is real but exaggerated by the
   // cloud pass's sunBoost.
+  // RAISED WITH THE NIGHT ROWS, or the ramp stops being a ramp. Lifting only the deep-night
+  // rows left this one and the -2 below it on the old scale, and the sky then dived through a
+  // trough on its way down: 19 with the sun on the horizon, 2.8 four degrees under it, then
+  // back up to 22 by -20. Twilight came out eight times darker than midnight, which is not
+  // something any sky does. Anything that raises one end of this table has to walk the
+  // neighbouring rows until the curve is monotonic again.
   { alt: -6,
-    zenith: 0x121d3c, horizon: 0x2c3a5e, haze: 0x3a4a70, glow: 0x6b7ba4,
+    zenith: 0x525c78, horizon: 0x5e687f, haze: 0x6a748c, glow: 0x94a1c2,
     light: 0xa9bee0, lightI: 0.50,
     hemiSky: 0x45557a, hemiGround: 0x24272f, hemiI: 0.26,
     env: 0.24, halo: 0.25, sunPower: 0.05, fogNear: 1300, fogFar: 6800,
     cloudSun: [0.119, 0.145, 0.205], cloudAmb: [0.028, 0.037, 0.059] },
 
+  // Zenith raised for the same reason; the warm horizon and glow are left exactly as they
+  // were, because those are the sunset itself and it was not the thing that was wrong.
   { alt: -2,
-    zenith: 0x1d3057, horizon: 0x8a5f5a, haze: 0x9c6f60, glow: 0xd88a55,
+    zenith: 0x4a5470, horizon: 0x8a5f5a, haze: 0x9c6f60, glow: 0xd88a55,
     light: 0xd08a58, lightI: 0.30,
     hemiSky: 0x5a6785, hemiGround: 0x2e2b2a, hemiI: 0.16,
     env: 0.22, halo: 0.85, sunPower: 0.45, fogNear: 1400, fogFar: 6600,
@@ -316,6 +344,13 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
       skyMat.uniforms.uHaze.value.copy(P.haze);
       skyMat.uniforms.uGlow.value.copy(P.glow);
       skyMat.uniforms.uSunHalo.value = P.halo;
+      // Stars come up as the sun goes down and are gone well before it is back. The band is
+      // wide on purpose: they should fade in over most of dusk rather than switch on, and
+      // twilight is exactly where a real sky shows a few of the brightest and nothing else.
+      skyMat.uniforms.uStars.value =
+        THREE.MathUtils.smoothstep(-sunAlt, THREE.MathUtils.degToRad(-2),
+                                            THREE.MathUtils.degToRad(14));
+      skyMat.uniforms.uTime.value = clock;
     }
 
     // --- lights. The env map is baked once at the midday palette, so it is scaled rather

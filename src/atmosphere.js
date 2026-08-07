@@ -227,6 +227,10 @@ export function createSkyMaterial() {
       uAtmSunDir: ATMO.uAtmSunDir,
       // how much of a disc halo to draw: full for the sun, much tighter for the moon
       uSunHalo: { value: 1 },
+      // 0 by day, 1 once the sun is well down. Defaults to 0 so the environment bake, which
+      // builds its own dome from this material, never picks up a skyful of stars.
+      uStars: { value: 0 },
+      uTime: { value: 0 },
     },
     vertexShader: `
 varying vec3 vWorld;
@@ -242,7 +246,25 @@ uniform vec3 uHaze;
 uniform vec3 uGlow;
 uniform vec3 uAtmSunDir;
 uniform float uSunHalo;
+uniform float uStars;
+uniform float uTime;
 varying vec3 vWorld;
+
+float hash31(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.x + p.y) * p.z);
+}
+float vnoise3(vec3 p) {
+  vec3 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(
+    mix(mix(hash31(i), hash31(i + vec3(1,0,0)), f.x),
+        mix(hash31(i + vec3(0,1,0)), hash31(i + vec3(1,1,0)), f.x), f.y),
+    mix(mix(hash31(i + vec3(0,0,1)), hash31(i + vec3(1,0,1)), f.x),
+        mix(hash31(i + vec3(0,1,1)), hash31(i + vec3(1,1,1)), f.x), f.y), f.z);
+}
+
 void main() {
   vec3 d = normalize(vWorld - cameraPosition);
   float up = clamp(d.y, 0.0, 1.0);
@@ -256,6 +278,42 @@ void main() {
   // The broad term is what makes a sunset: it washes the sun's whole half of the sky, so
   // it has to shrink for the moon or the night sky lights up around it like a small sun.
   col += uGlow * (pow(mu, 3.0) * 0.10 * uSunHalo + pow(mu, 26.0) * 0.55);
+
+  // ── STARS ────────────────────────────────────────────────────────────────────────────
+  // Keyed on the VIEW DIRECTION, which is what puts them at infinity for free: the dome
+  // rides the aeroplane, so anything keyed on its world position would slide as you fly.
+  // A direction only changes when you turn, which is exactly how a star behaves.
+  //
+  // One candidate per cell of a 3D grid laid over the direction sphere — no pole pinching,
+  // unlike hashing spherical angles. The candidate is kept inside the middle half of its
+  // cell so a star can never straddle a boundary and get clipped; that is what buys a
+  // single hash lookup instead of the 27 a neighbourhood search would need.
+  vec3 sd = d * 165.0;
+  vec3 ci = floor(sd), cf = fract(sd);
+  vec3 off = 0.25 + 0.5 * vec3(hash31(ci + 1.3), hash31(ci + 7.7), hash31(ci + 13.1));
+  float present = step(0.885, hash31(ci + 31.7));
+  float size = mix(0.05, 0.14, hash31(ci + 3.3));
+  float disc = smoothstep(size, 0.0, length(cf - off)) * present;
+  // magnitudes are heavily skewed in a real sky — a handful carry it and the rest are dust
+  float mag = pow(hash31(ci + 47.1), 3.0);
+  float twinkle = 0.72 + 0.28 * sin(uTime * (1.4 + 3.0 * hash31(ci + 59.0))
+                                    + hash31(ci + 61.0) * 6.2832);
+  vec3 tint = mix(vec3(1.00, 0.87, 0.74), vec3(0.78, 0.86, 1.00), hash31(ci + 71.0));
+  vec3 stars = disc * (0.22 + mag) * twinkle * tint;
+
+  // ── MILKY WAY ────────────────────────────────────────────────────────────────────────
+  // A great circle rather than a patch: the band is where the view direction is most
+  // perpendicular to the galactic axis, so it crosses the whole sky and stays put as you
+  // turn. Two octaves of mottling stop it reading as an airbrushed stripe.
+  vec3 mwAxis = normalize(vec3(0.42, 0.60, -0.68));
+  float band = smoothstep(0.70, 1.0, 1.0 - abs(dot(d, mwAxis)));
+  float mw = band * (0.45 + 0.55 * vnoise3(d * 6.5)) * (0.35 + 0.65 * vnoise3(d * 21.0));
+
+  // Both fade out at the horizon, where the haze is thickest and where the terrain is about
+  // to take over anyway — a star sitting on the skyline reads as a firefly.
+  float sky = smoothstep(-0.03, 0.14, d.y);
+  col += (stars * 0.85 + mw * vec3(0.55, 0.64, 0.92) * 0.055) * uStars * sky;
+
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
