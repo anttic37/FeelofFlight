@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { noise2 } from './noise.js';
 import { RUNWAYS, heightAt } from './heightcore.js';
 import { injectGroundFX } from './groundfx.js';
+import { tintUnlit } from './atmosphere.js';
 
 // Runway meshes, markings, lights, windsocks + the hangar. The strips, the
 // shared feature anchors and the flattening math live in heightcore.js (pure,
@@ -29,8 +30,14 @@ export function createRunways(scene) {
   }
 
   const markGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-  const markMat = new THREE.MeshBasicMaterial({ color: 0xd6d6ca });
+  // Paint on tarmac, and paint is lit like anything else — but a MeshBasicMaterial is not, so
+  // the markings held their midday grey while the runway under them went orange and then
+  // dark. Tinted rather than converted to a lit material: these are instanced by the hundred
+  // and stay flat and legible from the air, which is why they were Basic to begin with.
+  const markMat = tintUnlit(new THREE.MeshBasicMaterial({ color: 0xd6d6ca }));
   const lightGeo = new THREE.SphereGeometry(0.42, 6, 5);
+  // NOT tinted, and that is the point of the distinction: an edge light emits, so it should
+  // look the same at every hour and simply stop being noticeable when the sun is up.
   const lightMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
   // the stalk under each lamp, and the low plates along the verge
   const poleStalkGeo = new THREE.CylinderGeometry(0.055, 0.075, 0.95, 5);

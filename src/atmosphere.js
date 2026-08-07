@@ -21,6 +21,45 @@ import * as THREE from 'three';
 // (water, the cloud pass) has to be pushed to explicitly; daynight does that.
 export const SUN_DIR = new THREE.Vector3(0.45, 0.2876, 0.3).normalize();
 
+// WHAT AN UNLIT SURFACE SHOULD BE MULTIPLIED BY. Three's lights reach MeshStandardMaterial
+// and friends automatically, so the terrain, the sea and the aeroplane all follow the time of
+// day for free — and it is easy to conclude from that that everything does. It does not. A
+// SpriteMaterial, a MeshBasicMaterial, a LineBasicMaterial and a hand-written ShaderMaterial
+// are all unlit by definition: they draw the colour they were given and no light touches
+// them. At midday that is invisible, because the authored colours were picked under midday.
+// Come sunset the world turns orange and every one of them stays exactly as it was — which is
+// what the ice-white wingtip ribbons against a red sky were.
+//
+// This is the multiplier that puts them back in the same light: roughly what a white diffuse
+// surface reads as under the current sun and sky. Live, mutated in place by daynight, so
+// holding the reference is enough.
+//
+// NOT for anything that emits its OWN light — flame, runway edge lights, the obstruction
+// lamps on the masts, the sun sprite. Those are correct as fixed colours and tinting them
+// would be the same mistake in the opposite direction.
+export const SURFACE_TINT = new THREE.Color(1, 1, 1);
+
+// A REGISTRY, because the alternative is every module growing its own update hook for one
+// material. Register once at build time, daynight applies the lot in one pass per frame.
+// There are a handful of these, so the cost is nil and nothing can be forgotten later.
+//
+// tintUnlit  — the material is UNLIT and its colour must be multiplied to sit in the light.
+// dimEmissive — the material IS lit, but carries a constant emissive standing in for
+//               something else (the snow caps fake subsurface scattering that way). That
+//               floor has to come down with the light or the props glow at midnight; the
+//               colour must NOT be touched, since three is already lighting it.
+const _tinted = [];
+const _emissive = [];
+export function tintUnlit(mat) { _tinted.push({ mat, base: mat.color.clone() }); return mat; }
+export function dimEmissive(mat) { _emissive.push({ mat, base: mat.emissiveIntensity }); return mat; }
+export function applySurfaceTint() {
+  for (const t of _tinted) t.mat.color.copy(t.base).multiply(SURFACE_TINT);
+  if (_emissive.length) {
+    const lv = 0.2126 * SURFACE_TINT.r + 0.7152 * SURFACE_TINT.g + 0.0722 * SURFACE_TINT.b;
+    for (const e of _emissive) e.mat.emissiveIntensity = e.base * lv;
+  }
+}
+
 // Authored in sRGB, used in LINEAR: everything downstream (the composer target,
 // the terrain's vertex colours) works in linear space, and skipping the
 // conversion is what makes hand-picked colours come out washed or muddy.

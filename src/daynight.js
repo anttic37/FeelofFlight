@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { SUN_DIR, ATMO } from './atmosphere.js';
+import { SUN_DIR, ATMO, SURFACE_TINT, applySurfaceTint } from './atmosphere.js';
 
 // Time of day. A 10 minute day and a 5 minute night, starting at a random point in the
 // cycle so no two sessions open on the same light.
@@ -225,6 +225,24 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
 
   const moonDir = new THREE.Vector3();
   const trueSunDir = new THREE.Vector3();
+
+  // --- SURFACE_TINT: what to multiply an UNLIT material by so it sits in the same light as
+  // everything three's lights reach on their own. Roughly a white diffuse surface: some of
+  // the directional, which is what carries the warmth, plus the sky fill, which is what
+  // carries the cool. The split matters — it is the whole difference between a sunset that
+  // reaches these surfaces and one that does not.
+  const _tA = new THREE.Color(), _tB = new THREE.Color();
+  const DIR_W = 0.62, HEMI_W = 0.90, ENV_W = 0.42;
+  const rawTint = (out) => {
+    _tA.copy(P.light).multiplyScalar(P.lightI * DIR_W);
+    _tB.copy(P.hemiSky).multiplyScalar(P.hemiI * HEMI_W + P.env * ENV_W);
+    return out.copy(_tA).add(_tB);
+  };
+  // NORMALISED AGAINST MIDDAY, because these colours were all authored under midday. Without
+  // this the tint is an absolute radiance and multiplying by it would darken everything even
+  // at noon — the point is to express the DIFFERENCE from the light they were picked in, so
+  // noon has to come out at exactly 1.
+  const TINT_REF = new THREE.Color();   // filled once sample() below exists
   // lightColor/lightLevel are published for the INSTRUMENT PANEL, which is a 2D canvas and
   // therefore lit by nothing at all unless it is told what the sun is doing.
   const state = {
@@ -243,6 +261,9 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
     P.cloudAmb.lerpColors(a.cloudAmb, b.cloudAmb, t);
     for (const k of NUM_KEYS) P[k] = a[k] + (b[k] - a[k]) * t;
   };
+
+  sample(MAX_ALT);        // midday, purely to capture the tint reference
+  rawTint(TINT_REF);
 
   function update(dt) {
     clock = (clock + dt) % CYCLE;
@@ -279,6 +300,14 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
     ATMO.uAtmHazeToward.value.copy(P.hazeToward);
     ATMO.uAtmGlow.value.copy(P.glow);
     ATMO.uAtmSunPower.value = P.sunPower;
+
+    // --- and the same idea for materials that no light reaches: one colour, written once,
+    // read by reference wherever an unlit surface has to sit in the scene's light.
+    rawTint(SURFACE_TINT);
+    SURFACE_TINT.r /= TINT_REF.r || 1;
+    SURFACE_TINT.g /= TINT_REF.g || 1;
+    SURFACE_TINT.b /= TINT_REF.b || 1;
+    applySurfaceTint();
 
     // --- sky dome
     if (skyMat) {

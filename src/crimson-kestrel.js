@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { tintUnlit } from './atmosphere.js';
 
 // Crimson Kestrel KX-1
 // A semi-realistic, game-ready procedural taildragger. Nose points along -Z,
@@ -732,7 +733,10 @@ export function buildPlane() {
     }
     const seamGeometry = new THREE.BufferGeometry();
     seamGeometry.setAttribute('position', new THREE.Float32BufferAttribute(seamPositions, 3));
-    const wingSeams = new THREE.LineSegments(seamGeometry, new THREE.LineBasicMaterial({ color: 0x776d62, transparent: true, opacity: 0.52 }));
+    // Lines cannot be lit — there is no lit line material — so a seam drawn on a wing that
+    // IS lit drifts further from it as the day goes on, and at dusk the panel lines sit
+    // pale over an orange wing. Tinted to follow it instead.
+    const wingSeams = new THREE.LineSegments(seamGeometry, tintUnlit(new THREE.LineBasicMaterial({ color: 0x776d62, transparent: true, opacity: 0.52 })));
     wingSeams.name = sign < 0 ? 'Left wing panel seams' : 'Right wing panel seams';
     wingParents[sign].add(wingSeams);
   }
@@ -810,7 +814,7 @@ export function buildPlane() {
     new THREE.Vector3(0, 1.16, 1.02),
     new THREE.Vector3(0, 2.18, 2.70),
   ]);
-  group.add(new THREE.Line(aerialGeometry, new THREE.LineBasicMaterial({ color: 0x262a2c, transparent: true, opacity: 0.78 })));
+  group.add(new THREE.Line(aerialGeometry, tintUnlit(new THREE.LineBasicMaterial({ color: 0x262a2c, transparent: true, opacity: 0.78 }))));
 
   // Three twisted blades, polished spinner and a throttle-driven blur disc.
   const propeller = new THREE.Group();
@@ -844,7 +848,9 @@ export function buildPlane() {
   const propDisc = addMesh(
     propeller,
     new THREE.CircleGeometry(1.50, 48),
-    new THREE.MeshBasicMaterial({ map: propDiscTexture(), transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false }),
+    // the blur disc is a real object catching real light, not a glow — it was the last white
+    // thing on the aeroplane that stayed white at sunset
+    tintUnlit(new THREE.MeshBasicMaterial({ map: propDiscTexture(), transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false })),
     [0, 0, -0.075],
     'Propeller blur',
   );

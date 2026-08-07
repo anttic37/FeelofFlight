@@ -3,6 +3,7 @@ import { heightAt, runwayInfluence, biomeWeights } from './heightcore.js';
 import { terrainColor } from './colorcore.js';
 import { noise2 } from './noise.js';
 import * as HC from './heightcore.js'; // _wD/_wH are live let-bindings set by biomeWeights
+import { dimEmissive } from './atmosphere.js';
 
 // GROUND RUSH: small props streamed around the plane — stones, slabs, tufts,
 // scrub, dead sticks, fallen logs. Speed is only felt against things close
@@ -72,8 +73,12 @@ export function createScatter(scene) {
       // white base + per-instance colour, exactly like world.js's vegetation:
       // vertexColors:true would look for a geometry colour attribute these
       // primitives don't have, and instanceColor tints fine without it
+      // ...and that emissive floor has to come DOWN with the light. It is standing in for
+      // scattering, not emitting: left constant it is the brightest thing on the island at
+      // midnight, glowing pale blue while everything around it is dark. Only the intensity
+      // is scaled — the colour is lit by three already and must not be touched twice.
       k.soft
-        ? new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0xc9d8e6, emissiveIntensity: 0.5 })
+        ? dimEmissive(new THREE.MeshLambertMaterial({ color: 0xffffff, emissive: 0xc9d8e6, emissiveIntensity: 0.5 }))
         : new THREE.MeshLambertMaterial({ color: 0xffffff, flatShading: true }), k.cap);
     mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     mesh.frustumCulled = false;  // instances move under us every frame

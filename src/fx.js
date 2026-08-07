@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SURFACE_TINT } from './atmosphere.js';
 
 // Pooled ground-contact puffs: touchdown bursts + rolling dust. Normal
 // blending (smoke/dust must read solid, not glowy), soft radial canvas
@@ -109,7 +110,14 @@ export function createFX(scene) {
     cursor = (cursor + 1) % POOL; // steal oldest slot when the pool is full
     const s = sprites[i];
     s.position.set(x, y, z);
-    s.material.color.copy(color);
+    // TINTED AT SPAWN. A SpriteMaterial is unlit, so dust, spray and exhaust smoke were all
+    // drawing their midday colours at every hour — grey-white spray kicking up under a red
+    // sunset. Applied once per puff rather than per frame because there are 200 of these,
+    // each with its own material; a puff lives a second or two, which is far shorter than
+    // any part of the cycle, so it cannot drift far from the light it was born in.
+    // Flame is deliberately NOT here: it is its own light source, and the same treatment
+    // would have a fire turn blue at dusk.
+    s.material.color.copy(color).multiply(SURFACE_TINT);
     s.material.rotation = Math.random() * Math.PI * 2;
     s.scale.set(size0, size0, 1);
     s.visible = true;

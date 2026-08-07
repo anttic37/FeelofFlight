@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { SURFACE_TINT } from './atmosphere.js';
 
 // Wingtip vortex ribbons: camera-facing tapered triangle strips, additive.
 // Intensity comes from G-load / near-stall AoA, so hard pulls draw the air.
@@ -26,10 +27,17 @@ void main() {
   gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
 }`;
 
+// THE COLOUR IS NOT A CONSTANT ANY MORE. It used to be a flat cool white baked into the
+// shader, which is right at midday and wrong at every other hour — a vortex is condensed
+// water, the same stuff as a cloud, so it takes the colour of whatever is lighting it. Flying
+// into a sunset the whole sky went orange and two ice-white streaks stayed exactly as they
+// were. uTint holds the shared SURFACE_TINT object by reference, so daynight writing it once
+// reaches this without trails.js knowing daynight exists.
 const FRAG = `
+uniform vec3 uTint;
 varying float vAlpha;
 void main() {
-  gl_FragColor = vec4(vec3(0.72, 0.93, 1.0), vAlpha * 0.85);
+  gl_FragColor = vec4(vec3(0.72, 0.93, 1.0) * uTint, vAlpha * 0.85);
 }`;
 
 let ribbonMat = null;
@@ -37,6 +45,7 @@ function getRibbonMat() {
   if (!ribbonMat) {
     ribbonMat = new THREE.ShaderMaterial({
       vertexShader: VERT, fragmentShader: FRAG,
+      uniforms: { uTint: { value: SURFACE_TINT } },
       transparent: true, depthWrite: false,
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide, // strip winding flips as the plane maneuvers
