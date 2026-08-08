@@ -460,8 +460,43 @@ function computePlatforms() {
   PLATFORMS.length = 0;
   for (const r of RUNWAYS) {
     const hl = r.length / 2 + 70, hw = r.width / 2 + 55;
-    const reach = Math.hypot(hl, hw) + r.pad;
-    PLATFORMS.push({ x: r.x, z: r.z, c: r._c, s: r._s, elev: r.elev, hl, hw, pad: r.pad, r2: reach * reach });
+    // A PLATFORM MUST RUN OUT BEFORE THE WATER DOES, and the way to arrange that is to
+    // shorten it, not to cut it off. Gating the lift by height instead — refusing to raise
+    // ground already below sea level — does stop the apron growing into the sea, and it
+    // trades the bulge for something worse: the taper is still at full strength right up to
+    // the beach and then stops dead, so the coast under an airfield went from about 35% slope
+    // to 59%, an edge where there used to be a shore. The gate was fixing the symptom at the
+    // waterline; the cause is a taper that was ever allowed to reach it.
+    //
+    // So the pad is clamped to the distance to the nearest water instead. Measured once per
+    // strip on a 48-bearing ring, not per sample, so it costs nothing at runtime — and the
+    // taper then finishes on dry land with its full smoothstep intact, which is why the shore
+    // keeps its own shape and its own slope.
+    // TRY/CATCH BECAUSE THIS ALSO RUNS DURING MODULE EVALUATION, where genTerrainHeight
+    // cannot be called at all: it reads consts declared further down the file, and a const is
+    // in its temporal dead zone until then. That first call is for the fixed classic island
+    // and is recomputed properly once a seed is placed, so falling back to the authored pad
+    // there is correct rather than merely safe.
+    let toWater = Infinity;
+    try {
+      const span = r.pad + Math.hypot(hl, hw) + 200;
+      for (let k = 0; k < 48; k++) {
+        const a = k / 48 * Math.PI * 2, sn = Math.sin(a), cs = Math.cos(a);
+        for (let d = 40; d <= span; d += 30) {
+          if (genTerrainHeight(r.x + sn * d, r.z + cs * d) <= 0) {
+            if (d < toWater) toWater = d;
+            break;
+          }
+        }
+      }
+    } catch { toWater = Infinity; }
+    // 150 m of dry ground left between the end of the taper and the sea. The floor of 60 m
+    // keeps a taper on strips that sit close to a shore: without one the platform would end
+    // at the rect edge, which is the same hard step by another route.
+    const room = toWater - Math.hypot(hl, hw) - 150;
+    const pad = Math.max(60, Math.min(r.pad, isFinite(room) ? room : r.pad));
+    const reach = Math.hypot(hl, hw) + pad;
+    PLATFORMS.push({ x: r.x, z: r.z, c: r._c, s: r._s, elev: r.elev, hl, hw, pad, r2: reach * reach });
   }
 }
 computePlatforms();
@@ -479,18 +514,14 @@ function applyPlatforms(x, z, h) {
       const t = dd / p.pad;
       w = 1 - t * t * (3 - 2 * t);
     }
-    // A PLATFORM MAY CUT A HILL DOWN. IT MAY NOT BUILD LAND OUT OF THE SEA.
-    // This reaches hypot(length/2+70, width/2+55) + pad, which is over 600 m for the coastal
-    // strip, and it pulled every sample inside that toward strip elevation — including the
-    // ones that were under water. The result is a smooth pale lobe of apron projecting into
-    // the sea with the coastline bent around it, which is the "bulge" that breaks the
-    // island's silhouette. Lowering is left alone, because cutting a shoulder back is what
-    // this is for; only the LIFT is gated, and it fades over the last few metres of beach so
-    // the platform runs out before the waterline instead of ending in a step.
-    // The strip's own surface is not at risk: a coastal site is only ever placed on ground of
-    // 6 m or more, which is already past the top of this ramp, and the tight grading pass in
-    // applyRunwayFlattening runs afterwards and is deliberately NOT gated.
-    const lift = p.elev > h ? smooth(0.5, 4.0, h) : 1;
+    // A PLATFORM MAY CUT A HILL DOWN. IT MAY NOT BUILD LAND OUT OF THE SEA. The pad clamp in
+    // computePlatforms is what normally keeps this away from the coast; this is the backstop
+    // for a strip sitting so close to a shore that even the clamped taper reaches it.
+    // WIDE ON PURPOSE — 30 m of height, not the 4 m it started at. A narrow ramp is a step:
+    // on a shore of 20% slope, 4 m of height is 20 m of ground, so the apron went from full
+    // strength to nothing across a couple of samples and left an edge. 30 m spreads the same
+    // handover over ~150 m of shore, which reads as ground.
+    const lift = p.elev > h ? smooth(0.0, 30.0, h) : 1;
     h += (p.elev - h) * w * lift;
   }
   return h;

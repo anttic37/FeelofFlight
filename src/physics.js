@@ -182,7 +182,9 @@ export class FlightModel {
     const r1 = fbm1(this.pos.x * 0.137 + this.pos.z * 0.071, 3.3);
     const r2 = fbm1(this.pos.z * 0.113 - this.pos.x * 0.059, 7.7);
     this.angVel.set(r1 * (2.5 + s * 0.06), r2 * (1.5 + s * 0.04), (r1 - r2) * (2.5 + s * 0.06));
-    this.vel.multiplyScalar(0.7); // the airframe soaks the first hit
+    // 0.86, not 0.7. Something arriving at 200 km/h does not lose a third of its speed to the
+    // first touch — it keeps most of it and spends the rest sliding.
+    this.vel.multiplyScalar(0.86);
     this.justWreckHit = Math.min(9, 2 + s * 0.07);
   }
 
@@ -213,10 +215,23 @@ export class FlightModel {
         w.multiplyScalar(Math.max(0, 1 - dt * 3));
       } else {
         if (this.vel.y < -1.5) this.justWreckHit = Math.min(8, -this.vel.y * 0.8);
-        this.vel.y = Math.abs(this.vel.y) * 0.3; // bounce with heavy loss
-        this.vel.x *= Math.max(0, 1 - dt * 2.4);  // skid friction
-        this.vel.z *= Math.max(0, 1 - dt * 2.4);
-        w.multiplyScalar(Math.max(0, 1 - dt * 2.2));
+        this.vel.y = Math.abs(this.vel.y) * 0.34; // bounce with heavy loss
+        // A SLIDE IS A DECELERATION, NOT A DECAY. Scaling the horizontal velocity by a
+        // per-frame fraction is exponential, so it takes the same TIME to stop from any
+        // speed: at the old 1 - dt*2.4 that is 8.6% of the speed left after one second, and
+        // an airframe arriving at 200 km/h came to rest in about a second and a car's length.
+        // Friction does not work like that — it takes a roughly constant force off, so the
+        // distance grows with the square of the speed and a fast crash slides a long way.
+        // 5.2 m/s^2 on open ground is about half a g, which is what a tumbling airframe
+        // digging into grass actually manages; asphalt is smoother and lets it run further.
+        const decel = (surf.type === 'runway' ? 3.4 : 5.2) * dt;
+        const hs = Math.hypot(this.vel.x, this.vel.z);
+        if (hs > 1e-4) {
+          const k = Math.max(0, 1 - decel / hs);
+          this.vel.x *= k; this.vel.z *= k;
+        }
+        // and it keeps tumbling while it travels, rather than settling almost at once
+        w.multiplyScalar(Math.max(0, 1 - dt * 0.9));
       }
     } else {
       this.grounded = false;
