@@ -11,6 +11,7 @@ import { initGroundFX } from './groundfx.js';
 import { RUNWAYS } from './runways.js';
 import { buildPlane, updatePlaneVisual } from './crimson-kestrel.js'; // KX-1 with load-flexing wings
 import { FlightModel } from './physics.js';
+import { measureContacts } from './airframe.js';
 import { ChaseCam } from './camera.js';
 import { WingTrails } from './trails.js';
 import { createFX } from './fx.js';
@@ -72,13 +73,17 @@ const plane = buildPlane();
 scene.add(plane.group);
 
 const phys = new FlightModel(surfaceAt);
-// ?physics=rapier hands CRASHES ONLY to a real rigid-body solver so it can be A/B'd against
-// the hand-rolled wreck. The flight model is not touched either way. Loaded up front rather
-// than at the moment of impact: it takes 665 ms, and a crash cannot wait for a download.
-if (new URLSearchParams(location.search).get('physics') === 'rapier') {
+// Crashes go to a real rigid-body solver; ?physics=builtin keeps the hand-rolled one. The
+// flight model is not touched either way — this only takes over once the airframe is broken.
+// It is the default because the hand-rolled wreck CANNOT TOPPLE: give it perfectly correct
+// contact points and it still comes to rest balanced on its nose in half of all steep dives,
+// because nothing in it can turn an unstable pose into a stable one. Loaded in the background
+// at startup, not at impact: it takes 665 ms, and a crash cannot wait for a download. If the
+// load fails, wreckDriver is simply never attached and the built-in path carries on.
+if (new URLSearchParams(location.search).get('physics') !== 'builtin') {
   import('./rapiercrash.js').then(async (m) => {
     await m.preloadRapier();
-    phys.wreckDriver = m.createRapierCrash();
+    phys.wreckDriver = m.createRapierCrash(plane);
     console.log('[ff] rapier crash solver armed');
   }).catch((e) => console.warn('[ff] rapier unavailable, keeping built-in wreck', e));
 }
@@ -270,7 +275,7 @@ window.__ff = {
     if (chase.free || paused) { /* frozen */ }
     else if (!phys.crashed) phys.update(dt, controls);
     else {
-      if (!phys._wreck) { const sev = phys.vel.length(); phys.startWreck(); wreckage.breakUp(plane, phys, sev); }
+      if (!phys._wreck) { const sev = phys.vel.length(); phys.startWreck(); wreckage.breakUp(plane, phys, sev); phys.wreckContacts = measureContacts(plane); }
       phys.wreckUpdate(dt);
       phys.justWreckHit = 0;
     }
@@ -343,6 +348,10 @@ renderer.setAnimationLoop(() => {
     const severity = phys.vel.length(); // before startWreck damps it
     phys.startWreck();
     wreckage.breakUp(plane, phys, severity);
+    // AFTER breakUp, never before: whatever is still bolted on is the wreck, and its contact
+    // points have to be that shape. Skip this and a fuselage whose wings are lying in a field
+    // is still held up on contacts 5.5 m out to either side, floating.
+    phys.wreckContacts = measureContacts(plane);
     input.throttle = 0; // engine dies with the airframe
     sound.crash();
     hud.flash();

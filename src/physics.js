@@ -151,6 +151,7 @@ export class FlightModel {
     this.flapBuffet = 0;
     this.overG = 0; this.stress = 0; this.overspeed = 0;
     this._wreck = false; this.justWreckHit = 0; this.wreckSettled = false;
+    this.wreckContacts = null;   // the aeroplane is whole again
     if (this.wreckDriver) this.wreckDriver.end();
   }
 
@@ -184,6 +185,7 @@ export class FlightModel {
     this.flapBuffet = 0;
     this.overG = 0; this.stress = 0; this.overspeed = 0;
     this._wreck = false; this.justWreckHit = 0; this.wreckSettled = false;
+    this.wreckContacts = null;   // the aeroplane is whole again
     if (this.wreckDriver) this.wreckDriver.end();
   }
 
@@ -228,8 +230,11 @@ export class FlightModel {
     // somewhere to be other than the centre of mass.
     let deepest = -Infinity, surf = null;
     t.v3.set(0, 0, 0);
-    for (let i = 0; i < WRECK_CONTACTS.length; i++) {
-      const c = WRECK_CONTACTS[i];
+    // this.wreckContacts, not the constant: main.js re-measures it off the model once the
+    // wings have sheared, so a wingless fuselage is not still propped up on 5.5 m of wing
+    const contacts = this.wreckContacts || WRECK_CONTACTS;
+    for (let i = 0; i < contacts.length; i++) {
+      const c = contacts[i];
       t.v.set(c[0], c[1], c[2]).applyQuaternion(this.quat);
       const s = this.surfaceAt(this.pos.x + t.v.x, this.pos.z + t.v.z);
       const g = s.type === 'water' ? -0.5 : Math.max(s.h, 0);

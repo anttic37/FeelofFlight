@@ -1,4 +1,5 @@
 import { heightAt } from './heightcore.js';
+import { measureParts } from './airframe.js';
 
 // A SPIKE: hand the crash to Rapier instead of our own wreck integrator, behind ?physics=rapier.
 // The flight model is untouched — this only takes over once the airframe is already broken,
@@ -22,14 +23,9 @@ const CDN = 'https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/rapie
 // on the hand-rolled path was 260 m from 300 km/h, so 1400 m centred on the impact is roomy.
 const SPAN = 1400, CELLS = 64;
 
-// The airframe as it actually is, in body axes (fwd -Z, up +Y, right +X). This is the whole
-// point of the exercise: five sample points cannot catch a wing on a slope, a wing can.
-const PARTS = [
-  { h: [0.8, 0.8, 4.0], p: [0, 0, 0] },        // fuselage
-  { h: [5.5, 0.15, 0.8], p: [0, -0.1, 0.3] },  // wing
-  { h: [1.8, 0.12, 0.5], p: [0, 0.2, 3.4] },   // tailplane
-  { h: [0.12, 0.9, 0.5], p: [0, 0.9, 3.4] },   // fin
-];
+// The airframe is measured off the model, not typed here — see airframe.js. This is the whole
+// point of the exercise: five sample points cannot catch a wing on a slope, a wing can, and it
+// has to be the wing the model actually has.
 
 // One named place for everything the crash FEELS like, because these are the numbers that get
 // swept. Friction is the one that matters and 0.35 is deliberate: torn metal on grass is not a
@@ -41,7 +37,10 @@ export const tune = {
   restitution: 0.06,
   linDamp: 0.01,
   angDamp: 0.14,
-  mass: 1000,
+  // Density per cubic metre of bounding box, not a total mass. The intact aeroplane measures
+  // ~34 m^3 of boxes, so 29 puts it near a tonne — and a wreck that has lost both wings comes
+  // out genuinely lighter, which is right, because the wings are lying in a field behind it.
+  density: 29,
 };
 
 let RAPIER = null;
@@ -52,11 +51,22 @@ export function preloadRapier() {
   return loading;
 }
 
-export function createRapierCrash() {
-  let world = null, body = null, ready = false;
+export function createRapierCrash(plane) {
+  let world = null, body = null, ready = false, pending = false, parts = null;
 
-  const begin = (phys) => {
+  // ORDER MATTERS AND IT IS NOT THE OBVIOUS ONE. main.js runs startWreck() and only THEN
+  // wreckage.breakUp(), so at begin() the wings are still on an aeroplane that is about to
+  // lose them. Building the colliders here would give the wreck a 10.7 m span it no longer
+  // has and stand it up on wings that are not there — the exact float being fixed. So begin()
+  // only arms; the body is built on the first step(), by which time breakUp() has run and the
+  // scene graph is the truth.
+  const begin = () => {
     if (!RAPIER) return false;                 // not loaded yet: caller keeps the built-in path
+    pending = true;
+    return true;
+  };
+
+  const build = (phys) => {
     end();  // a World is WASM memory the GC cannot see, so an unpaired begin() leaks it for good
     const R = RAPIER;
     world = new R.World({ x: 0, y: -9.81, z: 0 });
@@ -101,14 +111,14 @@ export function createRapierCrash() {
         .setCcdEnabled(true)
         .setLinearDamping(tune.linDamp).setAngularDamping(tune.angDamp),
     );
-    for (const part of PARTS) {
+    // one box per assembly still attached to the model, measured this instant
+    parts = measureParts(plane);
+    for (const part of parts) {
       world.createCollider(
-        R.ColliderDesc.cuboid(part.h[0], part.h[1], part.h[2])
-          .setTranslation(part.p[0], part.p[1], part.p[2])
+        R.ColliderDesc.cuboid(part.half[0], part.half[1], part.half[2])
+          .setTranslation(part.pos[0], part.pos[1], part.pos[2])
           .setFriction(tune.airframeFriction).setRestitution(tune.restitution)
-          // a quarter of the mass in each part, so the total is tune.mass however the boxes
-          // are shaped — density is per-volume and the fuselage is 30x the fin
-          .setDensity(tune.mass * 0.25 / (8 * part.h[0] * part.h[1] * part.h[2] + 1e-6)),
+          .setDensity(tune.density),
         body,
       );
     }
@@ -117,6 +127,7 @@ export function createRapierCrash() {
   };
 
   const step = (phys, dt) => {
+    if (pending) { pending = false; build(phys); }
     if (!ready) return false;
     world.integrationParameters.dt = Math.min(dt, 1 / 30);
     const before = body.linvel();
@@ -143,8 +154,8 @@ export function createRapierCrash() {
 
   const end = () => {
     if (world) world.free();
-    world = null; body = null; ready = false;
+    world = null; body = null; ready = false; pending = false;
   };
 
-  return { begin, step, end, get active() { return ready; } };
+  return { begin, step, end, get active() { return ready; }, get parts() { return parts; } };
 }
