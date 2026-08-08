@@ -195,17 +195,38 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan,
   // dark and read as serrated teeth / dashed slivers along ring boundaries;
   // a near-terrain-slope ramp shades like the hillside it continues.
   const ring = 4 * res;
-  const out = skirtDepth * 3;
+  const outFull = skirtDepth * 3;
   for (let k = 0; k < ring; k++, o += 3) {
     const g = ringGridIndex(res, k) * 3;
+    // THE OUTWARD PUSH STOPS AT THE WATERLINE. It is there to turn the drop into an ~18
+    // degree ramp so it shades like the hillside it continues instead of flat-shading dark,
+    // and inland it is invisible because the neighbouring tile lies on top of it. At the
+    // coast there IS no neighbouring tile — the skirt is pushed 15 to 48 m out over open
+    // sea, where nothing covers it, and it reads as a flat low-poly apron of sand lying in
+    // the water. That is the shape you can fly under.
+    //
+    // The DROP is kept, because the drop is what actually hides the crack; only the sideways
+    // component goes. Straight down from a beach edge puts it well under the surface where
+    // its shading no longer matters, which is exactly the case the ramp was compensating for.
+    const eh = posOut[g + 1];
+    const ramp = eh <= 0 ? 0 : eh >= 9 ? 1 : (eh / 9) * (eh / 9) * (3 - 2 * (eh / 9));
+    const out = outFull * ramp;
     let ox = 0, oz = 0;
     if (k < res) oz = -out;         // z-min edge faces -z
     else if (k < 2 * res) ox = out; // x-max edge faces +x
     else if (k < 3 * res) oz = out; // z-max edge faces +z
     else ox = -out;                 // x-min edge faces -x
-    posOut[o] = posOut[g] + ox;
-    posOut[o + 1] = posOut[g + 1] - skirtDepth;
-    posOut[o + 2] = posOut[g + 2] + oz;
+    const sx = posOut[g] + ox, sz = posOut[g + 2] + oz;
+    // ...AND IT MAY NEVER FLOAT. Fading the push was not enough on its own — measured over
+    // every coast-straddling tile, the fade halved the skirt vertices left hanging above the
+    // seabed (80 to 39 on LOD0) where the artifact needs them at zero. A pushed vertex lands
+    // wherever it lands; the only way it cannot hover is to be told the ground there. Clamped
+    // below it, the whole skirt is buried by construction, at every ring, on any island.
+    // Costs one heightAt per perimeter vertex against (res+1)^2 for the tile itself.
+    const gh = heightAt(sx, sz);
+    posOut[o] = sx;
+    posOut[o + 1] = Math.min(posOut[g + 1] - skirtDepth, gh - 0.5);
+    posOut[o + 2] = sz;
     colOut[o] = colOut[g]; colOut[o + 1] = colOut[g + 1]; colOut[o + 2] = colOut[g + 2];
     if (nrmOut) { nrmOut[o] = nrmOut[g]; nrmOut[o + 1] = nrmOut[g + 1]; nrmOut[o + 2] = nrmOut[g + 2]; }
   }
