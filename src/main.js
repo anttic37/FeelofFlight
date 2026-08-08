@@ -72,6 +72,16 @@ const plane = buildPlane();
 scene.add(plane.group);
 
 const phys = new FlightModel(surfaceAt);
+// ?physics=rapier hands CRASHES ONLY to a real rigid-body solver so it can be A/B'd against
+// the hand-rolled wreck. The flight model is not touched either way. Loaded up front rather
+// than at the moment of impact: it takes 665 ms, and a crash cannot wait for a download.
+if (new URLSearchParams(location.search).get('physics') === 'rapier') {
+  import('./rapiercrash.js').then(async (m) => {
+    await m.preloadRapier();
+    phys.wreckDriver = m.createRapierCrash();
+    console.log('[ff] rapier crash solver armed');
+  }).catch((e) => console.warn('[ff] rapier unavailable, keeping built-in wreck', e));
+}
 const input = new Input();
 const chase = new ChaseCam(camera, heightAt);
 const trails = new WingTrails(scene, plane.tipL, plane.tipR);

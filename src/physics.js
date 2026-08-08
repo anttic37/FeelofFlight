@@ -151,6 +151,7 @@ export class FlightModel {
     this.flapBuffet = 0;
     this.overG = 0; this.stress = 0; this.overspeed = 0;
     this._wreck = false; this.justWreckHit = 0; this.wreckSettled = false;
+    if (this.wreckDriver) this.wreckDriver.end();
   }
 
   resetTo({ x, z, y, yaw, speed, grounded, gearDown }) {
@@ -183,6 +184,7 @@ export class FlightModel {
     this.flapBuffet = 0;
     this.overG = 0; this.stress = 0; this.overspeed = 0;
     this._wreck = false; this.justWreckHit = 0; this.wreckSettled = false;
+    if (this.wreckDriver) this.wreckDriver.end();
   }
 
   // ---- wreck: after a crash the airframe becomes a tumbling rigid body ----
@@ -199,9 +201,14 @@ export class FlightModel {
     // first touch — it keeps most of it and spends the rest sliding.
     this.vel.multiplyScalar(0.86);
     this.justWreckHit = Math.min(9, 2 + s * 0.07);
+    // An optional external solver takes over from here (?physics=rapier). It is handed the
+    // state AFTER the tumble kick and the 0.86, so both paths start the crash identically and
+    // any difference downstream is the solver's, not the entry condition's.
+    if (this.wreckDriver) this.wreckDriver.begin(this);
   }
 
   wreckUpdate(dt) {
+    if (this.wreckDriver && this.wreckDriver.step(this, dt)) return;
     const t = this._tmp;
     this.vel.y -= G * dt;
     this.vel.multiplyScalar(Math.max(0, 1 - dt * 0.2)); // battered-airframe drag
