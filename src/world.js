@@ -15,6 +15,7 @@ import { SUN_DIR, SKY, createSkyMaterial } from './atmosphere.js';
 import { createRunways } from './runways.js';
 import { createWater } from './water.js';
 import { createLandmarks } from './landmarks.js';
+import { createShoreRibbon } from './shoreribbon.js';
 
 // Scene construction for the procedural island: sky/sun/lights, the static
 // terrain mesh, vegetation scatter, runways, water. Clouds are not scene
@@ -129,6 +130,9 @@ export function createWorld(scene) {
   // terrain — static single mesh or streamed ring-LOD tiles (see terrain.js);
   // either way heightAt stays the ground truth for physics/camera/vegetation
   const terrain = createTerrain(scene);
+  // ...plus a strip re-tessellated ALONG the coast on top of them, so the waterline is a mesh
+  // edge rather than wherever the square lattice happens to cross zero. See shoreribbon.js.
+  const shoreRibbon = createShoreRibbon(scene);
 
   function slopeAt(x, z) {
     const gx = heightAt(x + 7, z) - heightAt(x - 7, z);
@@ -341,7 +345,7 @@ export function createWorld(scene) {
   // the atmosphere handles go out so daynight.js can drive them; everything else here is
   // internal
   return {
-    update, terrain, scatter, water,
+    update, terrain, scatter, water, shoreRibbon,
     skyMat: sky.material, sun, hemi, sunSpr, flare,
   };
 }
