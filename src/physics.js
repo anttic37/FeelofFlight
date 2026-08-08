@@ -28,6 +28,19 @@ const FLAP_TIME = 1.2;      // s full travel up <-> full
 const WIND_X = 3.0, WIND_Z = -2.9;
 const WINGSPAN = 11;        // ground-effect fade height
 
+// Where a WRECK actually touches, in body axes (fwd -Z, up +Y, right +X). The airframe is
+// ~11 m across and ~8 m long, and treating it as a point meant a wing could be buried in a
+// hillside while the centre sat politely 0.9 m above the ground under it. These are also the
+// lever arms the contact response torques about, which is what lets a tip dig in and throw
+// the thing over rather than everything pivoting about the centre of mass.
+const WRECK_CONTACTS = [
+  [0, -0.2, -4.2],   // nose
+  [0, 0.35, 3.6],    // tail
+  [-5.5, 0.1, 0.2],  // left tip
+  [5.5, 0.1, 0.2],   // right tip
+  [0, -0.9, 0],      // belly
+];
+
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 
 export class FlightModel {
@@ -199,11 +212,42 @@ export class FlightModel {
       const axis = t.v.copy(w).divideScalar(wMag);
       this.quat.multiply(t.q.setFromAxisAngle(axis, Math.min(wMag, 6) * dt)).normalize();
     }
-    const surf = this.surfaceAt(this.pos.x, this.pos.z);
+    // ---- AIRFRAME CONTACT, not a point ----------------------------------------------
+    // The wreck used to be a single point held 0.9 m over whatever was under its centre, so
+    // an 11 m wingspan passed through hillsides and the tail hung in the air off a lip. Five
+    // points carry the actual shape: nose, tail, both tips and the belly. Whichever is
+    // deepest sets the height and, more usefully, provides the LEVER — a wingtip catching a
+    // slope is what pitches the thing over sideways, and that only exists if the contact has
+    // somewhere to be other than the centre of mass.
+    let deepest = -Infinity, surf = null;
+    t.v3.set(0, 0, 0);
+    for (let i = 0; i < WRECK_CONTACTS.length; i++) {
+      const c = WRECK_CONTACTS[i];
+      t.v.set(c[0], c[1], c[2]).applyQuaternion(this.quat);
+      const s = this.surfaceAt(this.pos.x + t.v.x, this.pos.z + t.v.z);
+      const g = s.type === 'water' ? -0.5 : Math.max(s.h, 0);
+      const pen = g - (this.pos.y + t.v.y);
+      if (pen > deepest) { deepest = pen; surf = s; t.v3.copy(t.v); }
+    }
     const water = surf.type === 'water';
-    const gy = (water ? -0.5 : Math.max(surf.h, 0)) + 0.9;
-    if (this.pos.y <= gy) {
-      this.pos.y = gy;
+    if (deepest > 0) {
+      this.pos.y += deepest;
+      // the contact pushes back on the airframe where it actually touched: a lever arm
+      // crossed with the ground normal is the axis that lifts that point, so a dug-in tip
+      // levers the wreck over instead of the whole body rising politely on the spot
+      const lever = t.v3.lengthSq();
+      if (lever > 1e-4 && !water) {
+        t.v2.set(t.v3.z, 0, -t.v3.x); // t.v3 x WORLD_UP, the axis that raises that point
+        const m = t.v2.length();
+        if (m > 1e-4) {
+          // Small, because this is a CORRECTION and not a motor. The position has already
+          // been lifted clear by `deepest`, so all this owes is the rotational half of the
+          // same push; at five times this it fed the tumble every frame it touched and the
+          // wreck wound up to twelve rotations and never came to rest.
+          t.v2.divideScalar(m).applyQuaternion(t.q.copy(this.quat).invert());
+          w.addScaledVector(t.v2, Math.min(0.9, deepest * 1.6) * Math.min(1, dt * 6));
+        }
+      }
       // floating is not rolling: grounded=true on water made fx throw brown
       // skid dust off the sea while the wreck slid to a stop
       this.grounded = !water;
@@ -247,14 +291,23 @@ export class FlightModel {
         // around 0.6 of the target and a 200 km/h crash still only turned one and a half
         // times, which is a roll rather than a tumble.
         const spinTarget = Math.min(6.0, hs * 0.19);
-        if (spinTarget > spin) {
+        if (spinTarget > spin && hs > 1e-4) {
           const n1 = fbm1(this.pos.x * 0.021 + this.pos.z * 0.013, 3.3);
           const n2 = fbm1(this.pos.z * 0.019 - this.pos.x * 0.011, 7.7);
-          // weighted toward pitch, which is the axis a base-acting friction force actually
-          // drives; the noise on the other two is the wingtip catching and slewing it
-          t.v.set(0.9 + 0.35 * n2, 0.34 * n1, 0.3 * (n1 - n2)).normalize()
-            .multiplyScalar((spinTarget - spin) * Math.min(1, dt * 5.0));
-          w.add(t.v);
+          // IT WAS ROLLING BACKWARDS, and the axis is why. This was being set in BODY axes
+          // with a positive X, and a positive body-X rotation carries the top toward +Z —
+          // which is AFT, since forward is -Z. So the wreck cartwheeled the wrong way up its
+          // own slide. The axis is not a body constant at all: it is the ground normal
+          // crossed into the direction of TRAVEL, WORLD_UP x velocity, which sends the top
+          // over in the direction the thing is actually going. Rotated into body axes at the
+          // end because that is the frame angVel is integrated in, and it has to be
+          // recomputed every frame — the body is tumbling, so any fixed body axis drifts
+          // away from the one the ground is really pushing on.
+          t.v2.set(this.vel.z, 0, -this.vel.x).divideScalar(hs);
+          // and a little noise, so it is not a clean somersault every single time
+          t.v2.x += 0.24 * n1; t.v2.y += 0.28 * n2; t.v2.z += 0.24 * (n1 - n2);
+          t.v2.normalize().applyQuaternion(t.q.copy(this.quat).invert());
+          w.addScaledVector(t.v2, (spinTarget - spin) * Math.min(1, dt * 5.0));
         }
         w.multiplyScalar(Math.max(0, 1 - dt * 0.9));
       }
@@ -268,7 +321,10 @@ export class FlightModel {
     this.stalled = false;
     this.stallMargin = 0;
     this.overspeed = 0;
-    this.wreckSettled = this.pos.y <= gy + 0.05 && this.speed < 0.7 && wMag < 0.4;
+    // "resting on the ground" is now a contact test rather than a height test: deepest is the
+    // penetration of whichever part is lowest, so >= -0.05 means something is actually
+    // touching. w is re-read because the tumble above may have changed it since wMag.
+    this.wreckSettled = deepest >= -0.05 && this.speed < 0.7 && w.length() < 0.4;
   }
 
   toggleGear() {

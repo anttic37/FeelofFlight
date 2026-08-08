@@ -110,6 +110,7 @@ export class ChaseCam {
     this._wasCrashed = false;
     this._crashDir = new THREE.Vector3(0, 0, 1);
     this._crashSpeed = 0;
+    this._crashDist = 30;
 
     this._t = { fwd: new THREE.Vector3(), up: new THREE.Vector3(), mix: new THREE.Vector3(),
                 des: new THREE.Vector3(), lt: new THREE.Vector3(), right: new THREE.Vector3(),
@@ -279,6 +280,14 @@ export class ChaseCam {
       this._crashDir.normalize();
       // the speed the distance term keeps using for the rest of the crash
       this._crashSpeed = phys.speed;
+      // ...and the standoff it already had. Freezing the terms that FEED the distance was
+      // still not the whole story: the camera is a spring, and at the moment of impact it is
+      // trailing well behind its own target because the aeroplane was fast. Hold the target
+      // where the shot already is and the spring has nothing left to close — otherwise it
+      // spends the next few seconds reeling itself in, which is the move being complained
+      // about even with every distance term nailed down. Floored so a slow crash cannot
+      // leave the wreck tumbling in the camera's lap.
+      this._crashDist = Math.max(24, this.pos.distanceTo(phys.pos));
     }
     this._wasCrashed = crashed;
 
@@ -314,15 +323,22 @@ export class ChaseCam {
     // in a little is the whole point; a crash is the hardest deceleration there is, so the
     // same rule slammed the camera onto the wreck at the exact moment there is most to look
     // at. Only the stretch-back half survives once the airframe is broken.
+    // ...but NOT ON A CRASH, and clamping the target to zero was not enough on its own: the
+    // tether is usually STRETCHED at the moment of impact, and with the target at zero that
+    // stretch simply releases, walking the camera in by up to 14 m over the next few seconds.
+    // Measured 44 m down to 19 m across a crash — slower than before but the same move. The
+    // whole term is frozen instead, so the shot holds exactly the framing it had.
     let accTarget = Math.max(-8, Math.min(14, acc * 2.2)) * tn.speedLag;
-    if (crashed) accTarget = Math.max(0, accTarget);
+    if (crashed) accTarget = this.accLagSm;
     const accRate = Math.abs(accTarget) > Math.abs(this.accLagSm) ? 3.0 : 0.55;
     this.accLagSm += (accTarget - this.accLagSm) * Math.min(1, dt * accRate);
 
     // and the speed term is held at the impact speed rather than following the wreck down to
     // nothing, so the shot does not creep in over the slide either
     const distSpeed = crashed ? this._crashSpeed : phys.speed;
-    const dist = Math.max(7, 17 + distSpeed * 0.04 + this.zoomSm + this.gLagSm * 0.9 + this.accLagSm);
+    const dist = crashed
+      ? this._crashDist + this.zoomSm      // frozen framing; the wheel still works
+      : Math.max(7, 17 + distSpeed * 0.04 + this.zoomSm + this.gLagSm * 0.9 + this.accLagSm);
     // a crashed airframe's forward vector is meaningless, so hold the bearing
     // frozen at impact instead of orbiting with the tumble
     const dir = crashed ? t.dir.copy(this._crashDir) : t.dir.copy(fwd).negate();
