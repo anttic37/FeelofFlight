@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SKY, SUN_DIR } from './atmosphere.js';
+import { getTerrainSeed } from './heightcore.js';
 
 // Shore-aware animated ocean.
 //
@@ -83,6 +84,14 @@ export function createWater(scene, heightAt) {
     // sea 0.66 and 60% before, 1.60 and 34% at this value. 0.55 overshoots to 2.16 and 25%,
     // which is the sea coming out GRAINIER than the ground — the same mismatch mirrored.
     uBodyWave: { value: 0.35 },
+    // THE SHORE FIELD. Depth sampled per FRAGMENT instead of interpolated from a vertex
+    // attribute on a 68 m lattice — see shoreworker.js for why that lattice was the whole
+    // problem. Null and 0 until the worker delivers, and the vertex attribute carries it in
+    // the meantime, so the sea looks exactly as it did during the first few seconds and then
+    // sharpens rather than popping in from nothing.
+    uShoreTex: { value: null },
+    uShoreOn: { value: 0 },
+    uShoreSize: { value: SIZE },
     uWind: { value: new THREE.Vector2(0.82, 0.57).normalize() },
     uSubsurface: { value: new THREE.Color().setRGB(0.045, 0.185, 0.135) },
   };
@@ -126,6 +135,8 @@ vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
 uniform float uTime;
 uniform vec3 uSunDir, uZenith, uHorizon, uDeep, uMid, uShallow, uHaze;
 uniform float uGlint, uGlintAmp, uChop, uHazeNear, uHazeFar, uCaps, uFoam, uBodyWave;
+uniform sampler2D uShoreTex;
+uniform float uShoreOn, uShoreSize;
 uniform vec2 uWind;
 uniform vec3 uSubsurface;
 varying float vShoreDepth;
@@ -283,13 +294,25 @@ vec2 g = waveOctave(q, 0.415,  0.34,   0.00,  0.62,  1.13) * (fChop * gust)
        + g2 * fMid
        + g3 * fSwell;
 g *= uChop;
+
+// ── DEPTH, PER FRAGMENT ───────────────────────────────────────────────────────────────
+// Everything below that reads the shore reads THIS, not the varying. Sqrt-encoded on the
+// way in, so squaring is the decode; the precision that buys sits exactly where the beach
+// is. Falls back to the interpolated attribute until the bake lands.
+float shoreD = vShoreDepth;
+if (uShoreOn > 0.5) {
+  vec2 shoreUv = vWorldPos.xz / uShoreSize + 0.5;
+  float e = texture2D(uShoreTex, shoreUv).r;
+  shoreD = 64.0 * e * e;
+}
+
 // flatten right at the shore so the foam band does not crawl
-g *= smoothstep(0.0, 1.2, vShoreDepth);
+g *= smoothstep(0.0, 1.2, shoreD);
 vec3 wN = normalize(vec3(-g.x, 1.0, -g.y));
 
 // ── depth palette: turquoise shallows -> lagoon -> deep ocean ──
-vec3 body = mix(uShallow, uMid, smoothstep(0.0, 4.0, vShoreDepth));
-body = mix(body, uDeep, smoothstep(4.0, 22.0, vShoreDepth));
+vec3 body = mix(uShallow, uMid, smoothstep(0.0, 4.0, shoreD));
+body = mix(body, uDeep, smoothstep(4.0, 22.0, shoreD));
 // slow drifting patches: real seas are never one flat tint
 // Same problem as the gusts: 192 m and 625 m tints creeping at 2-4 m/s are features painted
 // on the sea. Sped up to drift like the water they are tinting.
@@ -335,7 +358,7 @@ diffuseColor.rgb = mix(body, refl, F);
 // and the surface is tilted, gated by (1 - F) so it only appears where we can see INTO
 // the water rather than where it has become a mirror.
 float sub = pow(max(dot(V, -uSunDir), 0.0), 3.0) * smoothstep(0.04, 0.30, length(g));
-diffuseColor.rgb += uSubsurface * sub * (1.0 - F) * smoothstep(1.0, 6.0, vShoreDepth);
+diffuseColor.rgb += uSubsurface * sub * (1.0 - F) * smoothstep(1.0, 6.0, shoreD);
 
 // ── whitecaps, on the SWELL only and genuinely rare ──
 // Driven by the large octave rather than by total slope: total slope is dominated by the
@@ -343,7 +366,7 @@ diffuseColor.rgb += uSubsurface * sub * (1.0 - F) * smoothstep(1.0, 6.0, vShoreD
 // field. A whitecap is a big wave breaking, not a ripple.
 float swellSteep = length(g3 * fSwell + g2 * 0.6 * fMid);
 float steep = smoothstep(0.15, 0.32, swellSteep);
-float capMask = smoothstep(8.0, 24.0, vShoreDepth);
+float capMask = smoothstep(8.0, 24.0, shoreD);
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), steep * capMask * uCaps);
 
 // ── SHORELINE ────────────────────────────────────────────────────────────────
@@ -365,7 +388,7 @@ diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), steep * capMask
 // SWASH: the whole waterline advances and retreats, so every depth-driven term below
 // moves with it rather than the foam sliding across a fixed edge.
 float swash = sin(uTime * 0.75) * 0.30 + sin(uTime * 0.41 + 1.7) * 0.16;
-float sd = vShoreDepth + swash;
+float sd = shoreD + swash;
 
 // CLARITY: transparent in the shallows so the sea floor reads through, opaque by the
 // time it is deep. Fresnel overrides it — even a puddle mirrors the sky end-on, so at
@@ -459,6 +482,43 @@ roughnessFactor = mix(0.055, 0.34, smoothstep(1200.0, 26000.0, viewDist));`);
   far.position.y = -0.9;
   far.renderOrder = -1;
   scene.add(far);
+
+  // ── shore field ─────────────────────────────────────────────────────────
+  // 2048 over 16.4 km is 8 m a texel, against the 68 m lattice this replaces and the 5 m the
+  // terrain draws its own side of the waterline at. Off-thread because it is 4.2 million
+  // heightAt calls at 0.87 us each — 3.7 seconds, which is a freeze on the main thread and
+  // nothing at all here. ?shorefield=0 falls back to the old vertex attribute.
+  const SHORE_RES = 2048;
+  if (new URLSearchParams(location.search).get('shorefield') !== '0') {
+    try {
+      const sw = new Worker(new URL('./shoreworker.js', import.meta.url), { type: 'module' });
+      sw.onerror = (e) => {
+        console.error('[flighfeel] shore field bake failed — keeping the vertex attribute',
+          e && (e.message || e.type));
+        sw.terminate();
+      };
+      sw.onmessage = (e) => {
+        const tex = new THREE.DataTexture(e.data.data, e.data.res, e.data.res,
+          THREE.RedFormat, THREE.UnsignedByteType);
+        // LINEAR, and it matters: nearest would put the 8 m texel grid straight back into
+        // the foam line as a staircase, which is the shape of the bug being fixed.
+        tex.minFilter = THREE.LinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+        tex.generateMipmaps = false;
+        tex.needsUpdate = true;
+        shared.uShoreTex.value = tex;
+        shared.uShoreSize.value = e.data.size;
+        shared.uShoreOn.value = 1;
+        console.log(`[flighfeel] shore field ${e.data.res}^2 (${(e.data.size / e.data.res).toFixed(1)} m/texel)`);
+        sw.terminate();
+      };
+      sw.postMessage({ type: 'seed', seed: getTerrainSeed() });
+      sw.postMessage({ size: SIZE, res: SHORE_RES });
+    } catch (err) {
+      console.error('[flighfeel] shore field worker unavailable', err);
+    }
+  }
 
   function update(time) {
     // wrap at 2000π: every uTime factor has ≤3 decimals, so k·2000π is a whole number
