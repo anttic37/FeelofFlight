@@ -388,6 +388,10 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
       if (w.uZenith) w.uZenith.value.copy(P.zenith);
       if (w.uHorizon) w.uHorizon.value.copy(P.horizon);
       if (w.uHaze) w.uHaze.value.copy(P.haze);
+      // the glow pair as well, or the sea's copy of the dome's formula is missing the one
+      // term that dominates a sunset horizon
+      if (w.uGlow) w.uGlow.value.copy(P.glow);
+      if (w.uSunHalo) w.uSunHalo.value = P.halo;
     }
 
     // --- clouds. Two systems, and neither shares the live vector: skyclouds clones it into

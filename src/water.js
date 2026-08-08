@@ -56,6 +56,9 @@ export function createWater(scene, heightAt) {
     uDeep: { value: new THREE.Color().setRGB(0.012, 0.055, 0.115) },
     uMid: { value: new THREE.Color().setRGB(0.030, 0.150, 0.260) },
     uHaze: { value: SKY.haze.clone() },
+    // the dome's two glow terms, so skyAt above can be its expression rather than a guess
+    uGlow: { value: SKY.glow.clone() },
+    uSunHalo: { value: 1 },
     uShallow: { value: new THREE.Color().setRGB(0.085, 0.400, 0.430) },
     // Exponent and amplitude of the sun glitter. BOTH matter and they pull against each
     // other: the exponent sets how wide the path is, the amplitude sets how far into
@@ -133,7 +136,8 @@ vWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;`);
     shader.fragmentShader = shader.fragmentShader
       .replace('#include <common>', `#include <common>
 uniform float uTime;
-uniform vec3 uSunDir, uZenith, uHorizon, uDeep, uMid, uShallow, uHaze;
+uniform vec3 uSunDir, uZenith, uHorizon, uDeep, uMid, uShallow, uHaze, uGlow;
+uniform float uSunHalo;
 uniform float uGlint, uGlintAmp, uChop, uHazeNear, uHazeFar, uCaps, uFoam, uBodyWave;
 uniform sampler2D uShoreTex;
 uniform float uShoreOn, uShoreSize;
@@ -212,14 +216,28 @@ vec2 waveOctave(vec2 q, float freq, float across, float ang, float speed, float 
   vec2 g = pgrad(p);
   return (wr * g.x + tr * g.y) * amp;
 }
-// The sky this water reflects. Same gradient the dome draws, so the two agree where
-// they meet — a reflected constant shows up immediately as a mismatch at the horizon.
+// The sky this water reflects and fades into. IT IS THE DOME'S EXPRESSION, LINE FOR LINE —
+// createSkyMaterial in atmosphere.js — and it has to be, because anywhere the two disagree
+// is a seam right where they meet.
+//
+// It used to be an approximation of it and the approximation was wrong in three places at
+// once: the gradient ran on a 0.55 exponent against the dome's 0.42, the sun glow was a
+// different term entirely (uHorizon on a 6th power rather than uGlow on the dome's two
+// lobes), and the haze that dominates the dome's horizon — ninety percent of it — was
+// missing altogether. At midday that reads as nearly the same colour and nobody notices. At
+// sunset the dome's horizon is carrying a large warm glow the water knows nothing about, so
+// the sea fades to a cool grey and meets a warm sky along a hard pale line. Measured across
+// the join: sky 213/203/198, water 155/155/165 — a step of 58 and, worse, a flip of hue,
+// warm above and cool below.
+//
+// If the dome's formula is ever edited, this must be edited with it.
 vec3 skyAt(vec3 d) {
-  float h = clamp(d.y, 0.0, 1.0);
-  vec3 c = mix(uHorizon, uZenith, pow(h, 0.55));
-  // the sky brightens around the sun, and so does its reflection
-  float s = max(dot(d, uSunDir), 0.0);
-  return c + uHorizon * pow(s, 6.0) * 0.35;
+  float up = clamp(d.y, 0.0, 1.0);
+  float mu = clamp(dot(d, uSunDir), 0.0, 1.0);
+  vec3 c = mix(uHorizon, uZenith, pow(up, 0.42));
+  c = mix(c, uHaze, pow(1.0 - up, 7.0) * 0.9);
+  c += uGlow * (pow(mu, 3.0) * 0.10 * uSunHalo + pow(mu, 26.0) * 0.55);
+  return c;
 }`)
       .replace('#include <color_fragment>', `#include <color_fragment>
 vec3 V = normalize(cameraPosition - vWorldPos);
@@ -420,7 +438,11 @@ float hz = smoothstep(uHazeNear, uHazeFar, viewDist);
 // the real sky show through, so the match is exact by construction. Complete by 27 km,
 // inside the plane's 30 km edge, so the geometry boundary is never reached.
 diffuseColor.a *= 1.0 - smoothstep(17000.0, 27000.0, viewDist);
-diffuseColor.rgb = mix(diffuseColor.rgb, mix(skyAt(normalize(vec3(-V.x, 0.035, -V.z))), uHaze, 0.72), hz);`)
+// ...and the colour it fades through on the way is now just the sky along this bearing. The
+// extra 72% of raw uHaze that used to be mixed in was compensating for a skyAt that had no
+// haze term of its own; skyAt carries the dome's haze now, so mixing more on top would push
+// the sea past the sky it is fading into and re-open the same seam from the other side.
+diffuseColor.rgb = mix(diffuseColor.rgb, skyAt(normalize(vec3(-V.x, 0.035, -V.z))), hz);`)
 
       // Sun glitter goes in as emissive so it adds to outgoing light rather than being
       // multiplied by it. A specular highlight on a plane is one blob; a glitter PATH
