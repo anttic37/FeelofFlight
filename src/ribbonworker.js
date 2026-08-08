@@ -259,7 +259,21 @@ self.onmessage = (e) => {
         v++;
       }
     }
+    // DO NOT STITCH ACROSS A GAP. Points that could not be snapped onto the contour are
+    // dropped, which is right — keeping them dragged the edge two metres off the waterline —
+    // but the index buffer then happily bridged the hole with one quad, and a hole can be
+    // twenty skipped steps wide. Those are the big flat tabs jutting out over the sea: 232 of
+    // them, up to 87 m across, cutting the corner off every bay they spanned. They are half a
+    // percent of the quads and essentially all of what you see, because one 87 m facet is
+    // worth a thousand good 4 m ones.
+    //
+    // Worth recording that every metric I had was blind to them: each one treated a long jump
+    // between consecutive points as a LOOP BOUNDARY and skipped it, which is exactly the quad
+    // that was wrong. The strip simply ends at a gap and starts again on the far side.
+    const MAX_SPAN = STEP * 1.8;
     for (let i = 0; i < n - 1; i++) {
+      const dx = l[(i + 1) * 2] - l[i * 2], dz = l[(i + 1) * 2 + 1] - l[i * 2 + 1];
+      if (dx * dx + dz * dz > MAX_SPAN * MAX_SPAN) continue;
       for (let r = 0; r < ROWS.length - 1; r++) {
         const a = base + i * ROWS.length + r;
         const b = a + ROWS.length;
