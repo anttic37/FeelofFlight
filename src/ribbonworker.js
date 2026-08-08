@@ -172,15 +172,82 @@ self.onmessage = (e) => {
   for (const l of loops) {
     const n = l.length / 2;
     const base = v;
+
+    // ── WIDTH IS CAPPED BY THE LOCAL BEND ────────────────────────────────────────────────
+    // Offsetting a polyline inland by a fixed distance folds it wherever the curve turns
+    // tighter than that distance: neighbouring offsets cross, the strip doubles back, and the
+    // reversed triangles catch the light at their own angle — flat angular shapes lying over
+    // the water, which is precisely what this looked like. Measured at the fixed 46 m: no
+    // folds at 5 m inland, 65 at 14 m, 1501 at 27 m and 2947 at 46 m. 4.8% of the strip.
+    //
+    // For a curve sampled at STEP, v = a + c - 2b points at the centre of curvature and its
+    // length is about STEP^2/R, so R falls out of three consecutive points for nothing. Cap
+    // the offset under that radius and the offsets can no longer meet.
+    //
+    // The width varying along the coast is free, and that is the nice part of building the
+    // strip out of the same terrain the tiles draw: its inner boundary is invisible wherever
+    // it lands, because both sides are the same surface. It can be narrow through a tight
+    // cove and wide along an open beach and there is nothing to see.
+    const nxs = new Float32Array(n), nzs = new Float32Array(n), caps = new Float32Array(n);
+    const rawx = new Float32Array(n), rawz = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const x = l[i * 2], z = l[i * 2 + 1];
       grad(x, z, g);
       const m = Math.hypot(g[0], g[1]) || 1;
       // inland is UPHILL, straight from the gradient, so neighbouring samples agree and the
       // rows stay parallel instead of scissoring where the coast turns
-      const nx = g[0] / m, nz = g[1] / m;
+      nxs[i] = g[0] / m; nzs[i] = g[1] / m;
+      rawx[i] = nxs[i]; rawz[i] = nzs[i];
+      let cap = WIDTH;
+      if (i > 0 && i < n - 1) {
+        const vx = l[(i - 1) * 2] + l[(i + 1) * 2] - 2 * x;
+        const vz = l[(i - 1) * 2 + 1] + l[(i + 1) * 2 + 1] - 2 * z;
+        const vl = Math.hypot(vx, vz);
+        // only the side the curve bends TOWARD can converge; bending away spreads them out
+        if (vl > 1e-6 && vx * nxs[i] + vz * nzs[i] > 0) {
+          cap = Math.min(WIDTH, 0.55 * STEP * STEP / vl);
+        }
+      }
+      // The FLOOR is what is left folding. At 6 m the last 198 quads were all places where
+      // the coast bends tighter than 6 m and the clamp refused to go narrower; 2.5 m lets it.
+      // A strip that thin covers almost nothing, and covering nothing is fine — it is the
+      // same surface as the tile underneath, so where it narrows to a thread there is simply
+      // nothing to see. A fold is not free in the same way.
+      caps[i] = Math.max(2.5, cap);
+    }
+    // SMOOTH THE OFFSET DIRECTION ALONG THE COAST. The curvature cap bounds how fast the
+    // CONTOUR bends, but the offset does not run along the contour's own normal — it runs
+    // along the terrain gradient, which can swing between neighbouring samples on ground the
+    // contour crosses perfectly straight. That is what the last 200 folds were: not a tight
+    // bend, but two adjacent normals pointing far enough apart to cross within 25 m. Lowering
+    // the width floor did nothing for them, which is what said the cap was not the cause.
+    for (let i = 0; i < n; i++) {
+      let sx = 0, sz = 0;
+      for (let k = -4; k <= 4; k++) {
+        const j = i + k;
+        if (j < 0 || j >= n) continue;
+        sx += rawx[j]; sz += rawz[j];
+      }
+      const m = Math.hypot(sx, sz);
+      if (m > 1e-6) { nxs[i] = sx / m; nzs[i] = sz / m; }
+    }
+    // a running minimum, because a quad spans two points and the tighter of the pair is what
+    // decides whether it folds — and it smooths the width so the inner edge does not step
+    const capS = new Float32Array(n);
+    for (let i = 0; i < n; i++) {
+      let mn = caps[i];
+      for (let k = -3; k <= 3; k++) {
+        const j = i + k;
+        if (j >= 0 && j < n && caps[j] < mn) mn = caps[j];
+      }
+      capS[i] = mn;
+    }
+
+    for (let i = 0; i < n; i++) {
+      const x = l[i * 2], z = l[i * 2 + 1];
+      const nx = nxs[i], nz = nzs[i];
       for (let r = 0; r < ROWS.length; r++) {
-        const d = ROWS[r] * WIDTH;
+        const d = ROWS[r] * capS[i];
         const px = x + nx * d, pz = z + nz * d;
         const y = r === 0 ? -OUTER_SINK : heightAt(px, pz);
         const o = v * 3;
