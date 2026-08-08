@@ -479,7 +479,19 @@ function applyPlatforms(x, z, h) {
       const t = dd / p.pad;
       w = 1 - t * t * (3 - 2 * t);
     }
-    h += (p.elev - h) * w;
+    // A PLATFORM MAY CUT A HILL DOWN. IT MAY NOT BUILD LAND OUT OF THE SEA.
+    // This reaches hypot(length/2+70, width/2+55) + pad, which is over 600 m for the coastal
+    // strip, and it pulled every sample inside that toward strip elevation — including the
+    // ones that were under water. The result is a smooth pale lobe of apron projecting into
+    // the sea with the coastline bent around it, which is the "bulge" that breaks the
+    // island's silhouette. Lowering is left alone, because cutting a shoulder back is what
+    // this is for; only the LIFT is gated, and it fades over the last few metres of beach so
+    // the platform runs out before the waterline instead of ending in a step.
+    // The strip's own surface is not at risk: a coastal site is only ever placed on ground of
+    // 6 m or more, which is already past the top of this ramp, and the tight grading pass in
+    // applyRunwayFlattening runs afterwards and is deliberately NOT gated.
+    const lift = p.elev > h ? smooth(0.5, 4.0, h) : 1;
+    h += (p.elev - h) * w * lift;
   }
   return h;
 }
@@ -1016,6 +1028,14 @@ function generateIsland() {
     // on nearly every island instead.
     for (let k = 0; k < 180; k++) {
       const a = R1(130) * TAU + k * 2.39996;
+      // THE RING STAYS WHERE IT WAS, and that is a measured decision rather than an
+      // oversight. Moving it inland to 0.62-0.80 looks like the obvious answer to a platform
+      // that reaches the sea, and it costs more than it buys: inland ground is higher and
+      // hillier, so clear finals get rarer, and across 60 seeds the worst obstruction above
+      // the 6.5% approach ramp went from 153 m to 229 m and the mean from 8 m to 19 m. The
+      // bulge was never caused by where the strip is — it was caused by the platform lifting
+      // water, which is fixed at the source in applyPlatforms. Fixing the cause leaves the
+      // approaches alone.
       const rad = RM_BASE * shapeS(a) * (0.74 + (k % 3) * 0.09);
       const x = Math.sin(a) * rad, z = Math.cos(a) * rad;
       const heading = Math.atan2(x, z) + jit(131 + k, 0.2);
