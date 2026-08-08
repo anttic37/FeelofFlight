@@ -109,6 +109,7 @@ export class ChaseCam {
     // crash: the wreck tumbles, the camera must not (see update)
     this._wasCrashed = false;
     this._crashDir = new THREE.Vector3(0, 0, 1);
+    this._crashSpeed = 0;
 
     this._t = { fwd: new THREE.Vector3(), up: new THREE.Vector3(), mix: new THREE.Vector3(),
                 des: new THREE.Vector3(), lt: new THREE.Vector3(), right: new THREE.Vector3(),
@@ -276,6 +277,8 @@ export class ChaseCam {
       this._crashDir.y = 0;
       if (this._crashDir.lengthSq() < 1e-6) this._crashDir.copy(fwd).setY(0).negate();
       this._crashDir.normalize();
+      // the speed the distance term keeps using for the rest of the crash
+      this._crashSpeed = phys.speed;
     }
     this._wasCrashed = crashed;
 
@@ -307,11 +310,19 @@ export class ChaseCam {
     const tn = TIGHTNESS[this.mode];
     const acc = dt > 0 ? (phys.speed - this._prevSpeed) / dt : 0;
     this._prevSpeed = phys.speed;
-    const accTarget = Math.max(-8, Math.min(14, acc * 2.2)) * tn.speedLag;
+    // ...but NOT ON A CRASH. That surge-closer is for easing off the throttle, where coming
+    // in a little is the whole point; a crash is the hardest deceleration there is, so the
+    // same rule slammed the camera onto the wreck at the exact moment there is most to look
+    // at. Only the stretch-back half survives once the airframe is broken.
+    let accTarget = Math.max(-8, Math.min(14, acc * 2.2)) * tn.speedLag;
+    if (crashed) accTarget = Math.max(0, accTarget);
     const accRate = Math.abs(accTarget) > Math.abs(this.accLagSm) ? 3.0 : 0.55;
     this.accLagSm += (accTarget - this.accLagSm) * Math.min(1, dt * accRate);
 
-    const dist = Math.max(7, 17 + phys.speed * 0.04 + this.zoomSm + this.gLagSm * 0.9 + this.accLagSm);
+    // and the speed term is held at the impact speed rather than following the wreck down to
+    // nothing, so the shot does not creep in over the slide either
+    const distSpeed = crashed ? this._crashSpeed : phys.speed;
+    const dist = Math.max(7, 17 + distSpeed * 0.04 + this.zoomSm + this.gLagSm * 0.9 + this.accLagSm);
     // a crashed airframe's forward vector is meaningless, so hold the bearing
     // frozen at impact instead of orbiting with the tumble
     const dir = crashed ? t.dir.copy(this._crashDir) : t.dir.copy(fwd).negate();

@@ -230,7 +230,32 @@ export class FlightModel {
           const k = Math.max(0, 1 - decel / hs);
           this.vel.x *= k; this.vel.z *= k;
         }
-        // and it keeps tumbling while it travels, rather than settling almost at once
+        // A SLIDE IS NOT A TUMBLE, and there was no way for it to become one: the spin came
+        // entirely from the kick at the moment of impact and then decayed, so the airframe
+        // turned about 0.7 of a revolution across a 117 m slide and read as a sledge. What
+        // was missing is the coupling — friction acts at the GROUND, below the centre of
+        // mass, so it keeps torquing the wreck over its own nose for as long as it is still
+        // travelling. The linear motion is what pays for the tumble.
+        //
+        // Driven TOWARD a speed-dependent rate rather than added to, so it cannot wind up
+        // without limit and it falls away on its own as the wreck slows, which is also what
+        // ends the tumble without needing a separate rule for it.
+        const spin = w.length();
+        // Capped at 6 to match the ceiling the integrator already applies to the rotation
+        // itself — driving past that is spin the eye never sees. The rate has to be brisk
+        // against the damping below or the two settle well short: at dt*2.6 the balance sat
+        // around 0.6 of the target and a 200 km/h crash still only turned one and a half
+        // times, which is a roll rather than a tumble.
+        const spinTarget = Math.min(6.0, hs * 0.19);
+        if (spinTarget > spin) {
+          const n1 = fbm1(this.pos.x * 0.021 + this.pos.z * 0.013, 3.3);
+          const n2 = fbm1(this.pos.z * 0.019 - this.pos.x * 0.011, 7.7);
+          // weighted toward pitch, which is the axis a base-acting friction force actually
+          // drives; the noise on the other two is the wingtip catching and slewing it
+          t.v.set(0.9 + 0.35 * n2, 0.34 * n1, 0.3 * (n1 - n2)).normalize()
+            .multiplyScalar((spinTarget - spin) * Math.min(1, dt * 5.0));
+          w.add(t.v);
+        }
         w.multiplyScalar(Math.max(0, 1 - dt * 0.9));
       }
     } else {
