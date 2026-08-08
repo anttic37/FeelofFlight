@@ -136,13 +136,88 @@ function walkRidge(seed, perSide, spacing, minH, maxSlope, avoid = []) {
   return line;
 }
 
+// ── CONTACT PATCHES ───────────────────────────────────────────────────────────────────────
+// A soft darkening on the ground at the foot of each structure, and the reason it exists is
+// that the shadow map cannot do it: the sun's shadow camera is 160 m either side of the
+// AEROPLANE, so a turbine is only ever in it if you are almost on top of one. Everywhere else
+// a 90 m tower meets the hillside with no shadow, no occlusion, nothing — and an object with
+// no contact darkening does not look like it is standing on the ground, it looks like it is
+// in front of it. That single cue is most of what "pasted on" means.
+//
+// Deliberately SYMMETRIC rather than a cast shadow stretched along the sun. This is baked once
+// and the sun here moves through a whole day; a real cast shadow would have to be rebuilt as
+// it swings, and would be wrong the rest of the time. A radial patch reads as ambient
+// occlusion and the disturbed ground that is genuinely there at the base of one of these, and
+// it is right at every hour.
+//
+// MULTIPLY blending, so it is a darkening rather than a colour: white at the rim changes
+// nothing, dark at the centre takes the ground down, and it tracks whatever the terrain is
+// doing underneath at any time of day without being told. It conforms to the slope because
+// every vertex takes its own heightAt — a flat disc would cut into a ridge, and ridges are
+// exactly where these things are put.
+function contactPatches(sites, radius, strength) {
+  const RINGS = 3, SPOKES = 16;
+  const per = 1 + RINGS * SPOKES;
+  const pos = new Float32Array(sites.length * per * 3);
+  const col = new Float32Array(sites.length * per * 3);
+  const idx = [];
+  let v = 0;
+  for (const s of sites) {
+    const base = v;
+    // centre
+    pos[v * 3] = s.x; pos[v * 3 + 1] = heightAt(s.x, s.z) + 0.25; pos[v * 3 + 2] = s.z;
+    col[v * 3] = col[v * 3 + 1] = col[v * 3 + 2] = 1 - strength;
+    v++;
+    for (let r = 1; r <= RINGS; r++) {
+      const t = r / RINGS, rad = radius * t;
+      // squared falloff: tight and dark against the tower, gone well before the rim, which
+      // is what stops it reading as a painted disc
+      const k = 1 - strength * (1 - t) * (1 - t);
+      for (let a = 0; a < SPOKES; a++) {
+        const th = a / SPOKES * Math.PI * 2;
+        const x = s.x + Math.cos(th) * rad, z = s.z + Math.sin(th) * rad;
+        pos[v * 3] = x; pos[v * 3 + 1] = heightAt(x, z) + 0.25; pos[v * 3 + 2] = z;
+        col[v * 3] = col[v * 3 + 1] = col[v * 3 + 2] = r === RINGS ? 1 : k;
+        v++;
+      }
+    }
+    for (let a = 0; a < SPOKES; a++) {
+      const n = (a + 1) % SPOKES;
+      idx.push(base, base + 1 + a, base + 1 + n);                 // inner fan
+      for (let r = 0; r < RINGS - 1; r++) {
+        const i0 = base + 1 + r * SPOKES, i1 = i0 + SPOKES;
+        idx.push(i0 + a, i1 + a, i0 + n, i0 + n, i1 + a, i1 + n);
+      }
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  g.setIndex(idx);
+  const m = new THREE.Mesh(g, new THREE.MeshBasicMaterial({
+    vertexColors: true, blending: THREE.MultiplyBlending, transparent: true,
+    depthWrite: false, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6,
+    fog: false,   // it is a multiplier on ground that is already fogged; fogging it twice greys it out
+  }));
+  m.renderOrder = 1;
+  m.frustumCulled = false;
+  return m;
+}
+
 export function createLandmarks(scene) {
   const group = new THREE.Group();
   scene.add(group);
 
-  const steel = new THREE.MeshStandardMaterial({ color: 0x9aa0a6, ...flat });
-  const white = new THREE.MeshStandardMaterial({ color: 0xe9ecef, ...flat });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x596069, ...flat });
+  // NOT WHITE. 0xe9ecef was the brightest albedo anywhere in the world — brighter than sand,
+  // brighter than the runway, brighter than the sky's own haze once the sun is low. A tower is
+  // a vertical cylinder, so at dusk it catches the last of a low sun square-on while the
+  // ground beside it is taking that same light at a grazing angle and going dark. Physically
+  // correct and it still reads as pasted on, because nothing else in frame is allowed to be
+  // that bright. Real turbines are an off-grey that sits mid-value at distance; taking the
+  // albedo down lets the hemisphere light place them in the scene rather than on top of it.
+  const steel = new THREE.MeshStandardMaterial({ color: 0x878d93, ...flat });
+  const white = new THREE.MeshStandardMaterial({ color: 0xb9bec4, ...flat });
+  const dark = new THREE.MeshStandardMaterial({ color: 0x4e545c, ...flat });
   const lampMat = new THREE.MeshBasicMaterial({ color: 0xff3b2f });
 
   const mtx = new THREE.Matrix4();
@@ -169,6 +244,8 @@ export function createLandmarks(scene) {
   // sells it at distance is not the shaft but the STACK of bands up it and the light on top.
   const masts = pickSites(3, { minH: 210, maxSlope: 0.34, spacing: 2600 });
   const MAST_H = 74;
+  // a mast has a much smaller footprint than a turbine, so a smaller, softer patch
+  group.add(contactPatches(masts, 8, 0.26));
   place(new THREE.CylinderGeometry(0.5, 1.5, MAST_H, 6), steel, masts, MAST_H / 2);
   place(new THREE.CylinderGeometry(3.0, 3.6, 1.6, 6), dark, masts, 0.8);          // footing
   // three collars: the only thing giving a 74 m needle a sense of height from a distance
@@ -216,6 +293,8 @@ export function createLandmarks(scene) {
   turbines.forEach((t) => { t.yaw = 0.63; });
 
   const TOW_H = 46, BLADE = 21;
+  // the ground goes down before the tower goes up — see contactPatches
+  group.add(contactPatches(turbines, 13, 0.34));
   place(new THREE.CylinderGeometry(0.85, 1.9, TOW_H, 8), white, turbines, TOW_H / 2);
   place(new THREE.CylinderGeometry(2.9, 3.4, 1.2, 8), dark, turbines, 0.6);
   place(new THREE.BoxGeometry(2.1, 2.2, 6.4), white, turbines, TOW_H + 0.9);
