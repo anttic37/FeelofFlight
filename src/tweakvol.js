@@ -74,7 +74,14 @@ export function initVolTweakPanel({ vc, applyResize }) {
   // texture periods, so 0.0022 is about 1.5 m/s of internal motion; the y/z ratios reproduce
   // the shipped (0.0022, 0.0009, 0.0016), and 0.0002 divides 0.0022 exactly so merely touching
   // the control cannot quantise the code default away (see the sun size note below).
-  slider('sky', 'wind', () => C.shapeVelocity.x,
+  // RENAMED FROM 'wind' DELIBERATELY, and the rename is the migration. panel.js persists a
+  // diff keyed by section|label with no version, so keeping the old label would have fed a
+  // saved localWeatherVelocity value — a number from a +/-0.001 range that meant something
+  // else entirely — straight into shapeVelocity, whose default is 0.0022. Anyone with the
+  // panel's settings saved would have come back to clouds churning about four times too
+  // slowly, or backwards, with nothing on screen to say why. A new label is a new key: the
+  // stale entry is simply never looked up, and 'churn' is what the control now does anyway.
+  slider('sky', 'churn', () => C.shapeVelocity.x,
     v => C.shapeVelocity.set(v, v * 0.41, v * 0.73), 0, 0.02, 0.0002,
     v => v.toFixed(4));
   slider('sky', 'turbulence', () => C.turbulenceDisplacement,

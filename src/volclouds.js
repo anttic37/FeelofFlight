@@ -1097,6 +1097,29 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   composer.addPass(new EffectPass(camera, bloom,
     new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC })));
 
+  // A FAILED GL CALL ON EVERY SINGLE FRAME, and the console was the reason nobody saw it.
+  // postprocessing 6.39.1's RenderPass declares needsDepthBlit, so after it runs the composer
+  // blits that depth into its own depthRenderTarget. On this renderer that blit is invalid —
+  // GL_INVALID_OPERATION, "Read and write depth stencil attachments cannot be the same image"
+  // — and it fired once per rendered frame forever. It looked like three startup warnings
+  // because Chrome deduplicates identical WebGL messages; counting with gl.getError instead
+  // gives 60 errors in 60 frames, 20 in 20, 40 in 40.
+  //
+  // Nothing consumes the result. Neither EffectPass sets needsDepthTexture, and render()
+  // assigns inputBuffer.depthTexture = this.depthTexture before every pass, so the clouds
+  // read scene depth from the input buffer and never from depthRenderTarget. Skipping it is
+  // measurably free: sim frozen and the temporal clouds converged, the frame differs from the
+  // blitting version in 0.07% of pixels — which is exactly the noise floor of the same
+  // configuration rendered twice (0.07%).
+  //
+  // Guarded rather than deleted: if a pass is ever added that genuinely needs the depth
+  // texture, the blit comes back and the underlying attachment conflict has to be solved
+  // properly instead.
+  const _blitDepth = composer.blitDepthBuffer.bind(composer);
+  composer.blitDepthBuffer = (rt) => {
+    if (composer.passes.some(p => p.enabled && p.needsDepthTexture)) _blitDepth(rt);
+  };
+
   // CLOUD WIDTH, made adjustable without a reload. This is the control that has been
   // out of reach all along: nothing in the layer settings sets how WIDE a cloud is.
   // Height is a layer field, but width comes from the size of the blobs in the weather
