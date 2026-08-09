@@ -354,7 +354,8 @@ renderer.setAnimationLoop(() => {
     phys.wreckContacts = measureContacts(plane);
     input.throttle = 0; // engine dies with the airframe
     sound.crash();
-    hud.flash();
+    // no screen flash: a full-screen white wash is the one thing that reads as a rendering
+    // fault rather than an impact, and it hides the crash you actually want to watch
     const reason = typeof phys.crashed === 'string' ? phys.crashed.toUpperCase() : '';
     hud.msg(reason ? `CRASHED — ${reason} · R TO RESTART` : 'CRASHED · R TO RESTART', 8000);
     const sc = surfaceAt(phys.pos.x, phys.pos.z);

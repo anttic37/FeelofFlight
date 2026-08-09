@@ -133,8 +133,14 @@ export function createTerrain(scene) {
   // WANTED BUT NOT YET BUILT, so the hole only ever opens over ground that is genuinely
   // covered. At startup and after a teleport that distance is small, the hole shuts, and the
   // shell fills everything exactly as before — the no-holes-ever guarantee is unchanged.
+  // ?terrainhole=0 turns the cutting off and puts every layer back to drawing everywhere.
+  // It is here because the cut is the one change that could produce a HOLE rather than an
+  // overlap, and a hole is far worse than the artifact it fixes: one reload tells you which
+  // of the two you are looking at without needing a build.
+  const HOLE_ON = new URLSearchParams(location.search).get('terrainhole') !== '0';
   const holeC = new THREE.Vector2(0, 0);
   function cutHole(mat) {
+    if (!HOLE_ON) return;
     const inner = mat.onBeforeCompile;   // groundfx got here first; chain, do not replace
     mat.onBeforeCompile = (shader, renderer) => {
       if (inner) inner(shader, renderer);

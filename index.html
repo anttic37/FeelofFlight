@@ -44,9 +44,6 @@
   #gvign, #gvign-red { position: absolute; inset: 0; opacity: 0; pointer-events: none; will-change: opacity; }
   #gvign { background: radial-gradient(ellipse at center, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 62%, rgba(0,0,0,0.97) 100%); }
   #gvign-red { background: radial-gradient(ellipse at center, rgba(60,0,0,0) 28%, rgba(120,8,8,0.5) 60%, rgba(150,10,14,0.95) 100%); }
-  #flash { position: absolute; inset: 0; background: #fff; opacity: 0; pointer-events: none; }
-  #flash.on { opacity: 0.85; transition: none; }
-  #flash.fade { opacity: 0; transition: opacity 0.9s ease-out; }
 </style>
 <script type="importmap">
 { "imports": {
@@ -82,7 +79,6 @@
   </div>
   <div id="gvign"></div>
   <div id="gvign-red"></div>
-  <div id="flash"></div>
 </div>
 <script type="module" src="./src/main.js"></script>
 </body>

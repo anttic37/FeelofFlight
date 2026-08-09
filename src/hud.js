@@ -68,7 +68,6 @@ export class HUD {
     this.gearWarn = document.getElementById('gearwarn');
     this.stall = document.getElementById('stall');
     this.msgEl = document.getElementById('msg');
-    this.flashEl = document.getElementById('flash');
     this.flapChip = document.getElementById('flap-chip');
     this.overspd = document.getElementById('overspd');
     this.gvign = document.getElementById('gvign');
@@ -239,12 +238,4 @@ export class HUD {
     this._msgTimer = setTimeout(() => { this.msgEl.style.opacity = 0; }, ms);
   }
 
-  flash() {
-    this.flashEl.classList.remove('fade');
-    this.flashEl.classList.add('on');
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      this.flashEl.classList.remove('on');
-      this.flashEl.classList.add('fade');
-    }));
-  }
 }

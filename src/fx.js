@@ -132,20 +132,28 @@ export function createFX(scene) {
     vel[i * 3 + 2] = vz;
   }
 
+  // A DUST RING, NOT A CLOUD ON THE CAMERA. This used to spawn inside a 2 m radius of the
+  // aeroplane's own centre, at up to 7 m across and 0.8 opacity — 18 of them, on top of an
+  // 8 m airframe, so the thing you crashed vanished behind its own dust at the one moment
+  // you want to watch it. Real impact dust is thrown OUT from the contact and hangs low; the
+  // hole in the middle is what lets you see the wreck. So: spawn on a ring that starts
+  // outside the wingspan, keep it at ground level rather than at the fuselage, and throw it
+  // outward rather than up.
   function touchdown(pos, groundType, sink) {
     const k = Math.min(1, Math.max(0, sink) / 6); // 6 m/s sink = max drama
     const color = groundType === 'grass' ? COL_DUST : groundType === 'water' ? COL_SPRAY : COL_SMOKE;
     const n = Math.round(10 + k * 8);
     for (let i = 0; i < n; i++) {
-      const a = Math.random() * Math.PI * 2;
-      const r = Math.random() * 2;
-      const out = 1 + Math.random() * 2;
+      // evenly spaced around the ring, jittered — clumps left bald patches on one side
+      const a = (i / n) * Math.PI * 2 + Math.random() * 0.6;
+      const r = 6 + Math.random() * 5;              // outside the 10.7 m span's half-width
+      const out = 3 + Math.random() * 4;
       spawn(
-        pos.x + Math.cos(a) * r, pos.y + 0.2 + Math.random() * 0.5, pos.z + Math.sin(a) * r,
-        color, 0.55 + k * 0.25,
+        pos.x + Math.cos(a) * r, pos.y - 1.2 + Math.random() * 0.6, pos.z + Math.sin(a) * r,
+        color, 0.42 + k * 0.18,
         (1.5 + Math.random() * 0.5) * (1 + k * 0.5), (4 + Math.random()) * (1 + k * 0.5),
         1 + Math.random() * 0.4,
-        Math.cos(a) * out, 1 + Math.random() * 2, Math.sin(a) * out,
+        Math.cos(a) * out, 0.5 + Math.random() * 1.2, Math.sin(a) * out,
       );
     }
   }
