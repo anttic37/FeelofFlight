@@ -2,14 +2,14 @@
 rem Start the flighfeel static server (skips silently if already running), then open the game.
 rem
 rem PORT is set once here and handed to the server, so the listener and the browser cannot
-rem disagree. They did: the server moved to 5718 and this file still opened 5717, which is a
+rem disagree. They did: the server moved to 4790 and this file still opened 5717, which is a
 rem page that loads nothing. If the port ever dies again, check
 rem   netsh interface ipv4 show excludedportrange protocol=tcp
 rem and change PORT here and the matching entry in ..\.claude\launch.json.
 rem
 rem KEEP THIS FILE CRLF. cmd.exe mis-parses LF-only batch files, eating leading characters
 rem off most lines - it fails in ways that look like anything except an encoding problem.
-set PORT=5718
+set PORT=4790
 
 start "flighfeel server" /min powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\.claude\flighfeel-server.ps1" -Port %PORT%
 

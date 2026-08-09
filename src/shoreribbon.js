@@ -17,8 +17,21 @@ import { injectGroundFX } from './groundfx.js';
 export function createShoreRibbon(scene, onReady) {
   const mat = new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 1,
-    // wins every depth tie against the tiles it covers, including the shell at 3
-    polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
+    // WINS A SAME-PIXEL TIE, AND NOTHING MORE. This was -4/-4, and the FACTOR is the half that
+    // does not belong here: polygon offset is m * factor + r * units, where m is the window-
+    // depth slope PER PIXEL and r is the depth buffer's own resolution. units is the
+    // depth-resolution term and is exactly what "wins a tie" means; m is unbounded as a surface
+    // goes edge-on, and this mesh is one strip wrapping the whole island with frustumCulled
+    // off, so it is rasterised at extreme grazing all the way out to the far coast. At 8 km and
+    // 2 degrees of depression a pixel covers ~340 m of flat ground, m = 2.7e-6, and factor -4
+    // is 1.1e-5 of window depth — about 1.4 km of eye space against a buffer whose own step out
+    // there is 7.7 m. Distant beach won the depth test against terrain standing in FRONT of it,
+    // and against the sea sheet, which has no offset at all: the water was depth-rejected over
+    // the strip's sunk seaward band and left a bare wet-sand fringe with no water and no foam.
+    // units alone is a few millimetres of eye space at flying range, which is the tie and not
+    // an ordering. The comment this replaces worried about "the shell at 3": +3 pushes the
+    // shell AWAY, so the ribbon still beats it at 0.
+    polygonOffset: true, polygonOffsetFactor: 0, polygonOffsetUnits: -4,
   });
   injectGroundFX(mat);
 

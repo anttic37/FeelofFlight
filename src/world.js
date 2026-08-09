@@ -10,7 +10,6 @@ import {
 import { createTerrain } from './terrain.js';
 import { uGroundTime } from './groundfx.js';
 import { createScatter } from './scatter.js';
-import { Lensflare, LensflareElement } from 'three/addons/objects/Lensflare.js';
 import { SUN_DIR, SKY, createSkyMaterial } from './atmosphere.js';
 import { createRunways } from './runways.js';
 import { createWater } from './water.js';
@@ -62,50 +61,20 @@ export function createWorld(scene) {
   sunSpr.scale.set(2200, 2200, 1);
   sky.add(sunSpr);
 
-  // LENS FLARE. three's Lensflare hangs ghosts along the line from the light
-  // through screen centre and fades them by its own occlusion test, so it
-  // disappears correctly the moment a ridge crosses the sun.
-  // Textures are drawn here rather than loaded: everything else in this project
-  // is procedural, and a flare is just soft radial gradients anyway.
-  const flareTex = (stops, size = 128) => {
-    const c = document.createElement('canvas');
-    c.width = c.height = size;
-    const g = c.getContext('2d');
-    const gr = g.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
-    for (const [at, col] of stops) gr.addColorStop(at, col);
-    g.fillStyle = gr;
-    g.fillRect(0, 0, size, size);
-    const t = new THREE.CanvasTexture(c);
-    t.colorSpace = THREE.SRGBColorSpace;
-    return t;
-  };
-  const glowTex = flareTex([
-    [0, 'rgba(255,250,235,0.95)'], [0.22, 'rgba(255,238,196,0.42)'],
-    [0.55, 'rgba(255,226,170,0.10)'], [1, 'rgba(255,220,160,0)'],
-  ], 256);
-  // ghosts: soft discs with a brighter rim, the classic iris reflection
-  const ghostTex = flareTex([
-    [0, 'rgba(255,255,255,0.05)'], [0.62, 'rgba(255,255,255,0.16)'],
-    [0.86, 'rgba(255,255,255,0.30)'], [0.97, 'rgba(255,255,255,0.06)'],
-    [1, 'rgba(255,255,255,0)'],
-  ], 64);
-  const flare = new Lensflare();
-  // smaller than it was: the sky dome now draws its own Mie halo around the
-  // sun, and stacking a big flare bloom on top of it turned the whole area
-  // into a lavender smear
-  flare.addElement(new LensflareElement(glowTex, 300, 0, new THREE.Color(0xfff2d6)));
-  flare.addElement(new LensflareElement(ghostTex, 34, 0.32, new THREE.Color(0x9fd0ff)));
-  flare.addElement(new LensflareElement(ghostTex, 58, 0.52, new THREE.Color(0xffd6a8)));
-  flare.addElement(new LensflareElement(ghostTex, 26, 0.68, new THREE.Color(0xc8ffd8)));
-  flare.addElement(new LensflareElement(ghostTex, 78, 0.86, new THREE.Color(0xffc0a0)));
-  flare.addElement(new LensflareElement(ghostTex, 44, 1.0, new THREE.Color(0xa8c8ff)));
-  // parented to the sky (which rides the plane) rather than to the directional
-  // light: the light sits only 420 m away and can end up buried inside a
-  // mountain, which would occlude the flare for no reason
-  const flareAnchor = new THREE.Object3D();
-  flareAnchor.position.copy(sunDir).multiplyScalar(7600);
-  flareAnchor.add(flare);
-  sky.add(flareAnchor);
+  // THE LENS FLARE IS GONE, and it had to go rather than be fixed. three's Lensflare tests
+  // occlusion by stamping a 16x16 probe into the framebuffer, reading it back, and restoring
+  // the pixels underneath with copyFramebufferToTexture. That restore does not survive this
+  // project's post-processing composer, so the probe stayed on screen: a hard-edged 16x16
+  // black square parked next to the sun. Measured directly — 256 dark pixels with the flare
+  // present, 0 with it hidden, 256 again when restored, which is 16x16 exactly.
+  // Setting depthWrite=false on the flare's own quad (a separate, real bug: three gives it an
+  // opacity-0 MeshBasicMaterial that still wrote depth and punched the sky dome out behind it)
+  // fixed that second problem and left the probe untouched, because the probe is drawn by the
+  // addon's own render pass and nothing here can reach it.
+  // Losing it costs little: the dome already draws its own Mie halo around the sun, the sun
+  // sprite carries the bloom, and the flare had already been shrunk once because stacking it
+  // on the dome's halo "turned the whole area into a lavender smear". daynight.js's
+  // `if (flare)` guard means world.flare simply being absent is a supported state.
 
   // lights. The hemisphere light is now a FLOOR under the sky environment map
   // rather than the whole ambient term — main.js bakes the dome into
@@ -329,11 +298,10 @@ export function createWorld(scene) {
     // raw time, no wrap: value noise isn't periodic, so a wrap would visibly
     // reshuffle the cloud shadows; drift offsets stay float32-tiny for hours
     uGroundTime.value = time;
-    // sunDir is SUN_DIR, which daynight.js rewrites in place, so the light, the flare and
-    // the disc all follow the time of day without being told about it separately.
+    // sunDir is SUN_DIR, which daynight.js rewrites in place, so the light and the disc
+    // both follow the time of day without being told about it separately.
     sun.position.copy(planePos).addScaledVector(sunDir, 420);
     sun.target.position.copy(planePos);
-    flareAnchor.position.copy(sunDir).multiplyScalar(7600);
     sky.position.set(planePos.x, 0, planePos.z);
     terrain.update(planePos);
     scatter.update(planePos, time);
@@ -346,6 +314,6 @@ export function createWorld(scene) {
   // internal
   return {
     update, terrain, scatter, water, shoreRibbon,
-    skyMat: sky.material, sun, hemi, sunSpr, flare,
+    skyMat: sky.material, sun, hemi, sunSpr,
   };
 }

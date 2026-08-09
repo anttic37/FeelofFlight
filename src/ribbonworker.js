@@ -25,11 +25,32 @@ const GRAD_H = 2.0;      // finite-difference arm for the gradient
 
 // ribbon cross-section: fractions of WIDTH inland from the waterline. Denser near the water
 // because that is where the ground bends most and where the eye is.
-const ROWS = [0, 0.12, 0.3, 0.58, 1.0];
+//
+// FIVE ROWS WAS COARSER THAN THE LAYER IT OVERDRAWS. [0, 0.12, 0.3, 0.58, 1.0] at WIDTH 46 is
+// 5.5 / 8.3 / 12.9 / 19.3 m between rows, and ring0 resolves that same ground at 480/96 =
+// 5.00 m (terrain.js RINGS). Because this strip wins every depth tie against the tiles, inside
+// its own footprint the picture is not max(ribbon, tile) — it is always the ribbon, so a chord
+// error here is unconditional, not a tie-break. The term that shows is the sand berm at
+// heightcore.js:1306: alone among the shore layers it is NOT scaled by mSh (which is only ~0.11
+// at the waterline, so every other detail layer is nearly absent on a beach), and it adds
+// 1.9-3.3 m over h in [0.7, 2.2] — roughly 32 to 40 m inland here, squarely inside the old
+// 26.7-46 m outer band. A 19.3 m chord across it sits over a metre low.
+//
+// 13 rows, no fractional step above 0.11, so the widest band is 5.06 m at WIDTH 46 and no band
+// is ever coarser than the tile beneath it. Costs one more pass of heightAt in the worker
+// (off-thread, once) and about 130k vertices instead of 50k.
+const ROWS = [0, 0.04, 0.09, 0.15, 0.22, 0.30, 0.39, 0.48, 0.58, 0.68, 0.79, 0.89, 1.0];
 const WIDTH = 46;        // covers LOD2's 40 m facets; beyond that nothing is resolvable
 // The seaward edge sits UNDER the water surface rather than exactly on it. On the waterline it
 // would z-fight the sea and stipple; a little below, the sea covers it and the visible edge
 // becomes the contour itself, which is the entire point of building this.
+//
+// IT IS A DISTANCE SEAWARD, NOT A DROP IN Y — see the row loop. Sinking row 0 in y was a lie
+// about the surface at a fixed lateral position, and a vertical lie moves the rendered y = 0
+// crossing INLAND by OUTER_SINK * d1 / (h1 + OUTER_SINK), where d1 is the first band's width.
+// With the band width proportional to the fold cap, that put the drawn waterline 0.3 to 4.2 m
+// (locally 13.8 m) inland of the contour, in plateaus that step as the cap steps — i.e. the
+// one quantity this mesh exists to fix was being set by the fold cap.
 const OUTER_SINK = 0.35;
 
 function grad(x, z, out) {
@@ -49,14 +70,34 @@ function grad(x, z, out) {
 // 40 km island — and sat 11 m off the contour on average. Six metres a go converges just as
 // fast where the ground is steep and merely takes a few more where it is flat.
 const MAX_CORR = 6;
+// THE TOLERANCE IS METRES OF CONTOUR POSITION, NOT METRES OF HEIGHT. It used to test
+// |h| < 0.02 at the TOP of the loop and return before correcting anything, which reads as
+// tight and is not: what this mesh exists to get right is the LATERAL position of the
+// waterline, and lateral error is |h| / |grad h|. On this beach |grad h| runs 0.02-0.08, so
+// 0.02 m of height is 0.25 to 1.0 m of position — the project's own "measure the axis the eye
+// actually sees" trap, in the one file whose entire justification is that axis.
+//
+// It is a BIAS, not noise. The trace is forward Euler on the contour field, so after a 4 m
+// tangent step the height error is only |grad h| * STEP^2/(2R) — 0.0016 m at R = 100 m, three
+// orders under the old tolerance, so no correction ran at all for several steps in a row. The
+// lateral drift it hides accumulates at STEP^2/(2R) = 0.08-0.27 m a step and always to the
+// OUTSIDE of the bend, so the polyline walks out to the full band over 4-12 steps and is then
+// snapped back by one exact Newton step: a sawtooth of amplitude = the tolerance and period
+// 16-100 m, against a STEP whose own chord sagitta is 4^2/(8*30) = 0.07 m.
+//
+// h^2 < TOL^2 * |g|^2 is the same test written in position. Cost is one gradient (4 heightAt)
+// on the steps that used to return early plus roughly one more Newton step; the field has no
+// wavelength under ~33 m near the waterline, so GRAD_H = 2 m arms see it as locally linear and
+// Newton still lands in one unclamped step.
+const TOL = 0.05;        // METRES OF CONTOUR POSITION
 function snap(p) {
   const g = [0, 0];
   for (let i = 0; i < 12; i++) {
     const h = heightAt(p[0], p[1]);
-    if (Math.abs(h) < 0.02) return true;
     grad(p[0], p[1], g);
     const m2 = g[0] * g[0] + g[1] * g[1];
     if (m2 < 1e-8) return false;               // flat: no direction to correct along
+    if (h * h < TOL * TOL * m2) return true;   // |h| / |g| < TOL: on the contour, laterally
     let dx = g[0] * h / m2, dz = g[1] * h / m2;
     const d = Math.hypot(dx, dz);
     if (d > MAX_CORR) { dx = dx / d * MAX_CORR; dz = dz / d * MAX_CORR; }
@@ -188,7 +229,16 @@ self.onmessage = (e) => {
     // strip out of the same terrain the tiles draw: its inner boundary is invisible wherever
     // it lands, because both sides are the same surface. It can be narrow through a tight
     // cove and wide along an open beach and there is nothing to see.
+    //
+    // THE SAME CAP IS NEEDED ON THE SEAWARD SIDE NOW, because row 0 no longer sits on the
+    // contour: it steps seaward (see the row loop) and can go tens of metres out where the
+    // beach is flat. The gate below only ever narrowed the INLAND offset, since that was the
+    // only side with geometry on it — so at a headland, where the curve bends toward the SEA,
+    // cap stays the full 46 and a seaward offset is free to fold exactly the way the inland
+    // one used to. capsO is the identical bound with the sign of the gate flipped. This is not
+    // a second mechanism, it is the existing one applied to the side that grew geometry.
     const nxs = new Float32Array(n), nzs = new Float32Array(n), caps = new Float32Array(n);
+    const capsO = new Float32Array(n);
     const rawx = new Float32Array(n), rawz = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const x = l[i * 2], z = l[i * 2 + 1];
@@ -198,14 +248,15 @@ self.onmessage = (e) => {
       // rows stay parallel instead of scissoring where the coast turns
       nxs[i] = g[0] / m; nzs[i] = g[1] / m;
       rawx[i] = nxs[i]; rawz[i] = nzs[i];
-      let cap = WIDTH;
+      let cap = WIDTH, capO = WIDTH;
       if (i > 0 && i < n - 1) {
         const vx = l[(i - 1) * 2] + l[(i + 1) * 2] - 2 * x;
         const vz = l[(i - 1) * 2 + 1] + l[(i + 1) * 2 + 1] - 2 * z;
         const vl = Math.hypot(vx, vz);
         // only the side the curve bends TOWARD can converge; bending away spreads them out
-        if (vl > 1e-6 && vx * nxs[i] + vz * nzs[i] > 0) {
-          cap = Math.min(WIDTH, 0.55 * STEP * STEP / vl);
+        if (vl > 1e-6) {
+          const rc = Math.min(WIDTH, 0.55 * STEP * STEP / vl);
+          if (vx * nxs[i] + vz * nzs[i] > 0) cap = rc; else capO = rc;
         }
       }
       // The FLOOR is what is left folding. At 6 m the last 198 quads were all places where
@@ -214,6 +265,7 @@ self.onmessage = (e) => {
       // same surface as the tile underneath, so where it narrows to a thread there is simply
       // nothing to see. A fold is not free in the same way.
       caps[i] = Math.max(2.5, cap);
+      capsO[i] = Math.max(2.5, capO);
     }
     // SMOOTH THE OFFSET DIRECTION ALONG THE COAST. The curvature cap bounds how fast the
     // CONTOUR bends, but the offset does not run along the contour's own normal — it runs
@@ -233,23 +285,50 @@ self.onmessage = (e) => {
     }
     // a running minimum, because a quad spans two points and the tighter of the pair is what
     // decides whether it folds — and it smooths the width so the inner edge does not step
-    const capS = new Float32Array(n);
+    const capS = new Float32Array(n), capOS = new Float32Array(n);
     for (let i = 0; i < n; i++) {
-      let mn = caps[i];
+      let mn = caps[i], mo = capsO[i];
       for (let k = -3; k <= 3; k++) {
         const j = i + k;
-        if (j >= 0 && j < n && caps[j] < mn) mn = caps[j];
+        if (j < 0 || j >= n) continue;
+        if (caps[j] < mn) mn = caps[j];
+        if (capsO[j] < mo) mo = capsO[j];
       }
       capS[i] = mn;
+      capOS[i] = mo;
     }
 
+    const backs = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       const x = l[i * 2], z = l[i * 2 + 1];
       const nx = nxs[i], nz = nzs[i];
+      // ROW 0 STEPS SEAWARD ALONG THE GROUND, IT IS NOT DROPPED THROUGH IT.
+      //
+      // It used to sit at the contour's own xz with y = -OUTER_SINK, which is the only vertex
+      // in this mesh whose y is not heightAt — and a vertical lie at a fixed lateral position
+      // moves the rendered y = 0 crossing inland by OUTER_SINK * d1 / (h1 + OUTER_SINK), where
+      // d1 = ROWS[1] * capS[i]. The old first band was 0.12 * capS wide and capS genuinely
+      // swings 2.5..46 (the gate above only narrows it where the curve bends inland, so every
+      // convex or straight sample kept the full 46), so the drawn waterline stood 0.3 to 4.2 m
+      // inland of the true contour — up to 13.8 m where the smoothed offset direction left the
+      // first inland row at or below zero — and it STEPPED, in ~28 m plateaus, because the
+      // running minimum above holds one low cap for seven samples. The mesh exists to put the
+      // waterline on the contour and that error was set by the fold cap.
+      //
+      // Going seaward to where the ground is genuinely OUTER_SINK under the sea and taking its
+      // true height keeps exactly what OUTER_SINK was for — the outer edge is ~0.35 m below the
+      // water sheet, so it cannot z-fight it — while every vertex in the mesh is now on the
+      // real surface. The chord row0 -> row1 is then a secant of the true terrain and crosses
+      // y = 0 at the contour to first order, independent of capS. Capped by capOS so the
+      // seaward offset cannot fold, and by a gradient floor of 0.008 so a dead-flat shelf asks
+      // for 43 m rather than a kilometre.
+      grad(x, z, g);
+      const back = Math.min(capOS[i], OUTER_SINK / Math.max(Math.hypot(g[0], g[1]), 0.008));
+      backs[i] = back;                        // kept for the span guard on the seaward quad
       for (let r = 0; r < ROWS.length; r++) {
-        const d = ROWS[r] * capS[i];
+        const d = r === 0 ? -back : ROWS[r] * capS[i];
         const px = x + nx * d, pz = z + nz * d;
-        const y = r === 0 ? -OUTER_SINK : heightAt(px, pz);
+        const y = heightAt(px, pz);           // every vertex on the true surface, row 0 included
         const o = v * 3;
         pos[o] = px; pos[o + 1] = y; pos[o + 2] = pz;
         // analytic normal, same construction the tiles use, so the lighting matches
@@ -270,11 +349,27 @@ self.onmessage = (e) => {
     // Worth recording that every metric I had was blind to them: each one treated a long jump
     // between consecutive points as a LOOP BOUNDARY and skipped it, which is exactly the quad
     // that was wrong. The strip simply ends at a gap and starts again on the far side.
+    //
+    // THE SAME GUARD BELONGS ON THE OTHER AXIS, and it was only ever applied to one. The test
+    // above measures the spacing of the CONTOUR points, but the outer rows do not lie over the
+    // contour — they lie ROWS[r] * capS inland of it, and capS[i] and capS[i+1] share six of
+    // the seven samples in the running-min window, so one low value entering or leaving the
+    // window moves the cap by its full range (46 -> 2.5) across a single 4 m step. The outer
+    // quad then rakes 43.5 m of terrain across that step: exactly the shape of the 87 m flat
+    // tabs MAX_SPAN was written to stop, differing only in which direction it is stretched.
+    // Breaking rather than skipping keeps the inner rows, whose spans are still short — the
+    // strip just narrows for one step, and the tile draws the same surface where it stops.
     const MAX_SPAN = STEP * 1.8;
     for (let i = 0; i < n - 1; i++) {
       const dx = l[(i + 1) * 2] - l[i * 2], dz = l[(i + 1) * 2 + 1] - l[i * 2 + 1];
       if (dx * dx + dz * dz > MAX_SPAN * MAX_SPAN) continue;
       for (let r = 0; r < ROWS.length - 1; r++) {
+        // row 0 is offset by backs, not by ROWS * capS, so it needs its own span. Skipping
+        // just that band rather than breaking keeps the land side of the strip, which is
+        // fine — losing the seaward band for one step loses nothing the sea was not covering.
+        const span = r === 0 ? Math.abs(backs[i + 1] - backs[i])
+                             : ROWS[r + 1] * Math.abs(capS[i + 1] - capS[i]);
+        if (span > MAX_SPAN) { if (r === 0) continue; break; }
         const a = base + i * ROWS.length + r;
         const b = a + ROWS.length;
         idx.push(a, b, a + 1, a + 1, b, b + 1);

@@ -58,13 +58,25 @@ export function initVolTweakPanel({ vc, applyResize }) {
   // does both. Roughly 8 ms, hence mouse-up only.
   slider('sky', 'cloud size', () => repeat, v => repeat = v, 30, 200, 5,
     v => (40000 / v).toFixed(0) + ' m', { commit: v => { repeat = vc.setWeatherRepeat(v); } });
-  // THE RANGE WAS 40x TOO WIDE. This is tile units per second against a tile that is the
-  // whole weather map, so the usable band is tiny: 0.0005 already reads as a fresh breeze
-  // and everything past it is a time-lapse. At the old +/-0.02 the entire useful travel sat
-  // inside one step either side of centre, which is not a control. Centre is still zero.
-  slider('sky', 'wind', () => C.localWeatherVelocity.x,
-    v => C.localWeatherVelocity.set(v, v * 0.35), -0.001, 0.001, 0.00002,
-    v => v.toFixed(5));
+  // THIS DROVE localWeatherVelocity UNTIL NOW, AND THAT WAS A ONE-WAY TRIP. That property
+  // translates the whole sampled weather texture (updateSharedUniforms accumulates it into
+  // localWeatherOffset every frame, and sampleWeather adds the offset to the uv) — and the
+  // island cap is baked INTO that texture at a fixed uv, so what the slider actually moved
+  // was the cap, sliding the cloud field off the island at 2 m/s per step and 100 m/s at the
+  // end of the travel. Nothing about the image says the mask is the thing moving. Worse, it
+  // could not be undone: the only two writes to localWeatherOffset in the project are the two
+  // pin sites in volclouds.js, so returning the slider to 0 stopped the drift but left the cap
+  // wherever it had walked to for the rest of the session, and panel.js persists any row that
+  // differs from its code default, so one drag came back every boot. (Rebaking via cloud size
+  // re-pins it — that was the only repair.) volclouds.js pins localWeatherVelocity to (0,0)
+  // for precisely this reason and moves shapeVelocity instead, so the slider now drives that:
+  // the noise churns THROUGH the field, lobes boil, footprints stay put. Units are shape
+  // texture periods, so 0.0022 is about 1.5 m/s of internal motion; the y/z ratios reproduce
+  // the shipped (0.0022, 0.0009, 0.0016), and 0.0002 divides 0.0022 exactly so merely touching
+  // the control cannot quantise the code default away (see the sun size note below).
+  slider('sky', 'wind', () => C.shapeVelocity.x,
+    v => C.shapeVelocity.set(v, v * 0.41, v * 0.73), 0, 0.02, 0.0002,
+    v => v.toFixed(4));
   slider('sky', 'turbulence', () => C.turbulenceDisplacement,
     v => C.turbulenceDisplacement = v, 0, 500, 5, v => v.toFixed(0));
   note('turbulence frays cloud edges — 120 frayed, 350 sprayed, hence 0');

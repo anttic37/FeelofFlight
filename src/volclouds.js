@@ -905,8 +905,34 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
     // sheet for a different reason — the stock profile sits at 0.25 density on the floor, so
     // a thin layer gets sliced off flat along its underside and squared off at the end of
     // every streak, which is what hard cut edges near the horizon look like.
+    // 0.78, AND THE ONLY HARD CONSTRAINT ON THIS NUMBER IS THAT IT STAY BELOW 1 - coverage.
+    // The library's coverage stage is
+    //   factor  = 1 - coverage * shapeAlteringFunction(heightFraction, bias)
+    //   density = remapClamped(mix(localWeather, 1, cfw), factor, factor + cfw)
+    // so the layer produces nothing unless weather^exponent > (1 - cfw - coverage*hs)/(1 - cfw).
+    // At the shipped cfw 0.88 against coverage 0.19 that numerator is 0.12 - 0.19*hs, which
+    // goes NEGATIVE for hs > 0.6316 — at bias 0.46 that is heightFraction 0.029..0.622, 59%
+    // of the layer's 600 m. Over that span the bar is below zero, so the layer passed density
+    // at weather = 0: it had stopped reading the weather map at all, and therefore escaped the
+    // island cap, which works by writing r and g in that map (applyIslandCap, and its uFloor
+    // 0.08 cannot hold a bar that is already negative). What that looked like is worth
+    // recording because it is NOT the obvious failure: shapeAmount 1.0 erodes the 0.0795 that
+    // cleared the bar down to a ~0.0044 peak, so it was never a solid lid — it was a faint
+    // veil over the whole world at 6.6-7.2 km, thickening into a band a few degrees above the
+    // horizon where the 18 km ray clamp shortens the crossing through the sheet. Exactly the
+    // knife-edge the old cirrus veil was deleted for (see the note above LAYERS), which is why
+    // the coverage note at the top of this file says the veil's filter width has to track
+    // coverage — this layer inherited the veil's job and stopped tracking.
+    // 0.78 puts the bar back at (1 - 0.19 - 0.78)/0.22 = 0.136 at the height where hs peaks,
+    // higher everywhere else, so g^2.55 has to beat it: g > 0.46 at best, 0.51 over most of
+    // the layer — the big-class cores only, which the cap's multiply then confines to the
+    // island. DENSITY DELIBERATELY UNCHANGED at 0.26: peak density is coverage*hs/cfw, so
+    // narrowing the filter RAISES the peak (0.216 -> 0.244). The put-density-back note on the
+    // first layer is about WIDENING and runs the other way. maxRayDistance stays at 18000 for
+    // the same reason it was set there — with the sheet gated back onto the island the clamp
+    // has nothing left to cut.
     { channel: 'g', altitude: 6610, height: 600, densityScale: 0.26,
-      weatherExponent: 2.55, shapeAlteringBias: 0.46, coverageFilterWidth: 0.88,
+      weatherExponent: 2.55, shapeAlteringBias: 0.46, coverageFilterWidth: 0.78,
       shapeAmount: 1.0, shapeDetailAmount: 0.79, shadow: true, profile: BOTH_TAPER },
   ];
   // Names for the tuning panel, so its sections match what the layers actually are now

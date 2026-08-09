@@ -352,7 +352,25 @@ export function createTerrain(scene) {
       // OUTERMOST finer ring's — RINGS[li].radius — not the smallest of them. Taking the
       // smallest pinned every layer to ring0's 1100 m and left ring2 and the shell drawing
       // over ring1 all the way out to 3 km, which is the overlap this is here to remove.
-      const covered = Math.min(RINGS[li].radius, minGap);
+      // ring.radius admits a tile by its CENTRE (forEachRingTile, above), so the disc that
+      // ring actually TILES is radius minus half a tile diagonal — a point sits up to
+      // tile*SQRT2/2 from its own tile's centre, and if that centre fell outside radius the
+      // tile was never wanted, never queued, never built, and _gap never saw it (_gap is
+      // written only inside the forEachRingTile callback, so it can only measure WANTED
+      // tiles). Passing ring.radius here treated an inclusion radius as a coverage guarantee
+      // and cut the coarse layers over an annulus the finer rings never tile: 339 / 679 /
+      // 1358 m wide at the worst bearing, all far beyond HOLE_MARGIN=120, so nothing at all
+      // was drawn there and the sea/haze showed through as huge saturated patches — the
+      // holes reported after the shoreline/LOD rewrite. Before that rewrite the shell drew
+      // everywhere, so the centre-based want scan was never asked to be a coverage
+      // guarantee; making it one is what exposed the error.
+      // coveredByFiner() already does exactly this correction on the same quantity
+      // (guard = finer.radius - finer.tile) before treating a centre radius as coverage;
+      // this line was the one place that subtracted nothing.
+      // Steady-state hole radii go 980 / 2880 / 5080 -> 640.59 / 2201.18 / 3722.35, i.e. the
+      // genuinely-tiled discs minus HOLE_MARGIN. The overlap this restores is confined to
+      // the outer bands (ring2 + shell beyond 3722 m) where fog is already >45%.
+      const covered = Math.min(RINGS[li].radius - RINGS[li].tile * Math.SQRT1_2, minGap);
       const mat = li + 1 < RINGS.length ? materials[li + 1] : shellMaterial;
       const sh = mat.userData.shader;
       if (sh) sh.uniforms.uHoleR.value = Math.max(0, covered - HOLE_MARGIN);
