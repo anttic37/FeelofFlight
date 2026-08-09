@@ -19,9 +19,17 @@ import { measureParts } from './airframe.js';
 // own heightAt samples, where every vertex position is ours and there is nothing to get wrong.
 const CDN = 'https://cdn.jsdelivr.net/npm/@dimforge/rapier3d-compat@0.14.0/rapier.es.js';
 
-// Ground patch: big enough that a fast wreck cannot slide off it. The longest slide measured
-// on the hand-rolled path was 260 m from 300 km/h, so 1400 m centred on the impact is roomy.
-const SPAN = 1400, CELLS = 64;
+// Ground patch: big enough that a fast wreck cannot slide off it, and no bigger, because
+// SAMPLING IT IS THE WHOLE COST OF A CRASH. Measured: the build takes 9.5 ms, of which 7.4 ms
+// (78%) is heightAt — 4225 calls at 65x65 — while the typed arrays are 0.2 ms and Rapier's own
+// collider construction 1.9 ms. That lands on one frame, the one right after impact, against a
+// 0.1 ms baseline, which is a dropped frame exactly when the screen is most interesting: the
+// "slight stop" on contact.
+// 1000 m at 44 cells keeps the CELL SIZE essentially unchanged (22.7 m against 21.9 m) and
+// cuts the sample count by 52%, to 2025. The span still covers +-500 m against a longest
+// measured slide of 345 m, so the wreck cannot reach the edge; there is no fidelity traded
+// here, only patch that was never driven over.
+const SPAN = 1000, CELLS = 44;
 
 // The airframe is measured off the model, not typed here — see airframe.js. This is the whole
 // point of the exercise: five sample points cannot catch a wing on a slope, a wing can, and it

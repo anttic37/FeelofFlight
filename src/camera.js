@@ -272,12 +272,24 @@ export class ChaseCam {
     // watching from, so the wreck tumbles across a steady frame.
     const crashed = !!phys.crashed;
     if (crashed && !this._wasCrashed) {
-      // freeze the bearing we are already on, flattened — not the plane's, which
-      // by now is whatever attitude it happened to break at
+      // Freeze the bearing we are already on — not the plane's, which by now is whatever
+      // attitude it happened to break at.
+      // NOT FLATTENED, and that was the camera diving at every impact. The desired position is
+      // wreck + dir*dist + up*3.6, so zeroing dir.y does not merely change the bearing, it
+      // drops the shot to 3.6 m above the wreck no matter where it was watching from. In a
+      // dive -fwd points well UP, so the camera is high; measured on a 34 degree dive it sat
+      // 34.2 m above the aeroplane at the moment of impact and then sank to 4.9 m over about a
+      // second. That sink is the whole of the "camera wants to go down" on contact.
+      // Flattening was never what kept the view level anyway: upMix is forced to WORLD_UP for
+      // the entire crash a few lines below, so the roll this was guarding against cannot
+      // happen. Keeping the full offset holds the exact framing the shot already had, which is
+      // what every other frozen term here is for.
       this._crashDir.copy(this.pos).sub(phys.pos);
-      this._crashDir.y = 0;
       if (this._crashDir.lengthSq() < 1e-6) this._crashDir.copy(fwd).setY(0).negate();
       this._crashDir.normalize();
+      // ...but never fully overhead: a straight-down bearing leaves lookAt with no horizon to
+      // orient against, and the view spins on the spot.
+      if (this._crashDir.y > 0.85) { this._crashDir.y = 0.85; this._crashDir.normalize(); }
       // the speed the distance term keeps using for the rest of the crash
       this._crashSpeed = phys.speed;
       // ...and the standoff it already had. Freezing the terms that FEED the distance was
