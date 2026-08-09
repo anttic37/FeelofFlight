@@ -8,34 +8,45 @@ import { injectGroundFX } from './groundfx.js';
 //   ?terrain=static — EXACTLY the pre-dynamic path: one PlaneGeometry
 //     15600^2 @ 500x500 baked synchronously. Pixel-identical A/B fallback.
 //   default (dynamic) — hybrid shell + ring-LOD streamed tiles:
-//     (a) a coarse full-island shell (251x251) baked synchronously at startup
-//         and sunk 2.5 m, so there is NEVER a hole anywhere — fine tiles just
-//         draw on top and win the z-buffer; the shell alone is only visible
-//         beyond the outer tile ring where fog is >70%;
+//     (a) a coarse full-island shell (251x251) baked synchronously at startup,
+//         so there is NEVER a hole anywhere — fine tiles just draw on top and
+//         win the z-buffer; the shell alone is only visible beyond the outer
+//         tile ring where fog is >70%;
 //     (b) world-aligned square tiles in three rings around the plane (5 m
 //         triangles near, coarser out to 5.2 km), baked in a module worker
 //         from the same analytic heightAt/terrainColor as everything else.
-//         Each ring's meshes sink by a small y bias (0 / -0.9 / -1.8, shell
-//         -2.5) so a coarser surface can never poke through a finer one, and
-//         skirts on every tile hide the sub-pixel cracks at LOD handoffs.
+//         Skirts on every tile hide the sub-pixel cracks at LOD handoffs.
 // Physics/camera/HUD never touch any of this — they stay on analytic
 // heightAt/surfaceAt, so collision cannot pop or wait on streaming.
 
-// Anti-overlap between rings is CONSTRUCTIVE, not tuned: coarser rings bake a
-// conservative lower envelope (minS = half-spacing min-taps in bakeTile) so
-// they cannot rise above what finer rings show; a small shore-faded bias
-// covers the residual concave overshoot between samples; per-ring
-// polygonOffset settles any remaining same-pixel depth ties in favor of the
-// finer ring. Sinks are render-only (physics is analytic).
+// ANTI-OVERLAP IS ONE MECHANISM: A COARSE LAYER IS NOT DRAWN WHERE A FINER ONE COVERS IT.
+// See uHoleR below — a fragment discard whose radius is measured from real tile coverage.
+// Nothing overlaps, so nothing has to be pushed out of anything's way, and every layer can
+// render heightAt exactly.
+//
+// It replaces five mechanisms that were all trying to keep apart surfaces that should not
+// have been in the same place: a min-tap envelope, a per-ring y-sink, a slope gate, a shore
+// fade and a height gate. Every one of them was switched off near the waterline — which is
+// precisely why the coarse shell sat up to 2.8 m above the sea bed there and showed through
+// the water as flat sheets. Physics is analytic and never saw any of it.
+//
+// Per-ring polygonOffset stays for what it is actually good at: same-pixel depth ties in the
+// HOLE_MARGIN band where a coarse layer still overlaps. It moves no geometry.
+// EVERY layer renders the terrain exactly — no envelope, no bias, no min-span.
 const RINGS = [
-  { lod: 0, tile: 480,  res: 96, radius: 1100, skirt: 5,  bias: 0,    minS: 0 },
-  { lod: 1, tile: 960,  res: 64, radius: 3000, skirt: 8,  bias: -0.5, minS: 7.5 },
-  { lod: 2, tile: 1920, res: 48, radius: 5200, skirt: 16, bias: -1,   minS: 20 },
+  { lod: 0, tile: 480,  res: 96, radius: 1100, skirt: 5  },
+  { lod: 1, tile: 960,  res: 64, radius: 3000, skirt: 8  },
+  { lod: 2, tile: 1920, res: 48, radius: 5200, skirt: 16 },
 ];
 const EVICT_PAD = 300;        // hysteresis: build at radius, evict at radius+300
-const SHELL_Y = -4;
-const SHELL_MINS = 31;        // shell min-tap span: half of its 62 m spacing
 const SHELL_SEGS = 250;
+// NO LAYER TAKES AN ENVELOPE — every one renders the terrain exactly. An envelope wide enough
+// to GUARANTEE a coarse layer never rises above a finer one has to lower it by roughly its own
+// cell size, and that is ruinous: measured, it costs the shell 54 m of mean height on high
+// ground and drops the island's peak from 748 m to 576 m, and costs ring2 37 m. Guaranteed
+// non-overshoot and an honest silhouette are in direct conflict — but only while two layers
+// are drawing the same ground. Stop doing that and both come free.
+const HOLE_MARGIN = 120;   // keep the coarse layer across this much of the covered zone's edge
 const TELEPORT_D2 = 1500 * 1500; // jump larger than this = teleport, not flight
 const LOOKAHEAD_FRAMES = 90;  // priority aim point ~1.5 s ahead at 60 Hz
 const MAX_IN_FLIGHT = 2;
@@ -44,29 +55,13 @@ const MAX_IN_FLIGHT = 2;
 // segment count so the dynamic far shell (250) and the A/B static path (500)
 // share one code path. Colors use the mesh's smooth vertex normals, exactly
 // like the original loop.
-function bakeIslandGeometry(segments, minSpan) {
+function bakeIslandGeometry(segments) {
   const geo = new THREE.PlaneGeometry(15600, 15600, segments, segments);
   geo.rotateX(-Math.PI / 2);
   const tPos = geo.attributes.position;
   for (let i = 0; i < tPos.count; i++) {
     const x = tPos.getX(i), z = tPos.getZ(i);
-    const h = heightAt(x, z);
-    let hy = h;
-    if (minSpan && h > 2) { // shore-faded + slope-gated envelope, same rule as bakeTile
-      let mn = h;
-      const h1 = heightAt(x + minSpan, z), h2 = heightAt(x - minSpan, z);
-      const h3 = heightAt(x, z + minSpan), h4 = heightAt(x, z - minSpan);
-      if (h1 < mn) mn = h1; if (h2 < mn) mn = h2;
-      if (h3 < mn) mn = h3; if (h4 < mn) mn = h4;
-      const grad = Math.hypot(h1 - h2, h3 - h4) / (2 * minSpan);
-      const hf = h >= 10 ? 1 : h <= 6 ? 0 : (h - 6) / 4;
-      const thLo = 0.30 - 0.23 * hf * hf * (3 - 2 * hf);
-      const sRaw = (grad - thLo) / 0.15;
-      const sw = sRaw <= 0 ? 0 : sRaw >= 1 ? 1 : sRaw * sRaw * (3 - 2 * sRaw);
-      const t = h >= 12 ? 1 : (h - 2) / 10;
-      hy = h + (mn - h) * t * t * (3 - 2 * t) * sw;
-    }
-    tPos.setY(i, hy);
+    tPos.setY(i, heightAt(x, z));
   }
   geo.computeVertexNormals();
   const tNorm = geo.attributes.normal;
@@ -128,40 +123,42 @@ export function createTerrain(scene) {
   const materials = [ringMaterial(0), ringMaterial(1), ringMaterial(2)];
   const shellMaterial = ringMaterial(3);
 
-  // LOD sink is applied PER VERTEX, faded out below 12 m: sinking a whole
-  // mesh moved its WATERLINE sideways by tens of meters (beach slopes are
-  // ~1:20), so ring boundaries stepped along the coast. Poke-through only
-  // happens on steep ground, which is always well above 12 m — the beach
-  // keeps its exact shoreline at every LOD.
-  // THE SHORE BAND GETS A SMALL SINK, NOT NONE.
+  // EACH COARSE LAYER IS CUT AWAY WHERE THE FINER ONES HAVE IT COVERED.
   //
-  // This used to fade the LOD bias to exactly zero below 2 m and only reach full at 12 m,
-  // and bakeIslandGeometry's min-tap envelope is shore-faded the same way. Both fades
-  // exist to stop the coarse surface dragging the coastline around, and both leave the
-  // 0-12 m band — which is precisely the beach — with NO separation at all. There the
-  // 62 m shell competes with fine tiles on equal terms, their coastlines disagree by up
-  // to half a shell cell, and you fly along the water looking at two overlapping
-  // shorelines.
+  // This beats every envelope because it removes the overlap instead of hiding it: inside the
+  // hole the layer contributes no fragments at all, so it cannot show through the sea at the
+  // coast, and outside it that layer is the only thing drawn so it renders terrain exactly.
   //
-  // SHORE_FRAC keeps a fraction of the bias down there. It has to be small: this sinks
-  // LAND, so the waterline creeps inland by the sink divided by the beach slope. At 0.35
-  // of a -4 m shell bias that is ~1.4 m, tens of metres of coastline on a shallow beach —
-  // invisible at the ranges where the shell is the only thing drawn, and the near view is
-  // the fine tiles' anyway, which is the whole point.
-  const SHORE_FRAC = 0.35;
-  function sinkAboveShore(positions, bias) {
-    for (let i = 1; i < positions.length; i += 3) {
-      const y = positions[i];
-      if (y <= -1) continue;              // already underwater: nothing to separate
-      const t = y <= 2 ? 0 : y >= 12 ? 1 : (y - 2) / 10;
-      const s = t * t * (3 - 2 * t);
-      positions[i] = y + bias * (SHORE_FRAC + (1 - SHORE_FRAC) * s);
-    }
+  // The radius is measured, not assumed: it is the distance to the nearest tile that is
+  // WANTED BUT NOT YET BUILT, so the hole only ever opens over ground that is genuinely
+  // covered. At startup and after a teleport that distance is small, the hole shuts, and the
+  // shell fills everything exactly as before — the no-holes-ever guarantee is unchanged.
+  const holeC = new THREE.Vector2(0, 0);
+  function cutHole(mat) {
+    const inner = mat.onBeforeCompile;   // groundfx got here first; chain, do not replace
+    mat.onBeforeCompile = (shader, renderer) => {
+      if (inner) inner(shader, renderer);
+      shader.uniforms.uHoleC = { value: holeC };
+      shader.uniforms.uHoleR = { value: 0 };
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <common>', '#include <common>\nuniform vec2 uHoleC;\nuniform float uHoleR;')
+        // vGWPos is groundfx's world-position varying; discard before anything is computed
+        .replace('#include <clipping_planes_fragment>',
+          'if (uHoleR > 0.0 && distance(vGWPos.xz, uHoleC) < uHoleR) discard;\n#include <clipping_planes_fragment>');
+      mat.userData.shader = shader;
+    };
   }
+  // ring0 is never cut — it is the finest layer and always the truth
+  cutHole(materials[1]); cutHole(materials[2]); cutHole(shellMaterial);
 
-  // (a) far shell — synchronous, envelope-baked, small shore-faded sink
-  const shellGeo = bakeIslandGeometry(SHELL_SEGS, SHELL_MINS);
-  sinkAboveShore(shellGeo.attributes.position.array, SHELL_Y);
+  // There is no y-sink any more. It was a second mechanism doing the envelope's job less
+  // well: it moved LAND down, so it dragged every coarse coastline inland by the sink over
+  // the beach slope, which forced it to be faded out near the shore, which is what left the
+  // shore unprotected. The envelope moves a vertex down only as far as the terrain it spans
+  // actually goes, so it cannot invent a coastline, and it needs no fade.
+
+  // (a) far shell — synchronous, envelope-baked
+  const shellGeo = bakeIslandGeometry(SHELL_SEGS);
   const shell = new THREE.Mesh(shellGeo, shellMaterial);
   shell.receiveShadow = true;
   scene.add(shell);
@@ -207,7 +204,6 @@ export function createTerrain(scene) {
   function tileKey(lod, ix, iz) { return lod + ':' + ix + ':' + iz; }
 
   function addTile(key, ring, ix, iz, positions, colors, normals) {
-    if (ring.bias !== 0) sinkAboveShore(positions, ring.bias);
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
     geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
@@ -242,7 +238,7 @@ export function createTerrain(scene) {
     if (tiles.has(key)) return;
     const n = tileVertexCount(ring.res) * 3;
     const positions = new Float32Array(n), colors = new Float32Array(n), normals = new Float32Array(n);
-    bakeTile(ix * ring.tile, iz * ring.tile, ring.tile, ring.res, ring.skirt, positions, colors, ring.minS, normals);
+    bakeTile(ix * ring.tile, iz * ring.tile, ring.tile, ring.res, ring.skirt, positions, colors, normals);
     addTile(key, ring, ix, iz, positions, colors, normals);
     pending.delete(key); // if it was queued, the queue entry is now moot
   }
@@ -283,6 +279,7 @@ export function createTerrain(scene) {
   }
 
   const _want = new Set();
+  const _gap = new Float64Array(RINGS.length);   // nearest wanted-but-unbuilt tile, per ring
   let lastX = NaN, lastZ = NaN, lookX = 0, lookZ = 0;
   let firstCall = true;
 
@@ -310,20 +307,50 @@ export function createTerrain(scene) {
     }
     lastX = px; lastZ = pz;
 
-    // desired set: queue misses, drop stale queue entries
+    // desired set: queue misses, drop stale queue entries. nearestGap tracks the closest
+    // ground we WANT a tile on but do not have — the shell must keep covering from there out.
     _want.clear();
+    for (let li = 0; li < RINGS.length; li++) _gap[li] = Infinity;
     for (let li = 0; li < RINGS.length; li++) {
       const finer = li > 0 ? RINGS[li - 1] : null;
       forEachRingTile(RINGS[li], px, pz, (ring, ix, iz, cx, cz) => {
         if (finer && coveredByFiner(finer, px, pz, ix, iz, ring.tile)) return;
         const key = tileKey(ring.lod, ix, iz);
         _want.add(key);
-        if (!tiles.has(key) && !pending.has(key) && !keyInFlight(key) && !finishedKeys.has(key)) {
-          pending.set(key, { key, ring, ix, iz, cx, cz });
+        if (!tiles.has(key)) {
+          // distance from the plane to the nearest point of this missing tile
+          const t = ring.tile;
+          const dx = Math.max(ix * t - px, 0, px - (ix + 1) * t);
+          const dz = Math.max(iz * t - pz, 0, pz - (iz + 1) * t);
+          const d = Math.hypot(dx, dz);
+          if (d < _gap[li]) _gap[li] = d;
+          if (!pending.has(key) && !keyInFlight(key) && !finishedKeys.has(key)) {
+            pending.set(key, { key, ring, ix, iz, cx, cz });
+          }
         }
       });
     }
     for (const key of pending.keys()) if (!_want.has(key)) pending.delete(key);
+
+    // EACH LAYER STOPS WHERE THE FINER ONES HAVE IT COVERED. `covered` accumulates the radius
+    // inside which every layer finer than this one is complete — the smaller of that layer's
+    // own reach and the distance to its nearest tile that is wanted but not yet built. So the
+    // hole only ever opens over ground something finer is genuinely drawing, and at startup or
+    // after a teleport it shuts to zero and the coarse layers cover everything, exactly as
+    // they always did. That is the no-holes-ever guarantee, kept without a single bias.
+    holeC.set(px, pz);
+    let minGap = Infinity;   // nearest hole in ANY finer ring, whichever ring it is in
+    for (let li = 0; li < RINGS.length; li++) {
+      if (_gap[li] < minGap) minGap = _gap[li];
+      // Coverage by the finer layers is their UNION, so the reach that counts is the
+      // OUTERMOST finer ring's — RINGS[li].radius — not the smallest of them. Taking the
+      // smallest pinned every layer to ring0's 1100 m and left ring2 and the shell drawing
+      // over ring1 all the way out to 3 km, which is the overlap this is here to remove.
+      const covered = Math.min(RINGS[li].radius, minGap);
+      const mat = li + 1 < RINGS.length ? materials[li + 1] : shellMaterial;
+      const sh = mat.userData.shader;
+      if (sh) sh.uniforms.uHoleR.value = Math.max(0, covered - HOLE_MARGIN);
+    }
 
     // evict with hysteresis; dispose geometry, never the shared material
     for (const [key, t] of tiles) {
@@ -366,7 +393,7 @@ export function createTerrain(scene) {
       dispatched++;
       worker.postMessage({
         id, x0: best.ix * best.ring.tile, z0: best.iz * best.ring.tile,
-        size: best.ring.tile, res: best.ring.res, skirt: best.ring.skirt, minSpan: best.ring.minS,
+        size: best.ring.tile, res: best.ring.res, skirt: best.ring.skirt,
       });
     }
     // dead-worker fallback: keep the world streaming from the main thread,

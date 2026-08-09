@@ -127,12 +127,14 @@ export function applyAO(col, ao, strength) {
   col[2] *= k * 0.955;
 }
 
-export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan, nrmOut) {
+// Every ring bakes the terrain EXACTLY — heightAt, nothing subtracted. Coarse rings used to
+// carry a min-tap envelope to keep them under the finer ones; they are no longer drawn where
+// a finer one covers (terrain.js, uHoleR), so there is nothing to keep them under.
+export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, nrmOut) {
   const cell = size / res;
   // AO lattice for this tile, one entry per AO_STEP vertices (at least 2 cells)
   const _aoN = Math.max(2, Math.ceil(res / AO_STEP));
   bakeAOGrid(x0, z0, size, _aoN);
-  const ms = minSpan || 0;
   // Grid: heights + colors. terrainColor's normalY (steep-face rock, scree)
   // comes from an ANALYTIC central difference of heightAt with spacing = one
   // cell, so the paint is seam-consistent across tiles, LODs and threads —
@@ -143,35 +145,7 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan,
     for (let ix = 0; ix <= res; ix++, o += 3) {
       const x = x0 + ix * cell;
       const h = heightAt(x, z);
-      let hy = h;
-      if (ms > 0 && h > 2) {
-        // CONSERVATIVE LOWER ENVELOPE for coarser rings: a vertex takes the
-        // MIN of itself and 4 taps at half-spacing, so the coarse surface can
-        // never rise above terrain the finer rings actually show — the root
-        // cause of the serrated ring-overlap bands on steep slopes. Colors
-        // and paint normals still come from the exact center sample.
-        // SHORE-FADED (zero below 2 m, full by 12 m) and SLOPE-GATED: poke-
-        // through only happens on steep ground, and on gentle shores the
-        // min-taps just catch the swash trough / berm base and carve V-teeth
-        // into the beach band (the half-faded 2-12 m zone was serrating every
-        // coarse-LOD coastline). The tap differences give the slope for free.
-        let mn = h;
-        const h1 = heightAt(x + ms, z), h2 = heightAt(x - ms, z);
-        const h3 = heightAt(x, z + ms), h4 = heightAt(x, z - ms);
-        if (h1 < mn) mn = h1; if (h2 < mn) mn = h2;
-        if (h3 < mn) mn = h3; if (h4 < mn) mn = h4;
-        const grad = Math.hypot(h1 - h2, h3 - h4) / (2 * ms);
-        // slope threshold rises near the shore: the berm/swash faces are
-        // locally ~0.1-0.25 steep and re-armed the gate, carving the beach
-        // band anyway — under ~10 m only true cliff faces (>0.3) qualify
-        const hf = h >= 10 ? 1 : h <= 6 ? 0 : (h - 6) / 4;
-        const thLo = 0.30 - 0.23 * hf * hf * (3 - 2 * hf);
-        const sRaw = (grad - thLo) / 0.15;
-        const sw = sRaw <= 0 ? 0 : sRaw >= 1 ? 1 : sRaw * sRaw * (3 - 2 * sRaw);
-        const t = h >= 12 ? 1 : (h - 2) / 10;
-        hy = h + (mn - h) * t * t * (3 - 2 * t) * sw;
-      }
-      posOut[o] = x; posOut[o + 1] = hy; posOut[o + 2] = z;
+      posOut[o] = x; posOut[o + 1] = h; posOut[o + 2] = z;
       const gx = (heightAt(x + cell, z) - heightAt(x - cell, z)) / (2 * cell);
       const gz = (heightAt(x, z + cell) - heightAt(x, z - cell)) / (2 * cell);
       const ny = 1 / Math.sqrt(1 + gx * gx + gz * gz); // normalize(-gx, 1, -gz).y
