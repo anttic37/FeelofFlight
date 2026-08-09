@@ -40,11 +40,35 @@ const SPAN = 1000, CELLS = 44;
 // tyre on tarmac, and the first pass at 0.85/0.9 stopped a 200 km/h wreck in 22 m where the
 // hand-rolled path took 89. Rapier averages the two colliders' friction, so both sides are set.
 export const tune = {
-  groundFriction: 0.45,
-  airframeFriction: 0.45,
-  restitution: 0.06,
+  // 0.65, RE-TUNED because filleting the corners changed the regime. 0.45 was chosen when the
+  // airframe was sharp boxes that PLOUGHED; a rounded body ROLLS, carries further on the same
+  // number, and stops arriving at rest. Measured over four crashes at 190-256 km/h: 0.45 gives
+  // 151 m and settles in 2 of 3, 0.65 gives 147 m and settles in 4 of 4, 7.3 s, with the jerk
+  // slightly lower too. Almost the same distance, reliably ended.
+  groundFriction: 0.65,
+  airframeFriction: 0.65,
+  // 0.01, not 0.06. An airframe arriving at 200 km/h is the SOFT body in this collision — it
+  // folds, and folding returns almost nothing. Any real restitution makes it ping off the
+  // ground like something hard, which is half of what reads as "two diamonds hitting".
+  restitution: 0.01,
   linDamp: 0.01,
-  angDamp: 0.14,
+  // 0.30, up from 0.14: a tumble in torn metal bleeds out, it does not ring on.
+  angDamp: 0.30,
+  // CRUMPLE. Rapier bodies are rigid by definition, so the energy a real airframe spends
+  // deforming has to be taken out by hand or it stays in the tumble. On a hard contact this
+  // bleeds SPIN, in proportion to how hard the hit was — the linear slide is left alone,
+  // because sliding a long way is correct and was asked for; it is the snap into a new
+  // rotation that reads as brittle.
+  crumple: 0.10,
+  // Corner radius for the airframe boxes. Sharp box corners are what catch and pivot; a
+  // filleted edge slides off. SMALL, and that is the whole lesson of tuning it: a fillet is a
+  // continuum from box to cylinder, and anywhere past a few centimetres the airframe starts
+  // ROLLING instead of sliding. At 0.16 m on a 1.36 m fuselage the wreck slid 280 m and came
+  // to rest on its side at 90 degrees in four runs out of four, half of them never settling
+  // at all — the same barrel failure as the capsule, just slower to arrive. 0.07 m takes the
+  // knife off the edges and leaves the flats that stop it. Scaled by the part's own thinnest
+  // half-extent so a 0.06 m elevator does not get a fillet wider than it is.
+  fillet: 0.35, filletMax: 0.07,
   // Density per cubic metre of bounding box, not a total mass. The intact aeroplane measures
   // ~34 m^3 of boxes, so 29 puts it near a tonne — and a wreck that has lost both wings comes
   // out genuinely lighter, which is right, because the wings are lying in a field behind it.
@@ -54,8 +78,46 @@ export const tune = {
 let RAPIER = null;
 let loading = null;
 
+// THE FIRST CRASH OF A SESSION COST 680 ms, every session, and no later one cost more than 17.
+// Loading the module and calling init() is not enough: the collision pipeline itself — the
+// trimesh/round-cuboid narrow phase, the island solver — only compiles the first time it is
+// actually run, and that landed on the frame of the player's first impact. So a throwaway world
+// of the same SHAPES is built and stepped here, at load, where a few hundred milliseconds cost
+// nothing because it is off the critical path and the aeroplane is still on the runway.
+// Deliberately the same shape types the real crash uses (trimesh ground, round cuboid body):
+// warming a sphere-on-plane would compile none of the code that actually runs.
+function warmUp(R) {
+  const w = new R.World({ x: 0, y: -9.81, z: 0 });
+  const n = 3, verts = new Float32Array(n * n * 3);
+  for (let i = 0, o = 0; i < n; i++) for (let j = 0; j < n; j++, o += 3) {
+    verts[o] = i * 10 - 10; verts[o + 1] = 0; verts[o + 2] = j * 10 - 10;
+  }
+  const idx = new Uint32Array((n - 1) * (n - 1) * 6);
+  for (let i = 0, k = 0; i < n - 1; i++) for (let j = 0; j < n - 1; j++) {
+    const a = i * n + j, b = a + n;
+    idx[k++] = a; idx[k++] = b; idx[k++] = a + 1; idx[k++] = a + 1; idx[k++] = b; idx[k++] = b + 1;
+  }
+  const g = w.createRigidBody(R.RigidBodyDesc.fixed());
+  w.createCollider(R.ColliderDesc.trimesh(verts, idx).setFriction(0.6), g);
+  const b = w.createRigidBody(R.RigidBodyDesc.dynamic().setTranslation(0, 3, 0)
+    .setLinvel(6, -8, 4).setCcdEnabled(true));
+  w.createCollider(R.ColliderDesc.roundCuboid(0.6, 0.6, 3, 0.07).setDensity(29), b);
+  // Long enough for it to land, tumble AND fall asleep, because sleeping is its own uncompiled
+  // path: with a 45-step warm-up the first crash dropped from 680 ms to 11.5 ms and the cost
+  // reappeared, whole, on the second one — the first crash that happened to come to rest
+  // quickly. The island deactivation runs once and compiles once. Reading isSleeping() and
+  // waking it again covers the query and wake sides too.
+  for (let i = 0; i < 240; i++) w.step();
+  b.isSleeping(); b.sleep(); w.step(); b.wakeUp(); w.step();
+  w.free();
+}
+
 export function preloadRapier() {
-  if (!loading) loading = import(/* @vite-ignore */ CDN).then(async (m) => { await m.init(); RAPIER = m; return m; });
+  if (!loading) loading = import(/* @vite-ignore */ CDN).then(async (m) => {
+    await m.init(); RAPIER = m;
+    try { warmUp(m); } catch (e) { console.warn('[ff] rapier warm-up skipped', e); }
+    return m;
+  });
   return loading;
 }
 
@@ -119,11 +181,25 @@ export function createRapierCrash(plane) {
         .setCcdEnabled(true)
         .setLinearDamping(tune.linDamp).setAngularDamping(tune.angDamp),
     );
-    // one box per assembly still attached to the model, measured this instant
+    // NOTHING HERE HAS A SHARP CORNER ANY MORE, and that is the whole of "it rolls like a
+    // diamond". A box on a triangle mesh does not roll: it pivots about a vertex, stops dead
+    // on an edge, and snaps into a new axis when the next corner catches. Two faceted solids
+    // trading corners is exactly what it looked like, because that is exactly what it was.
     parts = measureParts(plane);
     for (const part of parts) {
+      // FILLETED BOXES, NOT CAPSULES, and the difference is measured. A capsule is the truer
+      // shape for a fuselage and it removes every corner — but it is a barrel: it rolls and
+      // will not stop. Tried it: the wreck slid 197-312 m, came to rest on its side (84 deg
+      // off level) and had not settled at all after ten seconds, in four runs out of four. A
+      // real fuselage has a flattish underside and wing stubs that arrest exactly that roll.
+      // A rounded BOX keeps the flats that let it come to rest while losing the sharp corner
+      // that made it pivot and snap. roundCuboid's radius is ADDED to the half-extents, so
+      // they are shrunk by it first and the part stays the size the model says it is.
+      const [hx, hy, hz] = part.half;
+      const r = Math.min(tune.filletMax, Math.min(hx, hy, hz) * tune.fillet);
       world.createCollider(
-        R.ColliderDesc.cuboid(part.half[0], part.half[1], part.half[2])
+        R.ColliderDesc.roundCuboid(
+          Math.max(0.01, hx - r), Math.max(0.01, hy - r), Math.max(0.01, hz - r), r)
           .setTranslation(part.pos[0], part.pos[1], part.pos[2])
           .setFriction(tune.airframeFriction).setRestitution(tune.restitution)
           .setDensity(tune.density),
@@ -148,7 +224,17 @@ export function createRapierCrash(plane) {
     // a sharp loss of speed in one step IS the impact, which is what the dust and the thump
     // are keyed off — read it from the solver rather than guessing at contacts
     const hit = Math.hypot(before.x - v.x, before.y - v.y, before.z - v.z);
-    if (hit > 1.5) phys.justWreckHit = Math.min(8, hit * 0.8);
+    if (hit > 1.5) {
+      phys.justWreckHit = Math.min(8, hit * 0.8);
+      // CRUMPLE. A Rapier body is rigid by definition, so the energy a real airframe spends
+      // folding itself has nowhere to go and comes back out as spin — the wreck picks up a
+      // new rotation on every hard contact and keeps it. Take it out on the way in instead,
+      // scaled by how hard the hit was. SPIN ONLY: the linear slide is correct and is the
+      // thing that was asked for; it is the snap into a new rotation that reads as brittle.
+      const k = Math.max(0, 1 - Math.min(0.6, hit * tune.crumple));
+      body.setAngvel({ x: w.x * k, y: w.y * k, z: w.z * k }, true);
+      phys.angVel.multiplyScalar(k);
+    }
     const surf = phys.surfaceAt(t.x, t.z);
     phys.grounded = surf.type !== 'water' && t.y - Math.max(surf.h, 0) < 3.0;
     phys.onRunwaySurface = surf.type === 'runway';
