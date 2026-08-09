@@ -52,14 +52,25 @@ export const tune = {
   // ground like something hard, which is half of what reads as "two diamonds hitting".
   restitution: 0.01,
   linDamp: 0.01,
-  // 0.30, up from 0.14: a tumble in torn metal bleeds out, it does not ring on.
-  angDamp: 0.30,
+  // 0.12. Damping is the one thing that argues with a rolling capsule, and it does not need to
+  // do the stopping — friction eats the speed on its own, and the wreck settles either way.
+  // Measured across the same six crashes: 0.30 gives 1.57 turns, 0.12 gives 1.89, 0.05 gives
+  // 1.07 and takes longest to stop. 0.12 rolls most and still comes to rest.
+  angDamp: 0.12,
   // CRUMPLE. Rapier bodies are rigid by definition, so the energy a real airframe spends
   // deforming has to be taken out by hand or it stays in the tumble. On a hard contact this
   // bleeds SPIN, in proportion to how hard the hit was — the linear slide is left alone,
   // because sliding a long way is correct and was asked for; it is the snap into a new
   // rotation that reads as brittle.
-  crumple: 0.10,
+  // 0.02, not 0.10. The crumple exists to kill the SNAP, not the tumble, and at 0.10 it was
+  // killing both: 0.29 revolutions over a 135 m crash, which is a wreck sliding flat on its
+  // belly. At 0.02 the same crashes turn 1.5-2.0 times and the snap stays gone.
+  crumple: 0.02,
+  // A box on flat ground only tips when friction can lift it over its own leading edge —
+  // mu * h > b/2, which here means mu > 1.0 — and at friction 1.6 it does not roll either, it
+  // just stops (58 m, 0.75 turns). Flat-ground friction is not how a wreck rolls. Rather than
+  // model the soil catching a leading edge, the FUSELAGE IS A CAPSULE, which rolls because it
+  // is round. Simpler, and it is the true shape of a fuselage anyway. See the collider loop.
   // Corner radius for the airframe boxes. Sharp box corners are what catch and pivot; a
   // filleted edge slides off. SMALL, and that is the whole lesson of tuning it: a fillet is a
   // continuum from box to cylinder, and anywhere past a few centimetres the airframe starts
@@ -187,19 +198,34 @@ export function createRapierCrash(plane) {
     // trading corners is exactly what it looked like, because that is exactly what it was.
     parts = measureParts(plane);
     for (const part of parts) {
-      // FILLETED BOXES, NOT CAPSULES, and the difference is measured. A capsule is the truer
-      // shape for a fuselage and it removes every corner — but it is a barrel: it rolls and
-      // will not stop. Tried it: the wreck slid 197-312 m, came to rest on its side (84 deg
-      // off level) and had not settled at all after ten seconds, in four runs out of four. A
-      // real fuselage has a flattish underside and wing stubs that arrest exactly that roll.
-      // A rounded BOX keeps the flats that let it come to rest while losing the sharp corner
-      // that made it pivot and snap. roundCuboid's radius is ADDED to the half-extents, so
-      // they are shrunk by it first and the part stays the size the model says it is.
+      // THE FUSELAGE IS A CAPSULE, and everything else is a filleted box.
+      //
+      // A capsule is the true shape of a fuselage and it is the only shape here that can ROLL:
+      // round bodies roll, boxes slide and occasionally trip. I had rejected it once for
+      // rolling too freely — 197-312 m, resting on its side, not settled after ten seconds —
+      // but rolling is the point. A wreck at 200 km/h tumbles; it does not skid to a halt flat
+      // on its belly like a dropped crate, which is what the boxes gave (0.29 turns over
+      // 135 m). Coming to rest on its side is also correct for a fuselage with both wings torn
+      // off: the remaining body is 1.36 x 1.35 m in section, so "on its side" and "belly down"
+      // are the same four faces. What DID have to be fixed is that it never stopped, and that
+      // is friction and angular damping, not shape.
       const [hx, hy, hz] = part.half;
-      const r = Math.min(tune.filletMax, Math.min(hx, hy, hz) * tune.fillet);
+      let desc;
+      if (part.name === 'Fuselage') {
+        const rad = Math.min(hx, hy);
+        desc = R.ColliderDesc.capsule(Math.max(0.05, hz - rad), rad)
+          // Rapier capsules run along Y; the fuselage runs along Z, a quarter turn about X.
+          .setRotation({ x: Math.SQRT1_2, y: 0, z: 0, w: Math.SQRT1_2 });
+      } else {
+        // Wings, tail and fin keep their boxes with the edges taken off, so nothing has a
+        // knife edge to catch and snap on. roundCuboid's radius is ADDED to the half-extents,
+        // so they are shrunk by it first and the part stays the size the model says it is.
+        const r = Math.min(tune.filletMax, Math.min(hx, hy, hz) * tune.fillet);
+        desc = R.ColliderDesc.roundCuboid(
+          Math.max(0.01, hx - r), Math.max(0.01, hy - r), Math.max(0.01, hz - r), r);
+      }
       world.createCollider(
-        R.ColliderDesc.roundCuboid(
-          Math.max(0.01, hx - r), Math.max(0.01, hy - r), Math.max(0.01, hz - r), r)
+        desc
           .setTranslation(part.pos[0], part.pos[1], part.pos[2])
           .setFriction(tune.airframeFriction).setRestitution(tune.restitution)
           .setDensity(tune.density),
