@@ -1,6 +1,5 @@
 import * as THREE from 'three';
 import { fbm1 } from './noise.js';
-import { RUNWAYS } from './heightcore.js';
 
 // Arcade-sim rigid body: thrust, drag, lift(AoA), gravity + torques from control
 // surfaces, aerodynamic stability and damping. Body axes: forward -Z, up +Y, right +X.
@@ -10,8 +9,8 @@ import { RUNWAYS } from './heightcore.js';
 const G = 9.81;
 const RHO = 1.225;
 
-// air spawn: ~1.55 km final over water to the Coast strip (RUNWAYS[0]),
-// computed at reset time because the seeded layout moves the strip
+// air spawn speed. The spawn POSITION is a random bearing off the coast (see reset), so this
+// is a cruise entry rather than a final-approach speed.
 const SPAWN_SPEED = 55;
 
 // Overdrive: the fraction of extra thrust on top of the normal 100% gate, so 0.50 is a
@@ -125,12 +124,25 @@ export class FlightModel {
   }
 
   reset() {
-    const r0 = RUNWAYS[0]; // Coast strip: spawn 1.55 km out on final, over water
-    const fx = -Math.sin(r0.heading), fz = -Math.cos(r0.heading); // strip forward axis
-    this.pos.set(r0.x - fx * 1550, Math.max(120, r0.elev + 108), r0.z - fz * 1550);
-    this.quat.setFromEuler(new THREE.Euler(0.05, r0.heading, 0)); // slight nose-up, down the axis
+    // SOMEWHERE ELSE EVERY TIME. This used to put you 1.55 km out on final for RUNWAYS[0],
+    // squared up with the strip, so every flight opened with the landing you had not made yet
+    // already framed in the windscreen — and the island only ever seen from one bearing. Now
+    // it is a random bearing at a random distance off the coast, nose pointed at the land but
+    // deliberately not down anybody's runway: finding a strip is part of the flight. T still
+    // spawns you on a threshold when you want to practise the landing itself.
+    const a = Math.random() * Math.PI * 2;
+    const dist = 3400 + Math.random() * 2400;          // 3.4-5.8 km out, so the island is a
+    const x = Math.cos(a) * dist, z = Math.sin(a) * dist; // shape on the horizon, not a wall
+    // high enough that the bearing can cross a peak without the spawn being inside it
+    const ground = Math.max(0, this.surfaceAt(x, z).h);
+    this.pos.set(x, ground + 320 + Math.random() * 160, z);
+    // yaw 0 faces -Z, so forward is (-sin y, -cos y) and atan2(x, z) points back at the
+    // origin. Offset by up to +-35 degrees so you arrive at an angle rather than dead-on.
+    const yaw = Math.atan2(x, z) + (Math.random() - 0.5) * 1.2;
+    this.quat.setFromEuler(new THREE.Euler(0.05, yaw, 0)); // slight nose-up
+    const fx = -Math.sin(yaw), fz = -Math.cos(yaw);
     // spawn at SPAWN_SPEED of AIRSPEED — drift with the air mass so the tuned
-    // final-approach feel is identical whatever the wind is doing right now
+    // cruise feel is identical whatever the wind is doing right now
     this.vel.set(this.wind.x + fx * SPAWN_SPEED, 0, this.wind.z + fz * SPAWN_SPEED);
     this.angVel.set(0, 0, 0);
     this.throttle = 0.65;
