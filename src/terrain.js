@@ -367,6 +367,7 @@ export function createTerrain(scene) {
     // they always did. That is the no-holes-ever guarantee, kept without a single bias.
     holeC.set(px, pz);
     let minGap = Infinity;   // nearest hole in ANY finer ring, whichever ring it is in
+    let bound = 0;           // running band boundary; monotonic outward, see below
     for (let li = 0; li < RINGS.length; li++) {
       if (_gap[li] < minGap) minGap = _gap[li];
       // Coverage by the finer layers is their UNION, so the reach that counts is the
@@ -392,13 +393,29 @@ export function createTerrain(scene) {
       // genuinely-tiled discs minus HOLE_MARGIN. The overlap this restores is confined to
       // the outer bands (ring2 + shell beyond 3722 m) where fog is already >45%.
       const covered = Math.min(RINGS[li].radius - RINGS[li].tile * Math.SQRT1_2, minGap);
+      // THE BOUNDARY CAN ONLY EVER MOVE OUTWARD, and forgetting that is what made the whole
+      // terrain flicker while flying forward. `covered` is min(this ring's reach, nearest
+      // missing tile): the reach grows with each ring but the gap SHRINKS, so the sequence is
+      // not monotonic. One missing ring1 tile at 500 m while ring0 is complete to 761 gave
+      // ring1 the band [761, 500] — inverted, drawing nothing — and handed ring2 an inner edge
+      // of 500, so ring0 and ring2 both drew across 500-761 m. Two layers on the same ground
+      // again, and the band walks with the aeroplane, which is why it flickered rather than
+      // sitting still.
+      //
+      // Clamping the running boundary outward is not a fudge, it is the correct statement of
+      // what is covered: coverage is the UNION of the finer layers, so ground already claimed
+      // by ring0 stays claimed even when ring1 has a hole in it. A ring whose gap falls behind
+      // the boundary simply gets an empty band and contributes nothing, and the next layer out
+      // picks up from the boundary — in the worst case that is the shell, which is always
+      // there. No overlap, and still no hole.
+      bound = Math.max(bound, Math.max(0, covered - HOLE_MARGIN));
       // The SAME number is this layer's outer edge and the next one's inner edge, so the two
       // tests are complementary and cannot leave a seam or an overlap between them.
       const shIn = materials[li].userData.shader;
-      if (shIn) shIn.uniforms.uOuterR.value = Math.max(0, covered - HOLE_MARGIN);
+      if (shIn) shIn.uniforms.uOuterR.value = bound;
       const mat = li + 1 < RINGS.length ? materials[li + 1] : shellMaterial;
       const sh = mat.userData.shader;
-      if (sh) sh.uniforms.uHoleR.value = Math.max(0, covered - HOLE_MARGIN);
+      if (sh) sh.uniforms.uHoleR.value = bound;
     }
 
     // evict with hysteresis; dispose geometry, never the shared material
