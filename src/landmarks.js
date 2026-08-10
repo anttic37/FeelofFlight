@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { heightAt, runwayInfluence, RUNWAYS } from './heightcore.js';
+import { tintUnlit } from './atmosphere.js';
 
 // Radio masts on the high ground and a wind farm along a ridge. Both exist for the same
 // reason: an island of bare hills gives you nothing to judge SIZE or DISTANCE against, and a
@@ -243,21 +244,35 @@ export function createLandmarks(scene) {
   // Highest ground on the island, well apart. A guyed mast is a very thin thing, so what
   // sells it at distance is not the shaft but the STACK of bands up it and the light on top.
   const masts = pickSites(3, { minH: 210, maxSlope: 0.34, spacing: 2600 });
-  const MAST_H = 74;
+  // 118 m, up from 74. The mast is the island's yardstick — the one object whose height you
+  // are supposed to read the landscape against — and at 74 m it was shorter than the hills it
+  // stood on, which is the wrong way round for something meant to be seen from the far side of
+  // the island. Everything below scales with it rather than being re-typed.
+  const MAST_H = 118;
   // a mast has a much smaller footprint than a turbine, so a smaller, softer patch
-  group.add(contactPatches(masts, 8, 0.26));
-  place(new THREE.CylinderGeometry(0.5, 1.5, MAST_H, 6), steel, masts, MAST_H / 2);
-  place(new THREE.CylinderGeometry(3.0, 3.6, 1.6, 6), dark, masts, 0.8);          // footing
-  // three collars: the only thing giving a 74 m needle a sense of height from a distance
-  for (const f of [0.34, 0.58, 0.80]) {
-    const rr = 1.5 - 1.0 * f;
-    place(new THREE.CylinderGeometry(rr + 0.55, rr + 0.55, 0.5, 6), dark, masts, MAST_H * f, false);
+  group.add(contactPatches(masts, 10, 0.28));
+  place(new THREE.CylinderGeometry(0.8, 2.4, MAST_H, 6), steel, masts, MAST_H / 2);
+  place(new THREE.CylinderGeometry(4.2, 5.0, 2.0, 6), dark, masts, 1.0);          // footing
+  // four collars now, not three: they are the only thing giving a needle a sense of height
+  // from a distance, and a taller needle needs more of them to read as tall rather than near
+  for (const f of [0.26, 0.46, 0.64, 0.82]) {
+    const rr = 2.4 - 1.6 * f;
+    place(new THREE.CylinderGeometry(rr + 0.7, rr + 0.7, 0.7, 6), dark, masts, MAST_H * f, false);
   }
-  place(new THREE.BoxGeometry(4.6, 0.16, 0.16), steel, masts, MAST_H * 0.86, false);
-  place(new THREE.BoxGeometry(0.16, 0.16, 3.4), steel, masts, MAST_H * 0.92, false);
-  const mastLamps = place(new THREE.SphereGeometry(0.9, 7, 5), lampMat, masts, MAST_H + 1.2, false);
+  place(new THREE.BoxGeometry(7.0, 0.22, 0.22), steel, masts, MAST_H * 0.86, false);
+  place(new THREE.BoxGeometry(0.22, 0.22, 5.2), steel, masts, MAST_H * 0.92, false);
+  // LAMPS ABOVE 1.0 ON PURPOSE. These are MeshBasic, so the number IS the pixel — but the
+  // composer runs a half-float buffer with bloom on it, so anything over 1 blooms instead of
+  // clipping. That is what turns a 1.6 m ball into a light you can see from the next valley,
+  // and it is why the red is pushed to 2.6 rather than the sphere being made bigger still.
+  const mastLamps = place(new THREE.SphereGeometry(1.6, 8, 6), lampMat, masts, MAST_H + 1.8, false);
+  // a second pair partway down, the way a tall mast is actually lit
+  const midLamps = place(new THREE.SphereGeometry(1.15, 8, 6), lampMat, masts, MAST_H * 0.55, false);
   const _c = new THREE.Color();
-  for (let i = 0; i < masts.length; i++) mastLamps.setColorAt(i, _c.setRGB(1, 0.23, 0.18));
+  for (let i = 0; i < masts.length; i++) {
+    mastLamps.setColorAt(i, _c.setRGB(2.6, 0.5, 0.38));
+    midLamps.setColorAt(i, _c.setRGB(1.5, 0.3, 0.23));
+  }
 
   // ── WIND FARMS: A SHORT LINE ON EACH RIDGE ──────────────────────────────
   //
@@ -269,20 +284,26 @@ export function createLandmarks(scene) {
   // Seeds skip the top of the candidate list so the farms take the tier below the masts
   // rather than fighting them for the same summits, and must themselves be on a crest or the
   // row starts on a shoulder and walks downhill from there.
-  const PER_SIDE = 2;          // 2 either side of the seed = up to 5 in a row
-  const MIN_ROW = 3;           // a row of two is not a wind farm, it is two turbines
-  const seedPool = pickSites(30, { minH: 150, maxSlope: 0.26, spacing: 1900, skip: 14 });
+  // LONGER ROWS ON PURPOSE, reversing the earlier call. The note above worried that nine in a
+  // row "reads as a fence" — but a fence is what a ridge-top wind farm looks like from the
+  // air, and that is the thing being asked for: a LINE you can follow along the crest and use
+  // to read where the ridge goes. The short rows read as three unrelated clumps instead.
+  // 5 either side, and a tighter 520 m spacing so a row stays on one crest instead of
+  // striding off the end of it.
+  const PER_SIDE = 5;          // up to 11 in a row
+  const MIN_ROW = 4;
+  const seedPool = pickSites(40, { minH: 150, maxSlope: 0.26, spacing: 1700, skip: 12 });
   const turbines = [];
   const farms = [];
   for (const s of seedPool) {
-    if (farms.length >= 3) break;
+    if (farms.length >= 4) break;
     if (!onCrest(s.x, s.z, s.h, 6)) continue;
     // do not start a row on top of one already placed
     if (turbines.some(t => Math.hypot(t.x - s.x, t.z - s.z) < 1500)) continue;
     // maxSlope 0.44, not the 0.26 the seed was chosen with: a crest has steep FLANKS by
     // definition, and measuring slope over +/-26 m along a ridge picks that up. Holding the
     // walk to runway-grade ground stopped it dead after two turbines.
-    const row = walkRidge(s, PER_SIDE, 620, 120, 0.44, turbines);
+    const row = walkRidge(s, PER_SIDE, 520, 120, 0.44, turbines);
     if (row.length < MIN_ROW) continue;
     farms.push(row);
     turbines.push(...row);
@@ -322,6 +343,129 @@ export function createLandmarks(scene) {
     speed: 0.85 + (i % 3) * 0.11, phase: i * 1.9,
   }));
 
+  // ── POWER GRID ──────────────────────────────────────────────────────────
+  //
+  // The turbines, the masts and the strips were three unrelated things that happened to be on
+  // the same island. Wiring them together is what turns them into infrastructure: a line of
+  // pylons walking over a saddle tells you the farm on that ridge FEEDS the airfield, and it
+  // gives the eye something man-made to follow across ground that is otherwise all hillside.
+  // It also does the same job as the masts do for height — a pylon every 210 m is a ruler
+  // lying across the terrain.
+  //
+  // Routes are straight. A real grid takes the easy line, but a straight run between two known
+  // points is legible from the air in a way a wandering one is not, and it is the readability
+  // that is worth having here.
+  // SPAN 120, not 210, and that is the clearance fix rather than taller towers. A conductor
+  // only clears ground its SUPPORTS clear: with pylons 210 m apart a straight run over ridged
+  // terrain buries itself in every hump between them, and the check that catches it then
+  // refuses most routes (5 legs -> 2). Standing them closer makes the wire follow the profile,
+  // because each pylon sits on whatever the ground does there. Costs instances in a single
+  // instanced draw, which is the cheapest thing in this file.
+  const PYL_H = 30, SPAN = 120, WIRE_CLEAR = 3;
+  const pylons = [];
+  const wireVerts = [];
+  // where a conductor attaches on each kind of node
+  const topOf = (n) => n.h + n.top;
+  function runLine(a, b) {
+    const dx = b.x - a.x, dz = b.z - a.z;
+    const L = Math.hypot(dx, dz);
+    if (L < 300 || L > 6000) return false;
+    const ux = dx / L, uz = dz / L;
+    // crossarms sit ACROSS the run: place() rotates about Y, and a Y-rotation by atan2(ux,uz)
+    // sends local +X to (uz, -ux), which is the perpendicular we want.
+    const yaw = Math.atan2(ux, uz);
+    const n = Math.max(2, Math.round(L / SPAN));
+    const pts = [{ x: a.x, z: a.z, y: topOf(a) }];
+    const fresh = [];
+    for (let i = 1; i < n; i++) {
+      const t = i / n, x = a.x + dx * t, z = a.z + dz * t;
+      const h = heightAt(x, z);
+      // A PYLON IN THE SEA IS WORSE THAN NO LINE AT ALL, and a route that clips a bay would
+      // plant several. Abandon the whole run rather than place them: there is always another
+      // pairing, and a grid with one missing leg still reads as a grid.
+      if (h < 4) return false;
+      // never inside the approach to a strip — runwayInfluence is what the rest of this file
+      // uses to keep tall things away from short final
+      if (runwayInfluence(x, z) > 0.02) return false;
+      fresh.push({ x, z, h, yaw });
+      pts.push({ x, z, y: h + PYL_H * 0.9 });
+    }
+    pts.push({ x: b.x, z: b.z, y: topOf(b) });
+
+    // A WIRE IS NOT CHECKED BY CHECKING ITS POLES. Terrain was only sampled AT each pylon, so
+    // any rise BETWEEN two of them was invisible and the conductor ran straight through the
+    // hill: 80 of 560 wire points were under the ground the first time this ran. Walk each
+    // span and require real clearance, sag included; if a span cannot make it, drop the whole
+    // route rather than leave one leg buried. There is always another pairing.
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p = pts[i], q = pts[i + 1];
+      const sag = Math.min(7, Math.hypot(q.x - p.x, q.z - p.z) * 0.04);
+      for (let s = 1; s < 8; s++) {
+        const t = s / 8;
+        const wy = p.y + (q.y - p.y) * t - sag * Math.sin(Math.PI * t);
+        if (wy - heightAt(p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t) < WIRE_CLEAR) return false;
+      }
+    }
+
+    pylons.push(...fresh);
+    // two conductors, one either side, sagging between supports
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p = pts[i], q = pts[i + 1];
+      const sag = Math.min(7, Math.hypot(q.x - p.x, q.z - p.z) * 0.04);
+      for (const off of [-2.8, 2.8]) {
+        const at = (t) => [
+          p.x + (q.x - p.x) * t + uz * off,
+          p.y + (q.y - p.y) * t - sag * Math.sin(Math.PI * t),
+          p.z + (q.z - p.z) * t - ux * off,
+        ];
+        for (let s = 0; s < 5; s++) { wireVerts.push(...at(s / 5), ...at((s + 1) / 5)); }
+      }
+    }
+    return true;
+  }
+
+  // Nodes: either end of each turbine row, every mast, every strip. Pairings are TRIED IN
+  // ORDER OF DISTANCE rather than fixed to the nearest, because a route can now be refused
+  // (water, an approach, or terrain it cannot clear) and a grid that gives up on the first
+  // refusal ends up with legs missing for no reason a viewer could infer. Nearest first still
+  // decides what it looks like; the rest are only there so a leg exists at all.
+  const byDist = (from, list) => list.slice().sort((a, b) =>
+    Math.hypot(a.x - from.x, a.z - from.z) - Math.hypot(b.x - from.x, b.z - from.z));
+  const mastNodes = masts.map(m => ({ x: m.x, z: m.z, h: m.h, top: MAST_H * 0.42 }));
+  const stripNodes = RUNWAYS.map(r => ({ x: r.x, z: r.z, h: Math.max(0, r.elev), top: 14 }));
+  let legs = 0;
+  for (const row of farms) {
+    const ends = [row[0], row[row.length - 1]].map(t => ({ x: t.x, z: t.z, h: t.h, top: TOW_H * 0.5 }));
+    let done = false;
+    for (const m of byDist(ends[0], mastNodes)) {
+      for (const end of byDist(m, ends)) { if (runLine(end, m)) { legs++; done = true; break; } }
+      if (done) break;
+    }
+  }
+  for (const m of mastNodes) {
+    for (const s of byDist(m, stripNodes)) if (runLine(m, s)) { legs++; break; }
+  }
+  if (pylons.length) {
+    const pylonGeo = mergeGeometries([
+      new THREE.CylinderGeometry(0.30, 1.05, PYL_H, 4).translate(0, PYL_H / 2, 0),
+      new THREE.BoxGeometry(7.0, 0.34, 0.34).translate(0, PYL_H * 0.76, 0),
+      new THREE.BoxGeometry(5.0, 0.30, 0.30).translate(0, PYL_H * 0.90, 0),
+      new THREE.CylinderGeometry(1.5, 1.9, 0.8, 4).translate(0, 0.4, 0),
+    ]);
+    group.add(contactPatches(pylons, 6, 0.22));
+    place(pylonGeo, steel, pylons, 0);
+  }
+  if (wireVerts.length) {
+    const wireGeo = new THREE.BufferGeometry();
+    wireGeo.setAttribute('position', new THREE.Float32BufferAttribute(wireVerts, 3));
+    // tintUnlit, because LineBasicMaterial takes no light: without it the wires would hold
+    // their midday value through dusk and glow faintly against a dark hillside at night.
+    const wireMat = tintUnlit(new THREE.LineBasicMaterial({ color: 0x353a42 }));
+    const wires = new THREE.LineSegments(wireGeo, wireMat);
+    wires.frustumCulled = false;   // one object spanning the island; its bounds are the island
+    group.add(wires);
+  }
+
   function update(time) {
     for (let i = 0; i < rotorAt.length; i++) {
       const t = rotorAt[i];
@@ -334,11 +478,13 @@ export function createLandmarks(scene) {
     }
     rotors.instanceMatrix.needsUpdate = true;
     // mast lamps: slow synchronised red night-warning blink, the aviation standard
-    const on = (time % 3) < 1.1 ? 1 : 0.12;
+    const on = (time % 3) < 1.3 ? 2.6 : 0.30;
     for (let i = 0; i < masts.length; i++) {
-      mastLamps.setColorAt(i, _c.setRGB(on, on * 0.23, on * 0.18));
+      mastLamps.setColorAt(i, _c.setRGB(on, on * 0.19, on * 0.15));
+      midLamps.setColorAt(i, _c.setRGB(on * 0.58, on * 0.11, on * 0.09));
     }
     if (mastLamps.instanceColor) mastLamps.instanceColor.needsUpdate = true;
+    if (midLamps.instanceColor) midLamps.instanceColor.needsUpdate = true;
   }
 
   // Position them once up front: the rotor matrices are only written by update(), so without
@@ -347,5 +493,6 @@ export function createLandmarks(scene) {
   // frame rendered before the sim starts.
   update(0);
 
-  return { update, mastCount: masts.length, turbineCount: turbines.length };
+  return { update, mastCount: masts.length, turbineCount: turbines.length,
+    pylonCount: pylons.length, gridLegs: legs, farmCount: farms.length };
 }

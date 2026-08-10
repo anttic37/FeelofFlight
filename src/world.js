@@ -314,6 +314,6 @@ export function createWorld(scene) {
   // internal
   return {
     update, terrain, scatter, water, shoreRibbon,
-    skyMat: sky.material, sun, hemi, sunSpr,
+    skyMat: sky.material, sun, hemi, sunSpr, landmarks,
   };
 }
