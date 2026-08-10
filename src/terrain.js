@@ -137,6 +137,21 @@ export function createTerrain(scene) {
   // It is here because the cut is the one change that could produce a HOLE rather than an
   // overlap, and a hole is far worse than the artifact it fixes: one reload tells you which
   // of the two you are looking at without needing a build.
+  // EVERY LAYER GETS AN INNER *AND* AN OUTER EDGE, so each one owns an annulus and no two of
+  // them are ever drawn on the same ground. Cutting only the inner edge was not enough and the
+  // reason is worth keeping: ring1's hole was 641 m, but ring0's TILES run out to ~1400 m,
+  // because a ring's coverage is a union of squares and the hole is a circle inside it. So
+  // from 641 m out to wherever ring0's tiles happened to end, both layers drew the identical
+  // surface — measured 0.014, 0.005, 0.007 and 0.000 m apart. That is z-fighting by
+  // construction, and it is what the flicker was.
+  //
+  // polygonOffset cannot fix it either, which is why it is not the answer here: the two
+  // surfaces do not merely coincide, they CROSS. ring1's 15 m chords cut through ring0's 5 m
+  // ones over a ridge, so ring1 is genuinely above by more than any constant bias.
+  //
+  // The boundaries share a single number — layer N's outer radius IS layer N+1's inner radius
+  // — so the tests are complementary (< R against >= R) and can leave neither an overlap nor a
+  // seam. It is also less overdraw than before: each layer rasterises a band, not a disc.
   const HOLE_ON = new URLSearchParams(location.search).get('terrainhole') !== '0';
   const holeC = new THREE.Vector2(0, 0);
   function cutHole(mat) {
@@ -145,17 +160,23 @@ export function createTerrain(scene) {
     mat.onBeforeCompile = (shader, renderer) => {
       if (inner) inner(shader, renderer);
       shader.uniforms.uHoleC = { value: holeC };
-      shader.uniforms.uHoleR = { value: 0 };
+      shader.uniforms.uHoleR = { value: 0 };   // inner edge: nearer than this, someone finer draws
+      shader.uniforms.uOuterR = { value: 0 };  // outer edge: 0 means "to the horizon" (the shell)
       shader.fragmentShader = shader.fragmentShader
-        .replace('#include <common>', '#include <common>\nuniform vec2 uHoleC;\nuniform float uHoleR;')
+        .replace('#include <common>',
+          '#include <common>\nuniform vec2 uHoleC;\nuniform float uHoleR;\nuniform float uOuterR;')
         // vGWPos is groundfx's world-position varying; discard before anything is computed
         .replace('#include <clipping_planes_fragment>',
-          'if (uHoleR > 0.0 && distance(vGWPos.xz, uHoleC) < uHoleR) discard;\n#include <clipping_planes_fragment>');
+          'float _hd = distance(vGWPos.xz, uHoleC);\n'
+          + 'if (_hd < uHoleR) discard;\n'
+          + 'if (uOuterR > 0.0 && _hd >= uOuterR) discard;\n'
+          + '#include <clipping_planes_fragment>');
       mat.userData.shader = shader;
     };
   }
-  // ring0 is never cut — it is the finest layer and always the truth
-  cutHole(materials[1]); cutHole(materials[2]); cutHole(shellMaterial);
+  // ring0 is cut too now — not on the inside, where it is always the truth, but on the OUTSIDE,
+  // where its tiles run past the radius ring1 has taken over.
+  cutHole(materials[0]); cutHole(materials[1]); cutHole(materials[2]); cutHole(shellMaterial);
 
   // There is no y-sink any more. It was a second mechanism doing the envelope's job less
   // well: it moved LAND down, so it dragged every coarse coastline inland by the sink over
@@ -371,6 +392,10 @@ export function createTerrain(scene) {
       // genuinely-tiled discs minus HOLE_MARGIN. The overlap this restores is confined to
       // the outer bands (ring2 + shell beyond 3722 m) where fog is already >45%.
       const covered = Math.min(RINGS[li].radius - RINGS[li].tile * Math.SQRT1_2, minGap);
+      // The SAME number is this layer's outer edge and the next one's inner edge, so the two
+      // tests are complementary and cannot leave a seam or an overlap between them.
+      const shIn = materials[li].userData.shader;
+      if (shIn) shIn.uniforms.uOuterR.value = Math.max(0, covered - HOLE_MARGIN);
       const mat = li + 1 < RINGS.length ? materials[li + 1] : shellMaterial;
       const sh = mat.userData.shader;
       if (sh) sh.uniforms.uHoleR.value = Math.max(0, covered - HOLE_MARGIN);
