@@ -27,6 +27,26 @@ import { injectGroundFX } from './groundfx.js';
 // covers the residual concave overshoot between samples; per-ring
 // polygonOffset settles any remaining same-pixel depth ties in favor of the
 // finer ring. Sinks are render-only (physics is analytic).
+// RADII, and why these and not something cleverer. A LOD pop is the height the ground jumps
+// when a finer tile replaces a coarser one, and what the eye sees is that height divided by
+// the distance it happens at. Measured on the real terrain, per boundary, in pixels at this
+// FOV: 4.7 / 3.1 / 1.8 mean, 15.7 / 14.2 / 5.5 worst. Two things were tried against it before
+// settling on moving the boundaries:
+//   - FINER CELLS on the coarse rings (15->10, 40->25) tripled the triangle count and changed
+//     the pop by 0.02 px. The jump is not chord error, so resolution cannot buy it.
+//   - A GENTLER ENVELOPE (minS 7.5->4, 20->12) halved the pop, and is not safe: the envelope
+//     is already the marginal term. At minS 7.5 ring1 rises up to 0.70 m above ring0 against
+//     a 0.5 m bias; at 4.0 it rises 1.60 m. That is the serrated ring-overlap this file spent
+//     a long time eliminating, traded back in for smoothness.
+//   - MOVING THE BOUNDARIES OUT (1500 / 4000 / 6800) divides the same jump by a bigger
+//     distance and touches no separation term, so it is the safe lever — but it is not free
+//     and the bill is not triangles, it is STREAMING. It raises the wanted tile count from
+//     ~58 to 118: cold fill went from about 2 s to 12.4 s, and at 95 m/s cruise the queue sat
+//     at 80-89 jobs and never drained, with only ~40 of 118 tiles ever built. The aeroplane
+//     would spend its life over shell instead of tiles, which is a much worse artifact than
+//     the pop it was buying. One bake worker at MAX_IN_FLIGHT 2 is the binding constraint, so
+//     any future move outward has to come after more bake throughput, not before it.
+// Hence: unchanged. The pop is real but every lever available today costs more than it buys.
 const RINGS = [
   { lod: 0, tile: 480,  res: 96, radius: 1100, skirt: 5,  bias: 0,    minS: 0 },
   { lod: 1, tile: 960,  res: 64, radius: 3000, skirt: 8,  bias: -0.5, minS: 7.5 },
