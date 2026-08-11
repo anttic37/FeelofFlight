@@ -15,6 +15,7 @@ import { createRunways } from './runways.js';
 import { createWater } from './water.js';
 import { createLandmarks } from './landmarks.js';
 import { createShoreRibbon } from './shoreribbon.js';
+import { createBirds } from './birds.js';
 
 // Scene construction for the procedural island: sky/sun/lights, the static
 // terrain mesh, vegetation scatter, runways, water. Clouds are not scene
@@ -316,6 +317,9 @@ export function createWorld(scene) {
   const scatter = SHOW_PROPS
     ? createScatter(scene)
     : { update() {}, stats: () => ({ off: true }) };
+  // ...and the OTHER empty band. The near-field props above fill the ground rush;
+  // birds fill the 300 m to 1 km middle distance, which had nothing in it at all.
+  const birds = createBirds(scene);
 
   // keep the sun (and its shadow box) and sky centered on the plane
   function update(planePos, time = 0) {
@@ -347,6 +351,7 @@ export function createWorld(scene) {
     sky.position.set(planePos.x, 0, planePos.z);
     terrain.update(planePos);
     scatter.update(planePos, time);
+    birds.update(planePos, time);
     runways.update(time);
     water.update(time);
     landmarks.update(time);
@@ -355,7 +360,7 @@ export function createWorld(scene) {
   // the atmosphere handles go out so daynight.js can drive them; everything else here is
   // internal
   return {
-    update, terrain, scatter, water, shoreRibbon,
+    update, terrain, scatter, water, shoreRibbon, birds,
     skyMat: sky.material, sun, hemi, sunSpr, landmarks,
   };
 }
