@@ -5,6 +5,10 @@ import { patchAerialPerspective, SUN_DIR, buildSkyEnvironment } from './atmosphe
 // inside a factory called further down — a material compiled before this point
 // would bake in the stock flat-colour fog and silently miss the effect.
 patchAerialPerspective();
+import { patchCloudShadow, attachCloudShadow, syncCloudShadow } from './cloudshadow.js';
+// Same deal, and it has to run AFTER the atmosphere patch: both wrap
+// Material.prototype.onBeforeCompile, and this one chains what it finds.
+patchCloudShadow();
 import { createWorld, heightAt, surfaceAt } from './world.js';
 import { createDayNight } from './daynight.js';
 import { initGroundFX } from './groundfx.js';
@@ -238,6 +242,9 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
       // one handle whichever system is running — skyclouds sets window.__sc from inside
       // itself, so without this the old clouds are unreachable from the console
       window.__clouds = v;
+      // The ground has been unshadowed until now — the weather map only exists once
+      // the cloud system does. skyclouds has no such map, so this is a no-op there.
+      if (!attachCloudShadow(v)) console.log('[flighfeel] no weather map: cloud shadows off');
       v.setSize(window.innerWidth, window.innerHeight);
       // Both systems copy the sun at construction rather than sharing the live vector, so
       // either way daynight has to push to them — attachClouds handles whichever this is.
@@ -317,6 +324,10 @@ renderer.setAnimationLoop(() => {
   // the sky holds still with everything else when paused or in the free camera — a pause
   // you can watch the sun set through is not a pause
   if (!frozen) dayNight.update(dt);
+  // Two multiplies. The cloud-width slider rewrites the tile size and the island pin
+  // live, and shadows that lag those by a frame land in a different place from the
+  // clouds casting them, which is the one failure mode that reads as a bug.
+  if (volClouds) syncCloudShadow(volClouds);
   const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake, overdrive: input.overdrive };
   const steps = 2;
   if (!frozen) for (let i = 0; i < steps && !phys.crashed; i++) phys.update(dt / steps, controls);
