@@ -98,6 +98,9 @@ export const CLOUD_SHADOW = {
   // keeps us out of a redeclaration fight with whatever water and groundfx declare
   // in the fragment shaders they inject.
   uCsSunDir: ATMO.uAtmSunDir,
+  // camera.matrixWorld, i.e. the inverse view matrix. Recovers world space from
+  // vViewPosition in the fragment, which is how this avoids owning any varying.
+  uCsViewInv: { value: new THREE.Matrix4() },
 };
 
 // The strength we ramp up to once the clouds land. Kept apart from the uniform so
@@ -123,45 +126,42 @@ export function patchCloudShadow() {
   // there is no second list of merge sites to keep in sync.
   Object.assign(ATMO, CLOUD_SHADOW);
 
-  // WORLD POSITION, in both stages. `common` is included by every built-in
-  // material in BOTH the vertex and the fragment shader, so declaring the varying
-  // there is the one place it cannot go out of sync. three's own worldpos_vertex
-  // would have been the obvious home for the write, but its body is fenced behind
-  // USE_ENVMAP / USE_SHADOWMAP / DISTANCE — so a material that receives no shadow
-  // would silently get no world position, and this is exactly the code that has to
-  // work on materials three thinks need no world space at all.
-  THREE.ShaderChunk.common += '\nvarying vec3 vFfWorld;';
-
-  // Written in project_vertex because that is where `transformed` is still the
-  // object-space vertex and the instancing/batching matrices are in scope. Appended
-  // rather than replaced, and it MIRRORS project_vertex's own branches — an
-  // InstancedMesh (all of scatter, the turbines, the pylons) would otherwise light
-  // as though every instance sat at the origin.
-  THREE.ShaderChunk.project_vertex += `
-vec4 ffWorld = vec4( transformed, 1.0 );
-#ifdef USE_BATCHING
-  ffWorld = batchingMatrix * ffWorld;
-#endif
-#ifdef USE_INSTANCING
-  ffWorld = instanceMatrix * ffWorld;
-#endif
-vFfWorld = ( modelMatrix * ffWorld ).xyz;`;
-
+  // WORLD POSITION WITHOUT TOUCHING THE VERTEX STAGE AT ALL.
+  //
+  // The obvious route is a varying: declare it in `common` (the one chunk every
+  // material includes in both stages) and write it in project_vertex. That breaks
+  // the game. `common` is not ours — @takram/three-clouds does
+  // `#include <common>` in its own shaders, postprocessing compiles those as
+  // GLSL ES 3.00, and `varying` is a reserved word there, so every cloud shader
+  // fails to compile and the sky empties out. Compiled standalone to confirm:
+  // "ERROR: 0:83: 'varying' : Illegal use of reserved word". project_vertex is no
+  // better as a host — points, cube, backgroundCube and shadow all include it
+  // WITHOUT uv_pars_vertex, so any pars chunk paired with it leaves those four
+  // writing to an undeclared name.
+  //
+  // So: no varying, no vertex-side patch, nothing that can reach a shader we do not
+  // own. This code only ever runs inside lights_fragment_begin, and that chunk opens
+  // with `vec3 geometryPosition = - vViewPosition;` — so vViewPosition is guaranteed
+  // in scope wherever we are, by the same construction that lets three light the
+  // surface at all. One mat4 multiply per fragment recovers world space from it.
+  //
   // uCsSunDir is ATMO's live sun vector, pointing FROM the surface TOWARD the sun.
   THREE.ShaderChunk.lights_pars_begin += `
 uniform sampler2D uCsMap;
 uniform vec2 uCsOrigin;
 uniform float uCsTileM, uCsBase, uCsBar, uCsSoft, uCsStrength;
 uniform vec3 uCsSunDir;
+uniform mat4 uCsViewInv;
 
 float ffCloudShadow() {
   if ( uCsStrength <= 0.0 ) return 1.0;
   // A sun on the horizon casts a shadow of unbounded length across the map, which
   // is meaningless and samples wildly; let the day-night dimming carry dusk.
   if ( uCsSunDir.y < 0.12 ) return 1.0;
-  float dy = uCsBase - vFfWorld.y;
+  vec3 world = ( uCsViewInv * vec4( - vViewPosition, 1.0 ) ).xyz;
+  float dy = uCsBase - world.y;
   if ( dy <= 0.0 ) return 1.0;                 // at or above cloud base: nothing overhead
-  vec3 hit = vFfWorld + uCsSunDir * ( dy / uCsSunDir.y );
+  vec3 hit = world + uCsSunDir * ( dy / uCsSunDir.y );
   vec2 uv = uCsOrigin + vec2( ${AXIS.u.toFixed(1)} * hit.x, ${AXIS.v.toFixed(1)} * hit.z ) / uCsTileM;
   float cover = texture2D( uCsMap, uv ).r;
   return 1.0 - uCsStrength * smoothstep( uCsBar - uCsSoft, uCsBar + uCsSoft, cover );
@@ -199,6 +199,13 @@ export function attachCloudShadow(vc) {
   CLOUD_SHADOW.uCsStrength.value = tune.strength;
   syncCloudShadow(vc);
   return true;
+}
+
+// The inverse view matrix, which has to be the one the frame is about to be drawn
+// with — copying it before the camera update leaves the shadows a frame behind the
+// view, which shows up as them sliding whenever you turn.
+export function setCloudShadowView(camera) {
+  CLOUD_SHADOW.uCsViewInv.value.copy(camera.matrixWorld);
 }
 
 // Re-read tile size and pin from the live cloud object. Cheap enough to call every

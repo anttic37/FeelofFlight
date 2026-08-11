@@ -5,7 +5,7 @@ import { patchAerialPerspective, SUN_DIR, buildSkyEnvironment } from './atmosphe
 // inside a factory called further down — a material compiled before this point
 // would bake in the stock flat-colour fog and silently miss the effect.
 patchAerialPerspective();
-import { patchCloudShadow, attachCloudShadow, syncCloudShadow } from './cloudshadow.js';
+import { patchCloudShadow, attachCloudShadow, syncCloudShadow, setCloudShadowView } from './cloudshadow.js';
 // Same deal, and it has to run AFTER the atmosphere patch: both wrap
 // Material.prototype.onBeforeCompile, and this one chains what it finds.
 patchCloudShadow();
@@ -263,8 +263,15 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
     })
     .catch(e => console.error('[flighfeel] sky clouds failed:', e));
 }
-const draw = () => (volClouds ? volClouds.render()
-  : composer ? composer.render() : renderer.render(scene, camera));
+const draw = () => {
+  // Cloud shadows recover world position from vViewPosition, so they need the view
+  // matrix of the frame ABOUT TO BE DRAWN — hence here, past every camera update,
+  // rather than back with the rest of the per-frame bookkeeping.
+  camera.updateMatrixWorld();
+  setCloudShadowView(camera);
+  return volClouds ? volClouds.render()
+    : composer ? composer.render() : renderer.render(scene, camera);
+};
 
 window.addEventListener('resize', () => {
   camera.aspect = window.innerWidth / window.innerHeight;
