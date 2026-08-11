@@ -72,6 +72,11 @@ window.__dn = dayNight;
 const plane = buildPlane();
 scene.add(plane.group);
 
+// Half-width of whatever is dragging on the ground, taken from the same contact points the
+// wreck physics uses, so the dust burst and the collision are sized off one measurement
+// rather than two guesses. Falls back to the belly if the contacts are not built yet.
+const wreckRadius = (c) => (c ? Math.max(0.5, (c[3][0] - c[2][0]) / 2) : 0.68);
+
 const phys = new FlightModel(surfaceAt);
 // Crashes go to a real rigid-body solver; ?physics=builtin keeps the hand-rolled one. The
 // flight model is not touched either way — this only takes over once the airframe is broken.
@@ -336,7 +341,10 @@ renderer.setAnimationLoop(() => {
     const sink = phys.justTouchedDown;
     phys.justTouchedDown = null;
     sound.touchdown(sink);
-    fx.touchdown(phys.pos, phys.onRunwaySurface ? 'runway' : 'grass', sink);
+    // sized by what touches: the main gear, whose tyres measure 1.65 m either side of the
+    // centreline — or the belly at 0.68 m if the wheels are still up
+    fx.touchdown(phys.pos, phys.onRunwaySurface ? 'runway' : 'grass', sink,
+      phys.gearTransit > 0.5 ? 1.65 : 0.68);
     hud.msg(sink < 1.8 ? 'BUTTER.' : 'TOUCHDOWN', 1800);
   }
   if (frozen && phys.crashed) {
@@ -359,7 +367,10 @@ renderer.setAnimationLoop(() => {
     const reason = typeof phys.crashed === 'string' ? phys.crashed.toUpperCase() : '';
     hud.msg(reason ? `CRASHED — ${reason} · R TO RESTART` : 'CRASHED · R TO RESTART', 8000);
     const sc = surfaceAt(phys.pos.x, phys.pos.z);
-    fx.touchdown(phys.pos, sc.type === 'water' ? 'water' : sc.type === 'runway' ? 'runway' : 'grass', 9);
+    // the wreck's OWN half-width, measured a line ago — with the wings sheared this is about
+    // 0.68 m, not the 5.35 m the intact aeroplane spans
+    fx.touchdown(phys.pos, sc.type === 'water' ? 'water' : sc.type === 'runway' ? 'runway' : 'grass', 9,
+      wreckRadius(phys.wreckContacts));
   } else if (phys.crashed) {
     phys.wreckUpdate(dt);
     if (phys.justWreckHit) {
@@ -367,7 +378,8 @@ renderer.setAnimationLoop(() => {
       phys.justWreckHit = 0;
       sound.touchdown(Math.min(6, thud));
       const sc = surfaceAt(phys.pos.x, phys.pos.z);
-      fx.touchdown(phys.pos, sc.type === 'water' ? 'water' : sc.type === 'runway' ? 'runway' : 'grass', thud);
+      fx.touchdown(phys.pos, sc.type === 'water' ? 'water' : sc.type === 'runway' ? 'runway' : 'grass', thud,
+        wreckRadius(phys.wreckContacts));
     }
   }
 
@@ -384,7 +396,8 @@ renderer.setAnimationLoop(() => {
       wreckage.update(dt);
       for (const h of wreckage.hits) {
         sound.touchdown(Math.min(3, h.mag));
-        fx.touchdown(h.pos, h.type, h.mag);
+        // a sheared-off wing or tailplane landing: a small piece, so a small puff
+        fx.touchdown(h.pos, h.type, h.mag, 0.9);
       }
     }
   }

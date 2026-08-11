@@ -139,19 +139,34 @@ export function createFX(scene) {
   // hole in the middle is what lets you see the wreck. So: spawn on a ring that starts
   // outside the wingspan, keep it at ground level rather than at the fuselage, and throw it
   // outward rather than up.
-  function touchdown(pos, groundType, sink) {
+  // THE BURST IS SIZED BY WHAT ACTUALLY TOUCHES THE GROUND. `rad` is the half-width of the
+  // contact, in metres, and every term below is derived from it.
+  //
+  // It used to be a fixed 6-11 m ring with puffs up to 6 m across, on the reasoning that it
+  // should clear "the 10.7 m wingspan". Two things were wrong with that. The wingspan is not
+  // what touches: on a landing it is the main gear, whose tyres are 1.65 m either side of the
+  // centreline, so the dust appeared in a ring four to seven times wider than the thing making
+  // it. And in a CRASH the wings are already gone — wreckage.js shears them at 15 m/s — so the
+  // body throwing the dust is 0.68 m wide and the ring was up to sixteen times too big. Either
+  // way the effect had no visible relationship to the aeroplane, which is exactly how it read.
+  //
+  // The small constants that survive are there so a narrow contact still makes a plume rather
+  // than a point: dust spreads wider than the object dragging through it, just not by 16x.
+  function touchdown(pos, groundType, sink, rad = 1.6) {
     const k = Math.min(1, Math.max(0, sink) / 6); // 6 m/s sink = max drama
     const color = groundType === 'grass' ? COL_DUST : groundType === 'water' ? COL_SPRAY : COL_SMOKE;
-    const n = Math.round(10 + k * 8);
+    // a wider contact disturbs more ground, so it throws more puffs — but not many more
+    const n = Math.round(6 + k * 5 + Math.min(7, rad * 1.3));
+    const s0 = 0.35 + rad * 0.30;                  // puff diameter at birth, from the contact
     for (let i = 0; i < n; i++) {
       // evenly spaced around the ring, jittered — clumps left bald patches on one side
       const a = (i / n) * Math.PI * 2 + Math.random() * 0.6;
-      const r = 6 + Math.random() * 5;              // outside the 10.7 m span's half-width
-      const out = 3 + Math.random() * 4;
+      const r = rad * 0.55 + Math.random() * (rad * 0.9 + 1.1);
+      const out = (1.4 + Math.random() * 1.8) * (0.55 + rad * 0.2);
       spawn(
         pos.x + Math.cos(a) * r, pos.y - 1.2 + Math.random() * 0.6, pos.z + Math.sin(a) * r,
         color, 0.42 + k * 0.18,
-        (1.5 + Math.random() * 0.5) * (1 + k * 0.5), (4 + Math.random()) * (1 + k * 0.5),
+        s0 * (0.85 + Math.random() * 0.3), s0 * (2.6 + k * 1.6),
         1 + Math.random() * 0.4,
         Math.cos(a) * out, 0.5 + Math.random() * 1.2, Math.sin(a) * out,
       );
