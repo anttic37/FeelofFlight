@@ -18,7 +18,6 @@ import { FlightModel } from './physics.js';
 import { measureContacts } from './airframe.js';
 import { ChaseCam } from './camera.js';
 import { WingTrails } from './trails.js';
-import { createAirflow } from './airflow.js';
 import { createFX } from './fx.js';
 import { createWreckage } from './wreckage.js';
 import { SoundFX } from './sound.js';
@@ -100,7 +99,6 @@ if (new URLSearchParams(location.search).get('physics') !== 'builtin') {
 const input = new Input();
 const chase = new ChaseCam(camera, heightAt);
 const trails = new WingTrails(scene, plane.tipL, plane.tipR);
-const airflow = createAirflow(scene);
 const fx = createFX(scene);
 const wreckage = createWreckage(scene, surfaceAt, heightAt);
 const sound = new SoundFX();
@@ -285,7 +283,7 @@ window.addEventListener('resize', () => {
 
 // debug / test hook — enough surface to step & render headlessly in tests
 window.__ff = {
-  phys, input, chase, reset, fx, trails, airflow, hud, sound, scene, camera, renderer, plane, world, wreckage,
+  phys, input, chase, reset, fx, trails, hud, sound, scene, camera, renderer, plane, world, wreckage,
   heightAt, surfaceAt, RUNWAYS, seed: terrainSeed,
   step(dt) {
     input.update(dt);
@@ -306,7 +304,6 @@ window.__ff = {
     if (wreckage.active) wreckage.update(dt);
     chase.update(dt, phys, input);
     trails.update(dt, phys);
-    airflow.update(dt, phys);
     fx.update(dt, phys);
     world.update(chase.free ? chase.camera.position : phys.pos, simTime += dt);
     hud.update(phys, input, dayNight.state);
@@ -425,7 +422,6 @@ renderer.setAnimationLoop(() => {
   chase.update(dt, phys, input);
   if (!frozen) {
     trails.update(dt, phys);
-    airflow.update(dt, phys);
     fx.update(dt, phys);
   }
   // stream terrain around the CAMERA in free flight, or you fly a few km out and the
