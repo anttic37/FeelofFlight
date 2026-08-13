@@ -26,15 +26,18 @@ import { createBirds } from './birds.js';
 
 export { heightAt, surfaceAt } from './heightcore.js';
 
-// SUN SHADOW EXTENT. Overridable so the two can be A/B'd against frame time
-// without a rebuild — ?shadowhalf=160&shadowres=2048 restores the old box exactly.
-const _SP = new URLSearchParams(location.search);
-const SHADOW_HALF = +(_SP.get('shadowhalf')) || 420;
-const SHADOW_RES = +(_SP.get('shadowres')) || 4096;
-const SHADOW_DIST = 1600;   // how far back along the sun the light stands
-const WORLD_UP = new THREE.Vector3(0, 1, 0);
-const _aim = new THREE.Vector3();
-const _lx = new THREE.Vector3(), _ly = new THREE.Vector3(), _lz = new THREE.Vector3();
+// SHADOWS ARE ALMOST INVISIBLE HERE, and that is the fact to know before touching
+// them. TERRAIN DOES NOT CAST — tiles are receiveShadow only — so there is no hill
+// shading its own valley; the only casters are the plane, scattered vegetation and
+// the landmarks. Measured: toggling sun.castShadow entirely, with the plane 22 m
+// above flat ground, moves 0.14% of the frame (on-vs-on control: exactly 0).
+//
+// A pass that widened the box to +/-420 at 4096, stood the light 1600 m back with
+// far 3400, aimed it at the ground under the plane and snapped it to shadow texels
+// was measured and REVERTED in full: across five spots the wider box changed 0.02%
+// of the frame at best and nothing at four of them, for 4x the shadow-map fill, and
+// the longer far plane changed 0.000% at 300, 900 and 1500 m AGL. None of it earned
+// its keep. This is the original box, unchanged.
 
 export function createWorld(scene) {
   // fogColor is now only a fallback: the patched fog chunk computes the haze
@@ -97,28 +100,14 @@ export function createWorld(scene) {
   scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xfff4e0, 2.6);
   sun.castShadow = true;
-  // THE SHADOW BOX WAS A 320 m SQUARE. At +/-160 m the only shadowed ground was a
-  // patch narrower than the near-field scatter reaches: from cruise the whole
-  // landscape was flat-lit and only the dirt under the plane had any relief to it.
-  // 420 m at 4096 costs one texel of sharpness (15.6 -> 20.5 cm, still 16 across a
-  // wing) and buys 7x the shadowed area, which on terrain — big soft forms, hills
-  // shading their own valleys — is a trade worth making every time.
-  sun.shadow.mapSize.set(SHADOW_RES, SHADOW_RES);
-  sun.shadow.camera.left = -SHADOW_HALF;
-  sun.shadow.camera.right = SHADOW_HALF;
-  sun.shadow.camera.top = SHADOW_HALF;
-  sun.shadow.camera.bottom = -SHADOW_HALF;
-  // The light stands well back so a plane 1.5 km up still sits inside the frustum
-  // and casts; near 50 with the light only 420 m out clipped it out of its own
-  // shadow map on any decent climb.
-  sun.shadow.camera.near = 20;
-  sun.shadow.camera.far = SHADOW_DIST + 1800;
-  // Constant bias is measured in NDC, so it scales with the depth RANGE — the same
-  // -0.0006 that was 0.6 m over the old 1000 m range would be 2 m over this one,
-  // and 2 m of peter-panning detaches every shadow from its caster. Most of the job
-  // moves to normalBias, which is in world units and does not care about the range.
-  sun.shadow.bias = -0.00012;
-  sun.shadow.normalBias = 0.5;
+  sun.shadow.mapSize.set(2048, 2048);
+  sun.shadow.camera.left = -160;
+  sun.shadow.camera.right = 160;
+  sun.shadow.camera.top = 160;
+  sun.shadow.camera.bottom = -160;
+  sun.shadow.camera.near = 50;
+  sun.shadow.camera.far = 1000;
+  sun.shadow.bias = -0.0006;
   scene.add(sun, sun.target);
 
   // terrain — static single mesh or streamed ring-LOD tiles (see terrain.js);
@@ -328,26 +317,8 @@ export function createWorld(scene) {
     uGroundTime.value = time;
     // sunDir is SUN_DIR, which daynight.js rewrites in place, so the light and the disc
     // both follow the time of day without being told about it separately.
-    // AIM AT THE GROUND, NOT AT THE PLANE. The box is centred on whatever the target
-    // is, so following the plane up spent half of it on empty air above the terrain.
-    _aim.set(planePos.x, heightAt(planePos.x, planePos.z), planePos.z);
-    // ...AND SNAP IT TO SHADOW TEXELS. A box that slides continuously resamples the
-    // depth map every frame, so every shadow edge crawls and boils as you fly — the
-    // wider the box the coarser the texel and the more it shows. Quantising the aim
-    // point in the light's own basis means the map moves in whole texels and the
-    // edges hold still. The basis has to be the one three builds in
-    // LightShadow.updateMatrices (lookAt with the default +Y up) or the snap is to
-    // the wrong grid and does nothing.
-    _lz.copy(sunDir).normalize();
-    _lx.crossVectors(WORLD_UP, _lz);
-    if (_lx.lengthSq() < 1e-8) _lx.set(1, 0, 0); else _lx.normalize();
-    _ly.crossVectors(_lz, _lx);
-    const texel = (2 * SHADOW_HALF) / SHADOW_RES;
-    const qx = Math.round(_aim.dot(_lx) / texel) * texel - _aim.dot(_lx);
-    const qy = Math.round(_aim.dot(_ly) / texel) * texel - _aim.dot(_ly);
-    _aim.addScaledVector(_lx, qx).addScaledVector(_ly, qy);
-    sun.position.copy(_aim).addScaledVector(sunDir, SHADOW_DIST);
-    sun.target.position.copy(_aim);
+    sun.position.copy(planePos).addScaledVector(sunDir, 420);
+    sun.target.position.copy(planePos);
     sky.position.set(planePos.x, 0, planePos.z);
     terrain.update(planePos);
     scatter.update(planePos, time);
