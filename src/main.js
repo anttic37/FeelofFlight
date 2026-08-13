@@ -98,7 +98,11 @@ if (new URLSearchParams(location.search).get('physics') !== 'builtin') {
 }
 const input = new Input();
 const chase = new ChaseCam(camera, heightAt);
-const trails = new WingTrails(scene, plane.tipL, plane.tipR);
+// THE OVERLAY SCENE. Additive in-air effects live here, not in the world, because
+// the cloud composite multiplies them away — see the overlay note in volclouds.js.
+// Same camera, drawn after the clouds.
+const overlay = new THREE.Scene();
+const trails = new WingTrails(overlay, plane.tipL, plane.tipR);
 const fx = createFX(scene);
 const wreckage = createWreckage(scene, surfaceAt, heightAt);
 const sound = new SoundFX();
@@ -235,7 +239,7 @@ let tweak = null;   // live tuning panel (P), built once the clouds land
 if (new URLSearchParams(location.search).get('vclouds') !== '0') {
   const load = CLOUD_KIND === 'new'
     ? import('./skyclouds.js').then(m => m.createSkyClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
-    : import('./volclouds.js').then(m => m.createVolumetricClouds({ renderer, scene, camera, sunDir: SUN_DIR }));
+    : import('./volclouds.js').then(m => m.createVolumetricClouds({ renderer, scene, camera, sunDir: SUN_DIR, overlayScene: overlay }));
   load
     .then(v => {
       volClouds = v;
@@ -269,8 +273,19 @@ const draw = () => {
   // rather than back with the rest of the per-frame bookkeeping.
   camera.updateMatrixWorld();
   setCloudShadowView(camera);
-  return volClouds ? volClouds.render()
-    : composer ? composer.render() : renderer.render(scene, camera);
+  if (volClouds) volClouds.render();
+  else if (composer) composer.render();
+  else renderer.render(scene, camera);
+  // Only the volumetric path composites the overlay itself. Every other path — the
+  // plain bloom composer before the clouds finish loading, skyclouds, no composer at
+  // all — draws it here instead, or the ribbons would not exist on those paths at
+  // all now that they no longer live in the world scene.
+  if (!(volClouds && volClouds.handlesOverlay)) {
+    const prev = renderer.autoClear;
+    renderer.autoClear = false;
+    renderer.render(overlay, camera);
+    renderer.autoClear = prev;
+  }
 };
 
 window.addEventListener('resize', () => {

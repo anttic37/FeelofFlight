@@ -46,7 +46,15 @@ function getRibbonMat() {
     ribbonMat = new THREE.ShaderMaterial({
       vertexShader: VERT, fragmentShader: FRAG,
       uniforms: { uTint: { value: SURFACE_TINT } },
-      transparent: true, depthWrite: false,
+      // Depth is off entirely. depthWrite must stay off or the ribbon occludes
+      // ITSELF — a faint near segment writes depth and rejects the bright far
+      // segments behind it, and the strip folds over itself constantly in a turn
+      // (measured: trail coverage collapsed from 313k pixels to 3.3k). depthTest is
+      // off because this draws in an overlay pass AFTER the cloud composite, which
+      // runs against a buffer whose depth is stale; not testing is at least
+      // deterministic. Cost: a hill directly between camera and ribbon will not hide
+      // it, which is rare — the ribbon streams from the wingtips toward the camera.
+      transparent: true, depthWrite: false, depthTest: false,
       blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide, // strip winding flips as the plane maneuvers
     });

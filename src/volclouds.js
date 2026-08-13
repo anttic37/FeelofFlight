@@ -514,7 +514,7 @@ function applyIslandCap(renderer, weather, repeat) {
   mat.dispose(); add.dispose();
 }
 
-export async function createVolumetricClouds({ renderer, scene, camera, sunDir }) {
+export async function createVolumetricClouds({ renderer, scene, camera, sunDir, overlayScene }) {
   // Atmosphere lookup tables. The generator computes these on the GPU but
   // drives itself across animation frames, so the loader is both simpler and
   // faster here (~1.3 s from CDN) and needs no frame pump.
@@ -1067,6 +1067,27 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(new EffectPass(camera, clouds, aerial));
 
+  // THE OVERLAY PASS: additive in-air effects, composited AFTER the clouds.
+  //
+  // The cloud effect resolves to roughly `out = cloudColour + transmittance * in`,
+  // and it takes its march distance from the DEPTH BUFFER. Anything drawn in the
+  // scene pass with depthWrite off — the wingtip ribbons above all — is invisible to
+  // it: the depth at those pixels is still the sky behind them, so the march runs
+  // the full distance and multiplies the ribbon by the transmittance of whatever
+  // cloud it finds. Against a solid cumulus that transmittance is ~0 and the trail
+  // is simply erased, cut off dead at the cloud's edge while the plane in front of
+  // the same cloud draws fine.
+  //
+  // Drawing them here is also the physically honest order: these are ADDITIVE,
+  // emissive things, and a lit vortex core in front of a cloud adds light to it
+  // rather than being attenuated by it. Keeping the pass INSIDE the composer rather
+  // than after it means they still go through bloom, which is where their glow is.
+  if (overlayScene) {
+    const overlayPass = new RenderPass(overlayScene, camera);
+    overlayPass.clear = false;       // composite onto the cloud result, do not wipe it
+    composer.addPass(overlayPass);
+  }
+
   // AFTER the effect is attached to a composer, so switching the mode resizes render
   // targets that actually have a size — set before this and it reallocates 0x0 ones.
   clouds.temporalUpscale = !NO_HISTORY;
@@ -1159,6 +1180,9 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir }
       clouds.sunDirection.copy(dir).transformDirection(w2e).normalize();
       aerial.sunDirection.copy(clouds.sunDirection);
     },
+    // main.js draws the overlay itself on any path that has no such pass — skyclouds
+    // has its own composer, and the plain bloom composer runs before these load.
+    handlesOverlay: !!overlayScene,
     render: () => composer.render(),
     setSize: (w, h) => composer.setSize(w, h),
     dispose: () => { procedural.forEach(p => p.dispose && p.dispose()); composer.dispose(); },
