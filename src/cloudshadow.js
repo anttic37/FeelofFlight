@@ -154,6 +154,18 @@ uniform vec3 uCsSunDir;
 uniform mat4 uCsViewInv;
 
 float ffCloudShadow() {
+#ifdef FLAT_SHADED
+  // NO vViewPosition ON FLAT-SHADED MATERIALS. three declares that varying inside
+  // #ifndef FLAT_SHADED, so a flat-shaded material reaches lights_fragment_begin with
+  // no view position at all and this function fails to COMPILE — taking the whole
+  // material with it. That is not theoretical: the birds are MeshLambertMaterial with
+  // flatShading:true, and their program had been failing to link, silently, from the
+  // moment they were added. gl.getError() does not report a failed link, which is why
+  // several regression passes came back clean while the birds were not drawing.
+  // Flat-shaded surfaces simply go unshadowed; they are the birds and the (default-off)
+  // scatter props, and a cloud shadow on a 2 m bird is worth nothing anyway.
+  return 1.0;
+#else
   if ( uCsStrength <= 0.0 ) return 1.0;
   // A sun on the horizon casts a shadow of unbounded length across the map, which
   // is meaningless and samples wildly; let the day-night dimming carry dusk.
@@ -165,6 +177,7 @@ float ffCloudShadow() {
   vec2 uv = uCsOrigin + vec2( ${AXIS.u.toFixed(1)} * hit.x, ${AXIS.v.toFixed(1)} * hit.z ) / uCsTileM;
   float cover = texture2D( uCsMap, uv ).r;
   return 1.0 - uCsStrength * smoothstep( uCsBar - uCsSoft, uCsBar + uCsSoft, cover );
+#endif
 }`;
 
   // THE HOOK. Multiplying the directional light's colour right after it is fetched
