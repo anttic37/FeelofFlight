@@ -78,7 +78,13 @@ export function createWater(scene, heightAt) {
     uHazeNear: { value: 1800.0 },
     uHazeFar: { value: 15000.0 },
     uChop: { value: 1.0 },
-    uCaps: { value: 0.22 },
+    // 0.22 -> 0.60 because the breaking criterion below is about 3x more selective than
+    // the plain-steepness one it replaced (measured on a pinned wave phase looking straight
+    // down: 2.15% of pixels foamed before, 0.69% after, and 83% of what survives was already
+    // foam). The old value on the new criterion put whitecaps on 0.13% of the frame looking
+    // toward the sun and 0.06% looking away, i.e. nothing. This restores roughly the previous
+    // AMOUNT of foam while it now sits on the upper windward flank instead of on both faces.
+    uCaps: { value: 0.60 },
     uFoam: { value: 1.0 },
     // How much of the wave field reaches the BODY colour rather than only the reflection.
     // Set against the LAND, since matching it is the whole point — the ground beside it is
@@ -215,6 +221,20 @@ vec2 waveOctave(vec2 q, float freq, float across, float ang, float speed, float 
   vec2 p = vec2(dot(q, wr), dot(q, tr) * across) * freq + vec2(uTime * speed, 0.0);
   vec2 g = pgrad(p);
   return (wr * g.x + tr * g.y) * amp;
+}
+// The same octave's HEIGHT rather than its slope. Everything above works in slope alone,
+// which is all a normal needs — but slope cannot tell a crest from a trough. |grad h| is
+// identical on both faces of a wave and peaks on the FLANK, where the surface is steepest,
+// so a whitecap keyed off it lands on the sides of waves in both directions at once. That
+// is the blotchy look. Breaking needs to know which end is up, and that needs h.
+// One extra pnoise per octave; pgrad already costs four.
+float waveHeightOct(vec2 q, float freq, float across, float ang, float speed) {
+  vec2 w = normalize(uWind);
+  float c = cos(ang), s = sin(ang);
+  vec2 wr = vec2(w.x * c - w.y * s, w.x * s + w.y * c);
+  vec2 tr = vec2(-wr.y, wr.x);
+  vec2 p = vec2(dot(q, wr), dot(q, tr) * across) * freq + vec2(uTime * speed, 0.0);
+  return pnoise(p);
 }
 // The sky this water reflects and fades into. IT IS THE DOME'S EXPRESSION, LINE FOR LINE —
 // createSkyMaterial in atmosphere.js — and it has to be, because anywhere the two disagree
@@ -378,14 +398,43 @@ diffuseColor.rgb = mix(body, refl, F);
 float sub = pow(max(dot(V, -uSunDir), 0.0), 3.0) * smoothstep(0.04, 0.30, length(g));
 diffuseColor.rgb += uSubsurface * sub * (1.0 - F) * smoothstep(1.0, 6.0, shoreD);
 
-// ── whitecaps, on the SWELL only and genuinely rare ──
-// Driven by the large octave rather than by total slope: total slope is dominated by the
-// fine chop, which is present everywhere, so keying off it whitewashed the entire near
-// field. A whitecap is a big wave breaking, not a ripple.
-float swellSteep = length(g3 * fSwell + g2 * 0.6 * fMid);
-float steep = smoothstep(0.15, 0.32, swellSteep);
+// ── whitecaps: WHERE THE WAVE IS ACTUALLY BREAKING ───────────────────────────────────
+// Keying off the big octaves rather than total slope was already right — total slope is
+// dominated by the fine chop, which is everywhere, and keying off that whitewashes the
+// whole near field. A whitecap is a big wave breaking, not a ripple.
+//
+// But |grad h| alone cannot say WHERE on the wave. It is phase-symmetric — the same on the
+// front and the back — and it is largest on the FLANK, midway between crest and trough,
+// because that is where the surface is steepest. So foam keyed on it alone sits on the
+// sides of every wave, facing both ways. That is the blotchy painted-on look.
+//
+// A real whitecap is a spilling breaker: it starts just under the CREST, on the face the
+// wave is running toward, and it only happens when the wave is steep enough to overturn.
+// That is three conditions, and slope supplies only one of them. Adding the octave HEIGHT
+// supplies the other two.
+//
+// (This is the transferable half of the FFT-ocean Jacobian foam trick. The literal version
+// -- det(I + grad D) < 0 over a horizontal displacement map -- cannot work here: this water
+// displaces vertically only, so it has no horizontal map to fold, and at ~0.9 m over a
+// 150-200 m wavelength its steepness is ~0.005 against the ~1/7 a real fold needs. The
+// determinant would be positive everywhere and the foam would be identically zero. What
+// ports is the intent: put the foam where the surface is actually overturning.)
+vec2 gBig = g3 * fSwell + g2 * 0.6 * fMid;
+float steepMag = length(gBig);
+float hBig = waveHeightOct(q, 0.0098, 0.75, 0.14, 0.030) * fSwell
+           + waveHeightOct(q, 0.040,  0.55, -0.31, 0.10) * 0.6 * fMid;
+// grad h points UPHILL, so on the face the wave is running toward, the surface falls away
+// downwind and the gradient opposes the wind. Never let this reach zero: a breaker still
+// has foam on its shoulders, just less of it.
+vec2 wDir = normalize(uWind);
+float face = clamp(-dot(gBig / max(steepMag, 1e-4), wDir), 0.0, 1.0);
+// Upper part of the wave only. Crest and flank peak in different places, so the product
+// lands on the upper flank -- which is exactly where a spilling breaker starts.
+float crest = smoothstep(0.02, 0.34, hBig);
+float steep = smoothstep(0.13, 0.30, steepMag);
+float breaking = steep * crest * (0.30 + 0.70 * face);
 float capMask = smoothstep(8.0, 24.0, shoreD);
-diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), steep * capMask * uCaps);
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), breaking * capMask * uCaps);
 
 // ── SHORELINE ────────────────────────────────────────────────────────────────
 // The old version was an opaque sheet with a white band painted along its edge, and
