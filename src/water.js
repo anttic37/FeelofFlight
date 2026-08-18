@@ -472,6 +472,25 @@ float breakBand = (1.0 - smoothstep(0.0, 2.8, sd)) * smoothstep(0.10, 0.85, sets
 // the persistent lace right at the edge, where the last of the wave is still draining
 float edge = 1.0 - smoothstep(0.0, 1.0, sd);
 float foam = clamp(breakBand * 0.8 + edge * edge * 0.95, 0.0, 1.0) * uFoam;
+// A SHORE IS A LINE, NOT A REGION. Every term above keys off shallow DEPTH, which on a
+// normal beach is the same thing as "at the waterline" — the bottom falls away within a
+// few metres, so sd < 1 is a metres-wide ribbon. On a broad tidal shelf it is not: sd
+// stays under a metre for hundreds of metres, edge^2 saturates across all of it, and the
+// sets term — two world-space sines at ~330 m — turns the sheet into a regular egg-crate
+// of white blobs. That grid of rounded squares along the coast IS this bug.
+// Foam belongs where surf actually breaks: where there is DEEP water nearby to feed it.
+// Four taps 30 m out ask exactly that; a real beach reaches +1.5 m of depth in 30 m at a
+// typical 1:20 slope, the middle of a shelf reaches nothing and keeps only a whisper.
+if (uShoreOn > 0.5 && sd < 3.0 && foam > 0.003) {
+  vec2 fUv = vWorldPos.xz / uShoreSize + 0.5;
+  float fe = 30.0 / uShoreSize;
+  float e1 = texture2D(uShoreTex, fUv + vec2(fe, 0.0)).r;
+  float e2 = texture2D(uShoreTex, fUv - vec2(fe, 0.0)).r;
+  float e3 = texture2D(uShoreTex, fUv + vec2(0.0, fe)).r;
+  float e4 = texture2D(uShoreTex, fUv - vec2(0.0, fe)).r;
+  float dN = 64.0 * max(max(e1 * e1, e2 * e2), max(e3 * e3, e4 * e4));
+  foam *= mix(0.12, 1.0, smoothstep(0.5, 1.6, dN - sd));
+}
 diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.92, 0.96, 0.99), foam);
 // foam floats ON the water: opaque even in ten centimetres of it
 diffuseColor.a = max(diffuseColor.a, foam);
