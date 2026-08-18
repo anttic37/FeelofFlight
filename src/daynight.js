@@ -126,14 +126,14 @@ const STOPS = [
     zenith: 0x4e566e, horizon: 0x5a637c, haze: 0x66708a, glow: 0x8a97b8,
     light: 0x9fb6dc, lightI: 0.86,
     hemiSky: 0x33415e, hemiGround: 0x191d26, hemiI: 0.36,
-    env: 0.30, halo: 0.22, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
+    env: 0.30, halo: 0.22, sunPower: 0.0, fogNear: 1800, fogFar: 15000,
     cloudSun: [0.187, 0.231, 0.330], cloudAmb: [0.030, 0.041, 0.072] },
 
   { alt: -20,
     zenith: 0x5a627c, horizon: 0x666f88, haze: 0x727b94, glow: 0x93a0bf,
     light: 0x9fb6dc, lightI: 0.77,
     hemiSky: 0x394765, hemiGround: 0x1c202a, hemiI: 0.33,
-    env: 0.28, halo: 0.24, sunPower: 0.0, fogNear: 1200, fogFar: 7000,
+    env: 0.28, halo: 0.24, sunPower: 0.0, fogNear: 1800, fogFar: 15000,
     cloudSun: [0.150, 0.187, 0.271], cloudAmb: [0.028, 0.038, 0.065] },
 
   // Moonrise. The moon is only a few degrees up, so the ground is genuinely dim here and the
@@ -151,7 +151,7 @@ const STOPS = [
     zenith: 0x525c78, horizon: 0x5e687f, haze: 0x6a748c, glow: 0x94a1c2,
     light: 0xa9bee0, lightI: 0.50,
     hemiSky: 0x45557a, hemiGround: 0x24272f, hemiI: 0.26,
-    env: 0.24, halo: 0.25, sunPower: 0.05, fogNear: 1300, fogFar: 6800,
+    env: 0.24, halo: 0.25, sunPower: 0.05, fogNear: 1800, fogFar: 15000,
     cloudSun: [0.119, 0.145, 0.205], cloudAmb: [0.028, 0.037, 0.059] },
 
   // Zenith raised for the same reason; the warm horizon and glow are left exactly as they
@@ -160,21 +160,21 @@ const STOPS = [
     zenith: 0x4a5470, horizon: 0x8a5f5a, haze: 0x9c6f60, glow: 0xd88a55,
     light: 0xd08a58, lightI: 0.30,
     hemiSky: 0x5a6785, hemiGround: 0x2e2b2a, hemiI: 0.16,
-    env: 0.22, halo: 0.85, sunPower: 0.45, fogNear: 1400, fogFar: 6600,
+    env: 0.22, halo: 0.85, sunPower: 0.45, fogNear: 1800, fogFar: 15000,
     cloudSun: [0.62, 0.36, 0.22], cloudAmb: [0.150, 0.170, 0.260] },
 
   { alt: 1,
     zenith: 0x27508f, horizon: 0xd9884e, haze: 0xe8a070, glow: 0xffb070,
     light: 0xffa860, lightI: 0.95,
     hemiSky: 0x8296b4, hemiGround: 0x453a30, hemiI: 0.22,
-    env: 0.42, halo: 1.35, sunPower: 1.0, fogNear: 1450, fogFar: 6550,
+    env: 0.42, halo: 1.35, sunPower: 1.0, fogNear: 1800, fogFar: 15000,
     cloudSun: [1.00, 0.58, 0.32], cloudAmb: [0.280, 0.300, 0.420] },
 
   { alt: 8,
     zenith: 0x2f63a8, horizon: 0xf0c39a, haze: 0xf3d3b4, glow: 0xffd9a8,
     light: 0xffd2a0, lightI: 1.95,
     hemiSky: 0xa8c2dd, hemiGround: 0x54503c, hemiI: 0.28,
-    env: 0.74, halo: 1.12, sunPower: 1.0, fogNear: 1480, fogFar: 6520,
+    env: 0.74, halo: 1.12, sunPower: 1.0, fogNear: 1800, fogFar: 15000,
     cloudSun: [1.00, 0.82, 0.62], cloudAmb: [0.440, 0.520, 0.700] },
 
   { alt: 20,
@@ -182,7 +182,7 @@ const STOPS = [
     hazeAway: 0xa8c4de, hazeToward: 0xf6e8d2,
     light: 0xfff0d8, lightI: 2.42,
     hemiSky: 0xb6d3ed, hemiGround: 0x5b6650, hemiI: 0.32,
-    env: 0.93, halo: 1.0, sunPower: 1.0, fogNear: 1500, fogFar: 6500,
+    env: 0.93, halo: 1.0, sunPower: 1.0, fogNear: 1800, fogFar: 15000,
     cloudSun: [1.00, 0.95, 0.88], cloudAmb: [0.540, 0.660, 0.860] },
 
   { alt: 45,
@@ -190,7 +190,7 @@ const STOPS = [
     hazeAway: 0xa8c4de, hazeToward: 0xf6e8d2,
     light: 0xfff4e0, lightI: 2.60,
     hemiSky: 0xbad7f0, hemiGround: 0x5e6a4f, hemiI: 0.34,
-    env: 1.00, halo: 1.0, sunPower: 1.0, fogNear: 1500, fogFar: 6500,
+    env: 1.00, halo: 1.0, sunPower: 1.0, fogNear: 1800, fogFar: 15000,
     cloudSun: [1.00, 0.97, 0.92], cloudAmb: [0.580, 0.700, 0.900] },
 ];
 
@@ -260,6 +260,7 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
   // carries the cool. The split matters — it is the whole difference between a sunset that
   // reaches these surfaces and one that does not.
   const _tA = new THREE.Color(), _tB = new THREE.Color();
+  const _fogA = new THREE.Color(), _fogB = new THREE.Color();
   const DIR_W = 0.62, HEMI_W = 0.90, ENV_W = 0.42;
   const rawTint = (out) => {
     _tA.copy(P.light).multiplyScalar(P.lightI * DIR_W);
@@ -324,8 +325,27 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
     sample(sunAlt);
 
     // --- shared atmosphere uniforms: one write each, reaches every material
-    ATMO.uAtmHazeAway.value.copy(P.hazeAway);
-    ATMO.uAtmHazeToward.value.copy(P.hazeToward);
+    //
+    // AERIAL PERSPECTIVE FADES INTO THE SKY, BY CONSTRUCTION. These two used to come
+    // straight from the palette table (hazeAway 0xa8c4de steel blue in daylight), and the
+    // fog they drive saturated at 6.5 km — so every hill past 6.5 km rendered as one flat
+    // sheet of a colour the sky never shows. Measured at noon from 8.5 km: land (35,69,125)
+    // navy against a horizon sky of (177,200,215). That is the "dark navy slab" that ate
+    // the whole far half of the island in every wide shot, and no amount of terrain paint
+    // could fix it, because by 6.5 km the paint contributes exactly nothing.
+    //
+    // The water solved this exact problem for itself long ago (see the FOG OFF note in
+    // water.js): it fades into the dome's OWN colour along the view bearing. The ground
+    // fog now does the same — this is the dome's horizon expression, the same formula
+    // skyAt mirrors line for line, evaluated at eye level (up = 0.035): mostly the haze
+    // band, a touch of zenith, and toward the sun the glow's two lobes with mu at the
+    // horizon = cos(sun altitude). Whatever the palette does — midday, sunset, night —
+    // distant terrain now dissolves into the sky BEHIND it, because it is computed FROM it.
+    _fogA.copy(P.horizon).lerp(P.zenith, 0.245).lerp(P.haze, 0.701);
+    ATMO.uAtmHazeAway.value.copy(_fogA);
+    const muH = Math.max(0, Math.cos(alt));
+    const glowW = (Math.pow(muH, 3) * 0.10 * P.halo + Math.pow(muH, 26) * 0.55) * P.sunPower;
+    ATMO.uAtmHazeToward.value.copy(_fogA).add(_fogB.copy(P.glow).multiplyScalar(glowW));
     ATMO.uAtmGlow.value.copy(P.glow);
     ATMO.uAtmSunPower.value = P.sunPower;
 
@@ -364,7 +384,9 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
     if (scene) {
       scene.environmentIntensity = P.env * ENV_BASE;
       if (scene.fog) {
-        scene.fog.color.copy(P.hazeAway);
+        // the patched fog chunk ignores fogColor (it mixes the uAtm haze pair), but keep
+        // it coherent with them for anything stock that ever reads it
+        scene.fog.color.copy(_fogA);
         scene.fog.near = P.fogNear; scene.fog.far = P.fogFar;
       }
     }

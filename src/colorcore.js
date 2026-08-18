@@ -31,6 +31,7 @@ function C(hex) {
 
 const cSandWet = C(0xb69b6c), cSand = C(0xdcc891),
       cGrassL = C(0x86a862), cGrassD = C(0x4c6b3d),
+      cHeath = C(0x9a8f58), cForWarm = C(0x6b8546),
       cMeadow = C(0x9dbd63), cRock = C(0x8d8a82),
       cRockD = C(0x6e6b64), cSnow = C(0xeef2f4),
       cDirt = C(0x9b7f57), cDesert = C(0xd9bd7e),
@@ -63,15 +64,42 @@ export function terrainColor(x, z, h, normalY, out) {
   const sum = _wH + _wD + _wF + _wM + 0.06;
   ar = ag = ab = 0;
   set2(cGrassL); lerp2(cGrassD, patch * 0.8); lerp2(cMeadow, (1 - patch) * jit * 0.5);
+  // LANDUSE MOSAIC. patch (285 m) and the moisture field (2.2 km) bracket exactly the
+  // scale a pilot actually reads from 300-900 m up, and between them there was nothing:
+  // measured over a hillside frame, kilometres of grass came out as one khaki wash. A
+  // ~770 m quilt with EDGES — thresholded, not a smooth blend — breaks the wash into
+  // districts of lusher meadow and parched heath the way real land divides at that scale,
+  // and the sharpish transitions are what make it read as fields rather than as noise.
+  const quilt = noise2(x * 0.0013 + 101.7, z * 0.0013 + 55.3);
+  lerp2(cMeadow, smooth(0.55, 0.70, quilt) * 0.6);
+  lerp2(cHeath, (1 - smooth(0.30, 0.44, quilt)) * 0.5);
   addC2(_wH + 0.06); // hills double as the generic lowland fill
   if (_wD > 0.004) {
     set2(cDesert); lerp2(cOchre, smooth(0.35, 0.75, noise2(x * 0.0012 + 8.8, z * 0.0012 + 2.2)));
     if (jit > 0.72) lerp2(cSage, 0.45);
     addC2(_wD);
   }
-  if (_wF > 0.004) { set2(cForL); lerp2(cForD, 0.3 + patch * 0.6); addC2(_wF); }
+  if (_wF > 0.004) {
+    // FOREST IS NOT ONE DARK. The old ramp ran dark cForL to darker cForD — a canopy with
+    // no bright component at all, which is why whole forested districts collapsed into a
+    // single flat mass in every wide shot. Real forest from the air is broken two ways:
+    // the canopy itself drifts warm and cool over hundreds of metres, and it has HOLES —
+    // clearings and meadows reading grass-bright against the trees. The clearing field is
+    // thresholded hard (~15% of forest area at 1.1 km scale) because a clearing has an
+    // edge; blended soft it would just be more mush.
+    set2(cForL); lerp2(cForD, 0.25 + patch * 0.55);
+    lerp2(cForWarm, smooth(0.52, 0.78, noise2(x * 0.0023 + 3.3, z * 0.0023 + 71.2)) * 0.45);
+    const clr = smooth(0.60, 0.75, noise2(x * 0.0009 + 77.1, z * 0.0009 + 31.4));
+    if (clr > 0.01) lerp2(cMeadow, clr * 0.8);
+    addC2(_wF);
+  }
   if (_wM > 0.004) { set2(cMtnLow); lerp2(cRock, smooth(90, 300, h)); lerp2(cRockD, jit * 0.4); addC2(_wM); }
   _r = ar / sum; _g = ag / sum; _b = ab / sum;
+  // CONTINENT-SCALE DRIFT. One ~5 km field tilting the whole palette warm or cool by a few
+  // percent. Invisible up close; from 1500 m it is the difference between an island painted
+  // in one session and land that weathered differently on different coasts.
+  const drift = noise2(x * 0.00019 + 400.5, z * 0.00019 + 118.8) - 0.5;
+  _r *= 1 + drift * 0.10; _g *= 1 + drift * 0.04; _b *= 1 - drift * 0.07;
   // MOISTURE. One low-frequency field so whole districts share a character
   // rather than the tone flickering hill by hill, gated by height: uplands are
   // exposed and run dry and olive, sheltered low ground stays green. Without
