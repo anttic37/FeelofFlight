@@ -43,7 +43,15 @@ export function createRunways(scene) {
   const poleStalkGeo = new THREE.CylinderGeometry(0.055, 0.075, 0.95, 5);
   const stalkMat = new THREE.MeshStandardMaterial({ color: 0x6f7276, flatShading: true, roughness: 1 });
   const boardGeo = new THREE.BoxGeometry(0.14, 0.62, 1.5);
-  const amber = new THREE.Color(0xffb347), green = new THREE.Color(0x53e07a);
+  // PUSHED ABOVE 1.0 SO THEY ACTUALLY GLOW. The whole lighting kit was here — edge rows,
+  // thresholds, approach bars — but at hex colours every channel sat at or under 1.0,
+  // and the bloom threshold is 1.25: not one lamp on the island could ever bloom. They
+  // were dim beads at night, which is the one time a runway light earns its keep. Same
+  // fix as the mast lamps (see landmarks.js): MeshBasic + the half-float composer keeps
+  // values above 1.0, and bloom turns the excess into glow instead of clipping it. The
+  // multipliers put the brightest channel near the masts' proven 2.4-2.6.
+  const amber = new THREE.Color(0xffb347).multiplyScalar(2.4),
+        green = new THREE.Color(0x53e07a).multiplyScalar(2.6);
   const mtx = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
   q.identity();
 
@@ -231,7 +239,7 @@ export function createRunways(scene) {
   const APP_BARS = 5, APP_W = 3;
   const appLights = new THREE.InstancedMesh(lightGeo, lightMat, RUNWAYS.length * 2 * APP_BARS * APP_W);
   let ai = 0;
-  const whiteC = new THREE.Color(0xf2f6ff);
+  const whiteC = new THREE.Color(0xf2f6ff).multiplyScalar(2.2); // same >1.0 bloom trick as the edge lamps
   s.set(1.25, 1.25, 1.25); // a touch larger than the edge lights: seen from far out
   for (const r of RUNWAYS) {
     for (const end of [-1, 1]) {
@@ -342,7 +350,9 @@ export function createRunways(scene) {
     for (let i = 0; i < NT; i++) {
       const ph = (time * 0.55 + i * 1.37) % 1;
       const flash = ph < 0.11 ? 1 : (ph < 0.5 && ph > 0.39 ? 0.75 : 0.06);
-      beaconInst.setColorAt(i, _bc.setRGB(flash, flash * (0.55 + 0.45 * flash), flash * 0.35));
+      // x2.6 so the peak crosses the 1.25 bloom threshold: the pulse pattern was already
+      // here, but it topped out at exactly 1.0 — a flash that could never actually flash
+      beaconInst.setColorAt(i, _bc.setRGB(flash * 2.6, flash * (0.55 + 0.45 * flash) * 2.6, flash * 0.91));
       const sc = 0.55 + flash * 0.75;
       const t = towerAt[i];
       tq.setFromAxisAngle(UP, t.h);

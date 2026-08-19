@@ -242,9 +242,23 @@ const TABLE = STOPS.map((s) => {
 });
 
 export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water }) {
-  // Random start, so a session can open at dawn, noon or the middle of the night.
-  // ?tod=0..1 pins it: 0 dawn, 0.33 noon, 0.67 dusk, 0.85 deep night.
-  let clock = num('tod', Math.random()) * CYCLE;
+  // A SESSION OPENS ON GOOD LIGHT. The start time was uniform random over the whole
+  // cycle, which sounds fair and plays badly: a third of first impressions landed on
+  // flat noon (the sun down every surface normal, terrain reading as shaded blobs) or
+  // in the middle of the night. The light everything in this scene was built for — long
+  // shadows, warm haze, glitter down the sun path — lives in the climbing and sinking
+  // bands either side of midday, so that is where most sessions now begin. Nothing is
+  // unreachable: high day and night still come up sometimes, the day cycle still runs
+  // through everything from wherever it starts, and ?tod pins any moment exactly
+  // (0 dawn, 0.33 noon, 0.67 dusk, 0.85 deep night).
+  const spawnClock = () => {
+    const r = Math.random();
+    if (r < 0.42) return (0.07 + Math.random() * 0.17) * DAY_SECONDS;        // morning climb, sun ~9-31 deg
+    if (r < 0.76) return (0.76 + Math.random() * 0.16) * DAY_SECONDS;        // evening descent into golden hour
+    if (r < 0.92) return (0.24 + Math.random() * 0.52) * DAY_SECONDS;        // high day
+    return DAY_SECONDS + Math.random() * NIGHT_SECONDS;                       // night
+  };
+  let clock = PARAMS.get('tod') != null ? num('tod', 0) * CYCLE : spawnClock();
 
   const P = {};
   for (const k of COLOR_KEYS) P[k] = new THREE.Color();
