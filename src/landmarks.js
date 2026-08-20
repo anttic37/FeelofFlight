@@ -403,7 +403,16 @@ export function createLandmarks(scene) {
       for (let s = 1; s < 8; s++) {
         const t = s / 8;
         const wy = p.y + (q.y - p.y) * t - sag * Math.sin(Math.PI * t);
-        if (wy - heightAt(p.x + (q.x - p.x) * t, p.z + (q.z - p.z) * t) < WIRE_CLEAR) return false;
+        const gx = p.x + (q.x - p.x) * t, gz = p.z + (q.z - p.z) * t;
+        const gh = heightAt(gx, gz);
+        if (wy - gh < WIRE_CLEAR) return false;
+        // NO LOW WIRE OVER AN AIRFIELD, EVER. Pylons were already forbidden inside
+        // runwayInfluence, but the CONDUCTOR was not — so the final span simply leapt
+        // from the last legal pylon clean across the strip. Measured on seed 777: 14
+        // wire vertices hanging 14-19 m over the airfield, crossing the threshold. A
+        // route that cannot reach its endpoint without dipping below 35 m over the
+        // influence field is refused whole; there is always another pairing.
+        if (wy - gh < 35 && runwayInfluence(gx, gz) > 0.02) return false;
       }
     }
 
@@ -432,7 +441,65 @@ export function createLandmarks(scene) {
   const byDist = (from, list) => list.slice().sort((a, b) =>
     Math.hypot(a.x - from.x, a.z - from.z) - Math.hypot(b.x - from.x, b.z - from.z));
   const mastNodes = masts.map(m => ({ x: m.x, z: m.z, h: m.h, top: MAST_H * 0.42 }));
-  const stripNodes = RUNWAYS.map(r => ({ x: r.x, z: r.z, h: Math.max(0, r.elev), top: 14 }));
+
+  // A LINE ENDS ON SOMETHING, ALWAYS. The strip "node" used to be the runway CENTRE with
+  // the conductor attached 14 m over the tarmac — a wire terminating on thin air, dangling
+  // across the one place the player is guaranteed to fly low. Power arrives at an airfield
+  // the way it arrives anywhere: at a small transformer house off to the side. So each
+  // strip offers hut SITES beside itself (both verges, slid along the length until a spot
+  // is flat, dry and outside runwayInfluence), the line terminates on the hut's gantry,
+  // and the hut is only built if a line actually lands there.
+  function hutSites(r, ri) {
+    const out = [];
+    for (const side of [-1, 1]) {
+      let found = null;
+      for (const d of [r.width / 2 + 46, r.width / 2 + 64, r.width / 2 + 86]) {
+        for (const a of [0, -r.length * 0.24, r.length * 0.24]) {
+          const lx = side * d, lz = a;
+          const x = r.x + lx * r._c + lz * r._s;
+          const z = r.z - lx * r._s + lz * r._c;
+          const h = heightAt(x, z);
+          if (h < 3) continue;                              // not on a beach or in the sea
+          if (runwayInfluence(x, z) > 0.015) continue;      // off the graded pad
+          if (Math.abs(heightAt(x + 7, z) - h) > 3.5
+           || Math.abs(heightAt(x, z + 7) - h) > 3.5) continue; // needs level-ish ground
+          found = { x, z, h, top: 6.1, ri };
+          break;
+        }
+        if (found) break;
+      }
+      if (found) out.push(found);
+    }
+    return out;
+  }
+  const stripNodes = RUNWAYS.flatMap((r, ri) => hutSites(r, ri));
+
+  // the transformer house itself: pad, brick hut, roof, and the take-off gantry whose
+  // crossarm the conductors actually land on. Yawed so the crossarm sits across the line.
+  const concrete = new THREE.MeshStandardMaterial({ color: 0x9b988d, ...flat });
+  const brick = new THREE.MeshStandardMaterial({ color: 0x84594a, ...flat });
+  function buildSubstation(sN, yaw) {
+    const hut = new THREE.Group();
+    hut.position.set(sN.x, sN.h, sN.z);
+    hut.rotation.y = yaw;
+    const add = (geo, mat, x, y, z) => {
+      const m = new THREE.Mesh(geo, mat);
+      m.position.set(x, y, z);
+      m.castShadow = true; m.receiveShadow = true;
+      hut.add(m); return m; };
+    add(new THREE.BoxGeometry(7.4, 0.5, 5.6), concrete, 0, 0.25, 0);
+    add(new THREE.BoxGeometry(4.6, 3.0, 3.4), brick, 0, 2.0, 0);
+    add(new THREE.BoxGeometry(5.0, 0.24, 3.8), dark, 0, 3.62, 0);
+    add(new THREE.BoxGeometry(1.1, 2.0, 0.12), dark, 0.9, 1.5, 1.73);
+    add(mergeGeometries([
+      new THREE.CylinderGeometry(0.09, 0.09, 2.9, 5).translate(-1.4, 4.85, 0),
+      new THREE.CylinderGeometry(0.09, 0.09, 2.9, 5).translate(1.4, 4.85, 0),
+      new THREE.BoxGeometry(6.2, 0.22, 0.22).translate(0, 5.95, 0),
+      new THREE.CylinderGeometry(0.09, 0.13, 0.5, 5).translate(-2.8, 6.2, 0),
+      new THREE.CylinderGeometry(0.09, 0.13, 0.5, 5).translate(2.8, 6.2, 0),
+    ]), steel, 0, 0, 0);
+    group.add(hut);
+  }
   let legs = 0;
   for (const row of farms) {
     const ends = [row[0], row[row.length - 1]].map(t => ({ x: t.x, z: t.z, h: t.h, top: TOW_H * 0.5 }));
@@ -442,8 +509,17 @@ export function createLandmarks(scene) {
       if (done) break;
     }
   }
+  const served = new Set();   // one hut per strip: its other-side candidate retires
   for (const m of mastNodes) {
-    for (const s of byDist(m, stripNodes)) if (runLine(m, s)) { legs++; break; }
+    for (const s of byDist(m, stripNodes)) {
+      if (served.has(s.ri)) continue;
+      if (runLine(m, s)) {
+        buildSubstation(s, Math.atan2(m.x - s.x, m.z - s.z));
+        served.add(s.ri);
+        legs++;
+        break;
+      }
+    }
   }
   if (pylons.length) {
     const pylonGeo = mergeGeometries([
