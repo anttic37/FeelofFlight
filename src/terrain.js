@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { heightAt, getTerrainSeed } from './heightcore.js';
 import { terrainColor } from './colorcore.js';
-import { bakeTile, buildTileIndex, tileVertexCount, bakeAOGrid, sampleAOGrid, applyAO } from './tilebake.js';
+import { bakeTile, buildTileIndex, tileVertexCount, bakeAOGrid, sampleAOGrid, sampleAOGridB, applyAO } from './tilebake.js';
 import { injectGroundFX } from './groundfx.js';
 
 // The terrain engine. Two modes, selected by URL param:
@@ -64,7 +64,7 @@ const MAX_IN_FLIGHT = 2;
 // segment count so the dynamic far shell (250) and the A/B static path (500)
 // share one code path. Colors use the mesh's smooth vertex normals, exactly
 // like the original loop.
-function bakeIslandGeometry(segments, minSpan) {
+function bakeIslandGeometry(segments, minSpan, coarseColor = false) {
   const geo = new THREE.PlaneGeometry(15600, 15600, segments, segments);
   geo.rotateX(-Math.PI / 2);
   const tPos = geo.attributes.position;
@@ -97,8 +97,9 @@ function bakeIslandGeometry(segments, minSpan) {
   bakeAOGrid(-7800, -7800, 15600, 64);
   for (let i = 0; i < tPos.count; i++) {
     const _ax = tPos.getX(i), _az = tPos.getZ(i), _ah = tPos.getY(i);
-    terrainColor(_ax, _az, _ah, tNorm.getY(i), _col);
-    if (_ah > 0.5) applyAO(_col, sampleAOGrid((_ax + 7800) / 15600, (_az + 7800) / 15600, 64), 0.62);
+    terrainColor(_ax, _az, _ah, tNorm.getY(i), _col, coarseColor);
+    if (_ah > 0.5) applyAO(_col, sampleAOGrid((_ax + 7800) / 15600, (_az + 7800) / 15600, 64), 0.62,
+      sampleAOGridB((_ax + 7800) / 15600, (_az + 7800) / 15600, 64));
     tCol[i * 3] = _col[0]; tCol[i * 3 + 1] = _col[1]; tCol[i * 3 + 2] = _col[2];
   }
   geo.setAttribute('color', new THREE.BufferAttribute(tCol, 3));
@@ -189,7 +190,10 @@ export function createTerrain(scene) {
   }
 
   // (a) far shell — synchronous, envelope-baked, small shore-faded sink
-  const shellGeo = bakeIslandGeometry(SHELL_SEGS, SHELL_MINS);
+  // coarseColor: the relief probe is skipped on the synchronous startup shell — 63k verts
+  // of 4-tap probes would push the cold start out for paint that sits under 70%+ fog.
+  // The async supersampled re-bake (terrainworker shellColors) paints it properly later.
+  const shellGeo = bakeIslandGeometry(SHELL_SEGS, SHELL_MINS, true);
   sinkAboveShore(shellGeo.attributes.position.array, SHELL_Y);
   const shell = new THREE.Mesh(shellGeo, shellMaterial);
   shell.receiveShadow = true;
@@ -210,11 +214,23 @@ export function createTerrain(scene) {
   const finishedKeys = new Set(); // keys parked in finished[] — the want-scan must
                                   // see them or every streamed tile gets baked twice
   let nextId = 1, built = 0, evicted = 0, trisLive = 0, dispatched = 0;
+  // shell colour re-bake state: 4 row chunks over the 251-row shell grid
+  const SHELL_CHUNKS = [[0, 63], [63, 126], [126, 189], [189, 251]];
+  let shellChunkNext = 0, shellChunkInFlight = false;
 
   const worker = new Worker(new URL('./terrainworker.js', import.meta.url), { type: 'module' });
   // the worker has its OWN heightcore instance — seed it before any bake job
   worker.postMessage({ type: 'seed', seed: getTerrainSeed() });
   worker.onmessage = (e) => {
+    if (e.data.shellRows) {
+      // supersampled shell colours, one row chunk — copy straight into the live attribute
+      const n1 = e.data.segments + 1;
+      const attr = shellGeo.getAttribute('color');
+      attr.array.set(e.data.colors, e.data.j0 * n1 * 3);
+      attr.needsUpdate = true;
+      shellChunkInFlight = false;
+      return;
+    }
     const job = inFlight.get(e.data.id);
     inFlight.delete(e.data.id);
     if (job) {
@@ -410,13 +426,26 @@ export function createTerrain(scene) {
       pending.delete(best.key);
       buildTileSync(best.ring, best.ix, best.iz);
     }
+
+    // SHELL REPAINT, opportunistic. The startup shell's colours are point-sampled at 62 m
+    // with the relief probe skipped — the cheapest thing that gets a world on screen. Once
+    // the streamer goes idle, ask the worker for the shell's colours again, supersampled
+    // (see shellColors in terrainworker.js), one row chunk at a time so a fresh tile job
+    // never waits behind more than ~1 s of shell work. The gate re-arms between chunks,
+    // so flying off mid-repaint just pauses it until the queue drains again.
+    if (!workerDead && shellChunkNext < SHELL_CHUNKS.length && !shellChunkInFlight
+        && pending.size === 0 && inFlight.size === 0 && built >= 30) {
+      const c = SHELL_CHUNKS[shellChunkNext++];
+      shellChunkInFlight = true;
+      worker.postMessage({ type: 'shellColors', j0: c[0], j1: c[1], segments: SHELL_SEGS });
+    }
   }
 
   function stats() {
     return {
       mode: 'dynamic', tiles: tiles.size, queued: pending.size,
       inFlight: inFlight.size, tris: trisLive, built, evicted, dispatched,
-      workerDead, shellTris: SHELL_SEGS * SHELL_SEGS * 2,
+      workerDead, shellTris: SHELL_SEGS * SHELL_SEGS * 2, shellRepaint: shellChunkNext,
     };
   }
 

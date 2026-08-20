@@ -1,5 +1,5 @@
 import { heightAt } from './heightcore.js';
-import { terrainColor } from './colorcore.js';
+import { terrainColor, reliefProbe } from './colorcore.js';
 
 // The ONE tile-bake function both threads run: the terrain worker for streamed
 // tiles and the main thread for the synchronous startup ring / teleport guard.
@@ -32,6 +32,7 @@ function ringGridIndex(res, k) {
 }
 
 const _col = [0, 0, 0]; // reused rgb out for terrainColor
+const _p3 = [0, 0, 0];  // reused probe out for reliefProbe
 
 // ---------------------------------------------------------------------------
 // AMBIENT OCCLUSION, baked into the vertex colour.
@@ -62,14 +63,14 @@ const AO_STRENGTH = 0.62;
 // bake — 85% of the whole thing — which streams terrain in visibly and would have hung
 // the synchronous startup ring for seconds. Sky visibility is a smooth function; it does
 // not repay 24 height queries per vertex.
-const AO_DIRS = 6;
-const AO_R = [45, 180];
+const AO_DIRS = 6;   // radii are fixed at 45 m and 180 m inside terrainAO
 // AO is sampled on a COARSE LATTICE and interpolated, not evaluated per vertex. It
 // varies over tens of metres by construction — the whole point is the ridge on the far
 // side of the valley — so a lattice every few vertices is visually identical and costs
 // an order of magnitude less. This is the change that made it affordable.
 const AO_STEP = 4;
 const _aoGrid = new Float64Array(4225);   // up to a 65x65 lattice, reused, no allocation
+const _aoGridB = new Float64Array(4225);  // the broad (180 m only) channel, same lattice
 const AO_COS = new Float64Array(AO_DIRS);
 const AO_SIN = new Float64Array(AO_DIRS);
 for (let d = 0; d < AO_DIRS; d++) {
@@ -77,20 +78,26 @@ for (let d = 0; d < AO_DIRS; d++) {
   AO_COS[d] = Math.cos(a); AO_SIN[d] = Math.sin(a);
 }
 
+// TWO CHANNELS FROM THE SAME TAPS. The combined max() channel is the shipped AO,
+// bit-identical to what it always was. The 180 m radius ALONE is additionally kept as a
+// BROAD channel: it knows only the big enclosure — which valley you are in, not which
+// rut — and that is exactly the scale at which relief painters pool a cool haze in the
+// valley floors. Same 12 height queries; the split is free.
+const _aoOut = [1, 1];   // [combined, broad] — written by terrainAO, read by bakeAOGrid
 export function terrainAO(x, z, h) {
-  let sky = 0;
+  let sky = 0, skyB = 0;
   for (let d = 0; d < AO_DIRS; d++) {
     const cx = AO_COS[d], cz = AO_SIN[d];
-    let maxT = 0;
-    for (let k = 0; k < AO_R.length; k++) {
-      const r = AO_R[k];
-      const t = (heightAt(x + cx * r, z + cz * r) - h) / r;
-      if (t > maxT) maxT = t;
-    }
+    const t45 = (heightAt(x + cx * 45, z + cz * 45) - h) / 45;
+    const t180 = (heightAt(x + cx * 180, z + cz * 180) - h) / 180;
+    const maxT = t45 > t180 ? (t45 > 0 ? t45 : 0) : (t180 > 0 ? t180 : 0);
     // sin of the horizon angle: the fraction of that direction's sky that is blocked
     sky += maxT / Math.sqrt(1 + maxT * maxT);
+    if (t180 > 0) skyB += t180 / Math.sqrt(1 + t180 * t180);
   }
-  return 1 - sky / AO_DIRS;   // 1 = open sky, lower = enclosed
+  _aoOut[0] = 1 - sky / AO_DIRS;    // 1 = open sky, lower = enclosed
+  _aoOut[1] = 1 - skyB / AO_DIRS;
+  return _aoOut[0];
 }
 
 // Fill the reusable lattice for one square of world, and read it back with bilinear
@@ -102,30 +109,54 @@ export function bakeAOGrid(x0, z0, size, gn) {
     for (let i = 0; i <= gn; i++) {
       const x = x0 + i * s;
       _aoGrid[j * (gn + 1) + i] = terrainAO(x, z, heightAt(x, z));
+      _aoGridB[j * (gn + 1) + i] = _aoOut[1];
     }
   }
 }
-export function sampleAOGrid(u, v, gn) {   // u, v in 0..1 across the baked square
+function bilerpGrid(grid, u, v, gn) {   // u, v in 0..1 across the baked square
   const fu = Math.min(Math.max(u, 0), 1) * gn;
   const fv = Math.min(Math.max(v, 0), 1) * gn;
   let i0 = fu | 0, j0 = fv | 0;
   if (i0 >= gn) i0 = gn - 1;
   if (j0 >= gn) j0 = gn - 1;
   const tu = fu - i0, tv = fv - j0, w = gn + 1;
-  const a = _aoGrid[j0 * w + i0], b = _aoGrid[j0 * w + i0 + 1];
-  const c = _aoGrid[(j0 + 1) * w + i0], d = _aoGrid[(j0 + 1) * w + i0 + 1];
+  const a = grid[j0 * w + i0], b = grid[j0 * w + i0 + 1];
+  const c = grid[(j0 + 1) * w + i0], d = grid[(j0 + 1) * w + i0 + 1];
   return (a + (b - a) * tu) + ((c + (d - c) * tu) - (a + (b - a) * tu)) * tv;
 }
+export function sampleAOGrid(u, v, gn) { return bilerpGrid(_aoGrid, u, v, gn); }
+export function sampleAOGridB(u, v, gn) { return bilerpGrid(_aoGridB, u, v, gn); }
 
 // Occlusion darkens AND warms. What a hollow loses is SKY light, which is blue; what
 // reaches it instead is light bounced off the ground around it, which is warm. Scaling
 // all three channels equally gives a grey wash that reads as dirt rather than as shade.
-export function applyAO(col, ao, strength) {
+export function applyAO(col, ao, strength, aoB) {
   const k = 1 - strength * (1 - ao);
   col[0] *= k;
   col[1] *= k * 0.985;
   col[2] *= k * 0.955;
+  // VALLEY HAZE, from the broad channel alone. Depth in a landscape painting is done
+  // twice over: the fold you stand in goes warm-dark (the multiply above — hollows lose
+  // blue skylight and keep warm ground bounce), while the VALLEY you are in sinks toward
+  // a cool atmospheric grey — light that has crossed more air before reaching the eye.
+  // 9% at full enclosure: felt as depth, never seen as fog.
+  if (aoB !== undefined) {
+    const t = (1 - aoB) * 0.09;
+    col[0] += (HAZE_R - col[0]) * t;
+    col[1] += (HAZE_G - col[1]) * t;
+    col[2] += (HAZE_B - col[2]) * t;
+  }
 }
+// linear-space cool grey-blue (0x8ea0ac through the same sRGB decode colorcore uses)
+const s2l = (c) => (c < 0.04045 ? c * 0.0773993808 : Math.pow(c * 0.9478672986 + 0.0521327014, 2.4));
+const HAZE_R = s2l(0x8e / 255), HAZE_G = s2l(0xa0 / 255), HAZE_B = s2l(0xac / 255);
+
+// Relief-probe lattice, world-aligned at 20 m — see reliefProbe in colorcore for why.
+// Up to a 97x97 lattice (LOD2's 1920 m tile), three fields, reused, no allocation.
+const PROBE_STEP = 20;
+const _prGx = new Float64Array(9409);
+const _prGz = new Float64Array(9409);
+const _prRel = new Float64Array(9409);
 
 export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan, nrmOut) {
   const cell = size / res;
@@ -133,6 +164,22 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan,
   const _aoN = Math.max(2, Math.ceil(res / AO_STEP));
   bakeAOGrid(x0, z0, size, _aoN);
   const ms = minSpan || 0;
+  // The probe lattice only pays when it is COARSER than the vertex grid (rings 0/1);
+  // on ring 2 the 40 m vertices are already sparser than 20 m, so per-vertex is cheaper
+  // and just as consistent (the field is Nyquist-limited well above that pitch).
+  const useLattice = cell < PROBE_STEP;
+  const prN = useLattice ? size / PROBE_STEP : 0;
+  if (useLattice) {
+    for (let j = 0; j <= prN; j++) {
+      const z = z0 + j * PROBE_STEP;
+      for (let i = 0; i <= prN; i++) {
+        const x = x0 + i * PROBE_STEP;
+        reliefProbe(x, z, heightAt(x, z), _p3);
+        const o = j * (prN + 1) + i;
+        _prGx[o] = _p3[0]; _prGz[o] = _p3[1]; _prRel[o] = _p3[2];
+      }
+    }
+  }
   // Grid: heights + colors. terrainColor's normalY (steep-face rock, scree)
   // comes from an ANALYTIC central difference of heightAt with spacing = one
   // cell, so the paint is seam-consistent across tiles, LODs and threads —
@@ -172,13 +219,37 @@ export function bakeTile(x0, z0, size, res, skirtDepth, posOut, colOut, minSpan,
         hy = h + (mn - h) * t * t * (3 - 2 * t) * sw;
       }
       posOut[o] = x; posOut[o + 1] = hy; posOut[o + 2] = z;
-      const gx = (heightAt(x + cell, z) - heightAt(x - cell, z)) / (2 * cell);
-      const gz = (heightAt(x, z + cell) - heightAt(x, z - cell)) / (2 * cell);
+      // FIXED 12 m STENCIL, NOT ONE CELL. The gradient spacing used to be the ring's own
+      // cell (5 / 15 / 40 m), so the same hillside was painted and lit from three
+      // different slope fields — the rock band bloomed as a tile crossed a ring
+      // boundary, and 40 m normals on high-curvature snow caps are the polygon facets.
+      // One fixed span makes paint and lighting a pure function of position: identical
+      // across rings, and on LOD2's 40 m chords the 12 m normals act as a baked normal
+      // map. LOD0 loses its 5 m slope detail to the splat/bump layer, which carries
+      // near-field grain anyway — and now agrees with the bake instead of fighting it.
+      const PS = 12;
+      const gx = (heightAt(x + PS, z) - heightAt(x - PS, z)) / (2 * PS);
+      const gz = (heightAt(x, z + PS) - heightAt(x, z - PS)) / (2 * PS);
       const ny = 1 / Math.sqrt(1 + gx * gx + gz * gz); // normalize(-gx, 1, -gz).y
-      terrainColor(x, z, h, ny, _col);
+      if (useLattice && h > 0.5) {
+        // bilerp the three probe fields at this vertex (inline: the bake is allocation-free)
+        const fu = (ix * cell) / PROBE_STEP, fv = (iz * cell) / PROBE_STEP;
+        let i0 = fu | 0, j0 = fv | 0;
+        if (i0 >= prN) i0 = prN - 1;
+        if (j0 >= prN) j0 = prN - 1;
+        const tu = fu - i0, tv = fv - j0, w = prN + 1, b0 = j0 * w + i0;
+        const w00 = (1 - tu) * (1 - tv), w10 = tu * (1 - tv), w01 = (1 - tu) * tv, w11 = tu * tv;
+        const pgx = _prGx[b0] * w00 + _prGx[b0 + 1] * w10 + _prGx[b0 + w] * w01 + _prGx[b0 + w + 1] * w11;
+        const pgz = _prGz[b0] * w00 + _prGz[b0 + 1] * w10 + _prGz[b0 + w] * w01 + _prGz[b0 + w + 1] * w11;
+        const prl = _prRel[b0] * w00 + _prRel[b0 + 1] * w10 + _prRel[b0 + w] * w01 + _prRel[b0 + w + 1] * w11;
+        terrainColor(x, z, h, ny, _col, false, pgx, pgz, prl);
+      } else {
+        terrainColor(x, z, h, ny, _col);
+      }
       // Underwater ground is excluded: the sea floor is lit through the water by its own
       // depth palette, and occluding it as well doubles up and turns the shallows muddy.
-      if (h > 0.5) applyAO(_col, sampleAOGrid(ix / res, iz / res, _aoN), AO_STRENGTH);
+      if (h > 0.5) applyAO(_col, sampleAOGrid(ix / res, iz / res, _aoN), AO_STRENGTH,
+        sampleAOGridB(ix / res, iz / res, _aoN));
       colOut[o] = _col[0]; colOut[o + 1] = _col[1]; colOut[o + 2] = _col[2];
       if (nrmOut) {
         // analytic vertex normal, free here (gx/gz/ny already computed). Only

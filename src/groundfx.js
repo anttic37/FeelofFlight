@@ -209,6 +209,21 @@ if (gBumpFade > 0.002) {
     vec3 gGradV = (viewMatrix * vec4(gGrad, 0.0)).xyz;
     normal = normalize(normal - gGradV * (uBumpScale * gBumpFade));
   }
+}
+// SNOW LIGHTING RELAXATION — the shader half of the facet fix. Deep snow is a diffuser:
+// its surface normal matters far less than on rock, because multiple scattering inside
+// the pack launders the incident direction. Relaxing the lighting normal halfway toward
+// world-up on snow pixels flattens the interpolated-normal facets that survive at
+// LOD1/2 vertex pitch, at every distance, for ~9 ALU and no texture. The detector is
+// palette-derived and verified in linear space: snow is the only ground whose blue
+// channel is both high AND >= ~87% of green (cSnow b~0.91; the brightest sand and dune
+// crest fail the ratio, sky never reaches this shader).
+{
+  float gSnow = smoothstep(0.55, 0.80, diffuseColor.b) * step(diffuseColor.g, diffuseColor.b * 1.15);
+  if (gSnow > 0.01) {
+    vec3 gUpV = normalize((viewMatrix * vec4(0.0, 1.0, 0.0, 0.0)).xyz);
+    normal = normalize(mix(normal, gUpV, 0.5 * gSnow));
+  }
 }`;
 
 // ?splat=0 turns the texture layer off — the A/B that tells you whether a change

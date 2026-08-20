@@ -2,7 +2,7 @@
 // the SAME fields (canyon bench jitter aligns color bands to the geometry).
 // At seed 0 it is byte-identical to raw noise2.
 import {
-  seededNoise2 as noise2,
+  seededNoise2 as noise2, heightAt,
   smooth, biomeWeights, _wH, _wD, _wF, _wM,
   canyonLocate, _cd, _cs, _cx, cWf, cWr, washOff,
   TRIBS, tribLocate, _td, _ts,
@@ -32,6 +32,7 @@ function C(hex) {
 const cSandWet = C(0xb69b6c), cSand = C(0xdcc891),
       cGrassL = C(0x86a862), cGrassD = C(0x4c6b3d),
       cHeath = C(0x9a8f58), cForWarm = C(0x6b8546),
+      cSnowShade = C(0xd4dde8),
       cMeadow = C(0x9dbd63), cRock = C(0x8d8a82),
       cRockD = C(0x6e6b64), cSnow = C(0xeef2f4),
       cDirt = C(0x9b7f57), cDesert = C(0xd9bd7e),
@@ -55,12 +56,49 @@ function lerp1(col, w) { _r += (col.r - _r) * w; _g += (col.g - _g) * w; _b += (
 function lerp12(w) { _r += (_r2 - _r) * w; _g += (_g2 - _g) * w; _b += (_b2 - _b) * w; }                 // c.lerp(c2, w)
 function addC2(w) { ar += _r2 * w; ag += _g2 * w; ab += _b2 * w; }     // addC(c2, w)
 
+// THE RELIEF PROBE. One fixed-radius 4-tap cross of heightAt, shared by everything below
+// that needs to know the SHAPE of the ground rather than its slope: signed relief
+// (_rel > 0 = concave, sitting below its surroundings; < 0 = convex, standing proud)
+// drives the drainage darkening, the crest lightening and the snow drift, and the probe
+// gradient gives snow a fixed-scale slope that cannot alias with the LOD lattice. R = 30
+// so the probe reads landforms, not the 9 m mottle — and because it is a pure function
+// of (x, z) it bakes identically at every LOD and on both threads.
+let _gxP = 0, _gzP = 0, _rel = 0;
+
+// The probe for ONE point, exported so bakeTile can evaluate it on a coarse lattice:
+// per-vertex it costs 4 heightAt per vertex and took the bake from 26.8 to 10.9 tiles/s.
+// The field's finest content is ~2R = 60 m wavelength, so a 20 m world-aligned lattice
+// samples it Nyquist-safe and bilerp reconstructs it: 15x fewer taps on LOD0, and since
+// every ring's tile origin is a multiple of 20 m, LOD0 and LOD1 read the IDENTICAL
+// lattice — cross-LOD consistency by construction rather than by hope.
+// out3[0..2] = gx, gz, rel.
+export function reliefProbe(x, z, h, out3) {
+  const R = 30;
+  const hE = heightAt(x + R, z), hW = heightAt(x - R, z);
+  const hS = heightAt(x, z + R), hN = heightAt(x, z - R);
+  out3[0] = (hE - hW) / (2 * R);
+  out3[1] = (hS - hN) / (2 * R);
+  out3[2] = ((hE + hW + hS + hN) * 0.25 - h) / R;
+}
+const _p3 = [0, 0, 0];
+
 // h = heightAt(x, z) at this vertex; normalY = smooth vertex normal Y component;
 // writes linear r,g,b (0..1 floats) into out[0..2]. No allocations.
-export function terrainColor(x, z, h, normalY, out) {
+// coarse = true skips the relief probe (the synchronous startup shell budget).
+// pgx/pgz/prel: probe values supplied by the caller (bakeTile's lattice); when omitted
+// and not coarse, the probe is evaluated here per-vertex.
+export function terrainColor(x, z, h, normalY, out, coarse = false, pgx, pgz, prel) {
   const jit = noise2(x * 0.02, z * 0.02);
   const patch = noise2(x * 0.0035 + 40.7, z * 0.0035 + 9.2); // big vegetation patches
   biomeWeights(x, z);
+  if (pgx !== undefined) {
+    _gxP = pgx; _gzP = pgz; _rel = prel;
+  } else if (!coarse && h > 0.5) {
+    reliefProbe(x, z, h, _p3);
+    _gxP = _p3[0]; _gzP = _p3[1]; _rel = _p3[2];
+  } else {
+    _gxP = _gzP = _rel = 0;
+  }
   const sum = _wH + _wD + _wF + _wM + 0.06;
   ar = ag = ab = 0;
   set2(cGrassL); lerp2(cGrassD, patch * 0.8); lerp2(cMeadow, (1 - patch) * jit * 0.5);
@@ -110,6 +148,19 @@ export function terrainColor(x, z, h, normalY, out) {
   // damp valley floors — low AND flat, where water would actually collect
   const damp = (1 - smooth(0.008, 0.06, 1 - normalY)) * (1 - smooth(30, 150, h));
   if (damp > 0.01) lerp1(cGrassD, damp * 0.28);
+  // ── DRAINAGE, drawn ────────────────────────────────────────────────────────────────
+  // The heightfield has real concavities — gullies, tributaries, the folds between
+  // hills — and until now the paint was blind to them: a slope and the channel incised
+  // into it got the same colour, which is why valleys read as flat washes from the air.
+  // The drainage net is the skeleton every relief painter draws first, and it is
+  // sun-free: this is enclosure, not shading, so it survives the moving sun. Channels
+  // darken ASYMMETRICALLY (red loses most, blue least — a hollow loses warm ground
+  // bounce but keeps cool skylight) and go a step lusher where water would linger.
+  const vall = smooth(0.015, 0.10, _rel) * smooth(4, 12, h) * (1 - smooth(340, 460, h));
+  if (vall > 0.01) {
+    lerp1(cGrassD, vall * 0.22 * (1 - (_wD / sum) * 0.85)); // desert keeps its own washes
+    _r *= 1 - vall * 0.13; _g *= 1 - vall * 0.09; _b *= 1 - vall * 0.05;
+  }
   // SLOPE IS THE MATERIAL. 1 - normalY is 0.015 at 10 deg, 0.13 at 30, 0.29 at
   // 45 — so the old rock ramp (0.28 -> 0.55) only ever fired above ~44 deg, and
   // every gentler face on the island, which is nearly all of it, came out one
@@ -136,6 +187,19 @@ export function terrainColor(x, z, h, normalY, out) {
       set2(strata[bi]); lerp2(strata[(bi + 1) % 4], (band - Math.floor(band)) * 0.5); lerp2(cOchre, 0.3);
     }
     lerp12(steep * 0.85);
+  }
+  // ── CREST SEPARATION, the inverse of the drainage term ─────────────────────────────
+  // Convex ground stands into the wind and the light: crest LINES get a warm luminance
+  // lift and a wind-scoured heath shift, which is what visually separates a ridge from
+  // the slope hanging off it — before this, both were the same colour and the crest only
+  // existed in silhouette. The ecological alibi keeps it honest: scoured crests really
+  // do carry heath over grass. Gated back in the desert so it cannot fight duneRidge's
+  // painted crests, and to half strength on steep rock where the slope bands own the look.
+  const crest = smooth(0.012, 0.08, -_rel) * smooth(20, 45, h)
+              * (1 - 0.5 * smooth(0.3, 0.5, _wD / sum));
+  if (crest > 0.01) {
+    lerp1(cHeath, crest * (1 - steep) * 0.25);
+    _r *= 1 + crest * 0.10; _g *= 1 + crest * 0.07; _b *= 1 + crest * 0.02;
   }
   // desert flats: sunlit dune crests vs shadowed flanks, pale dry-wash beds
   const wDs = _wD / sum;
@@ -232,14 +296,54 @@ export function terrainColor(x, z, h, normalY, out) {
   const snowBroad = (noise2(x * 0.0017 + 3.7, z * 0.0017) - 0.5) * 88;
   const snowFine = (noise2(x * 0.0076 + 19.4, z * 0.0076 + 5.1) - 0.5) * 30;
   const snowline = 455 + snowBroad + snowFine;
-  const shed = 1 - smooth(0.13, 0.42, 1 - normalY);      // ~29 deg -> ~55 deg
-  const cover = smooth(snowline - 26, snowline + 40, h) * shed;
+  // THE SHED SLOPE COMES FROM THE PROBE, NOT THE LOD LATTICE. normalY is sampled at the
+  // ring's own vertex pitch, so at LOD1/2 (15-40 m) the shed gate flipped per-vertex on
+  // high-curvature caps — those are the hard triangle facets on every distant peak. The
+  // probe's fixed 30 m stencil is a pure function of position: the same cover boundary at
+  // every LOD, band-limited so a 40 m lattice can actually resolve it. normalY survives
+  // only as a 10% "ruffle" that lets LOD0 keep its fine margin texture without being able
+  // to flip cover at distance.
+  const nyF = (_gxP !== 0 || _gzP !== 0)
+    ? 1 / Math.sqrt(1 + _gxP * _gxP + _gzP * _gzP) : normalY;
+  const shed = 1 - smooth(0.13, 0.42, 1 - nyF);          // ~29 deg -> ~55 deg
+  const ruffle = 1 - smooth(0.13, 0.42, 1 - normalY);
+  // DRIFT: snow FILLS hollows and the wind STRIPS crests — the snowline slides down into
+  // concave ground (+45 m at most) and up off convex ground (-30 m), which breaks the
+  // painted-on contour line into fingers and cornices that follow the landform.
+  const snowShift = Math.max(-30, Math.min(45, _rel * 600));
+  const cover = smooth(snowline - 26 - snowShift, snowline + 40 - snowShift, h)
+              * shed * (0.90 + 0.10 * ruffle);
   if (cover > 0.004) {
     // deep snow is whiter; the thin fringe keeps more of the ground under it
     set2(cSnow); lerp2(cRockD, (1 - cover) * 0.5);
+    // snow is never flat white: two octaves of sastrugi-scale grain toward a shaded
+    // blue-grey, so a cap is a surface with weather on it rather than a decal
+    const sgr = noise2(x * 0.034 + 8.8, z * 0.034 + 2.6) * 0.6
+              + noise2(x * 0.115 + 21.3, z * 0.115 + 9.9) * 0.4;
+    lerp2(cSnowShade, sgr * 0.16);
     // cool it where the surface turns away from the sky, warm the sunlit tops a hair
-    _b2 += (0.055 - 0.03 * normalY) * cover;
+    _b2 += (0.055 - 0.03 * nyF) * cover;
     lerp12(cover * 0.94);
+  }
+  // ── HYPSOMETRIC CONTRAST — vertical aerial perspective, baked ──────────────────────
+  // Relief maps grade tone with elevation because the eye expects altitude to carry
+  // light: lowlands sit under more air, so they desaturate toward a cool neutral, while
+  // highlands gain chroma and a whisper of warm luminance. 5-6% at the extremes —
+  // this term must be FELT as depth, never seen as a gradient. Luminance-and-warmth
+  // only (no hue rotation), so it composes with the moisture/dry olive shifts instead
+  // of double-dipping, and it sits after snow so the caps cannot clip.
+  const hypHi = smooth(140, 480, h) * 0.06;
+  const hypLo = (1 - smooth(15, 130, h)) * 0.05;
+  const hypLum = 0.35 * _r + 0.5 * _g + 0.15 * _b;
+  if (hypLo > 0.001) {
+    _r += (hypLum - _r) * hypLo * 1.2;
+    _g += (hypLum - _g) * hypLo;
+    _b += (hypLum - _b) * hypLo * 0.6;
+  }
+  if (hypHi > 0.001) {
+    _r = hypLum + (_r - hypLum) * (1 + hypHi) + hypHi * hypLum * 0.035;
+    _g = hypLum + (_g - hypLum) * (1 + hypHi) + hypHi * hypLum * 0.025;
+    _b = hypLum + (_b - hypLum) * (1 + hypHi) + hypHi * hypLum * 0.008;
   }
   // RUNWAY APRON. runwayInfluence is a rounded RECTANGLE — it has to be, because the
   // same field grades the terrain flat and a strip needs a clean platform to sit on.
