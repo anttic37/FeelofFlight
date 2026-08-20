@@ -51,9 +51,35 @@ export function createRunways(scene) {
   // values above 1.0, and bloom turns the excess into glow instead of clipping it. The
   // multipliers put the brightest channel near the masts' proven 2.4-2.6.
   const amber = new THREE.Color(0xffb347).multiplyScalar(2.4),
-        green = new THREE.Color(0x53e07a).multiplyScalar(2.6);
+        green = new THREE.Color(0x53e07a).multiplyScalar(2.6),
+        // REAL COLOURS. Edge lights are WHITE — amber is the caution zone near the ends,
+        // not the whole runway — and the approach system is white centreline bars with red
+        // side barrettes, which is the picture every night-landing photograph shows.
+        lampWhite = new THREE.Color(0xffffff).multiplyScalar(2.3),
+        lampRed = new THREE.Color(0xff3524).multiplyScalar(2.4);
   const mtx = new THREE.Matrix4(), p = new THREE.Vector3(), q = new THREE.Quaternion(), s = new THREE.Vector3();
   q.identity();
+
+  // designation-number quads: one canvas per distinct label, tinted like the other paint
+  const numGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+  const numTexCache = {};
+  const numMat = (label) => {
+    if (!numTexCache[label]) {
+      const c = document.createElement('canvas');
+      c.width = 128; c.height = 192;
+      const x = c.getContext('2d');
+      x.clearRect(0, 0, 128, 192);
+      x.fillStyle = '#dcdcd0';
+      x.font = '700 118px Arial, sans-serif';
+      x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText(label, 64, 100);
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.anisotropy = 4;
+      numTexCache[label] = tintUnlit(new THREE.MeshBasicMaterial({ map: t, transparent: true }));
+    }
+    return numTexCache[label];
+  };
 
   for (const r of RUNWAYS) {
     const g = new THREE.Group();
@@ -93,6 +119,23 @@ export function createRunways(scene) {
     }
     g.add(marks);
 
+    // RUNWAY DESIGNATION NUMBERS, one per threshold, from the strip's real bearing.
+    // The designator is the magnetic-style heading you fly WHEN LANDING OVER that end,
+    // rounded to tens — so the two ends differ by 18, exactly like the real thing. Painted
+    // just inside the piano keys, top of the glyph toward the runway centre, which is what
+    // makes it read upright to a pilot on final and upside-down to everyone else.
+    for (const end of [-1, 1]) {
+      const brg = Math.atan2(-end * Math.sin(r.heading), end * Math.cos(r.heading));
+      let n = Math.round(((brg * 180 / Math.PI + 360) % 360) / 10);
+      if (n === 0) n = 36;
+      const label = String(n).padStart(2, '0');
+      const numMesh = new THREE.Mesh(numGeo, numMat(label));
+      numMesh.position.set(0, 0.235, end * (r.length / 2 - 26));
+      numMesh.rotation.y = end === 1 ? 0 : Math.PI;
+      numMesh.scale.set(7, 1, 10);
+      g.add(numMesh);
+    }
+
     // edge lights (amber) + threshold rows (green), unlit so they read as emissive.
     // EACH ONE STANDS ON A POLE now: the lamps used to be spheres floating at 0.5 with
     // nothing under them, which from low down read as beads hovering over the grass. The
@@ -114,7 +157,10 @@ export function createRunways(scene) {
     };
     for (let k = 0; k < rows; k++) {
       const lz = -(rows - 1) * 15 + k * 30;
-      for (const side of [-1, 1]) placeLight(side * (r.width / 2 + 1.7), lz, amber);
+      // white down the runway, amber over the outer ~40% of each half — the caution-zone
+      // convention, and it also gives a pilot distance-remaining for free at night
+      const col = Math.abs(lz) / (r.length / 2) > 0.58 ? amber : lampWhite;
+      for (const side of [-1, 1]) placeLight(side * (r.width / 2 + 1.7), lz, col);
     }
     for (const end of [-1, 1]) {
       for (let k = 0; k < 5; k++) {
@@ -236,27 +282,60 @@ export function createRunways(scene) {
   // extended centreline. Placed in WORLD space and sampled onto the terrain —
   // parented to the strip they would float or bury themselves, because the
   // approach corridor slopes away from the graded pad.
-  const APP_BARS = 5, APP_W = 3;
-  const appLights = new THREE.InstancedMesh(lightGeo, lightMat, RUNWAYS.length * 2 * APP_BARS * APP_W);
-  let ai = 0;
-  const whiteC = new THREE.Color(0xf2f6ff).multiplyScalar(2.2); // same >1.0 bloom trick as the edge lamps
-  s.set(1.25, 1.25, 1.25); // a touch larger than the edge lights: seen from far out
+  //
+  // EACH BAR IS A FITTING, NOT A ROW OF FLOATING BEADS. The lamps used to hover at
+  // 0.45 with nothing under them — the one place the game guarantees you look closely
+  // at the ground, on short final, showed lights standing on air. Every bar now has a
+  // horizontal rail on two legs, and its lamps share ONE ground height sampled at the
+  // bar's centre: a real bar is level, and per-lamp terrain sampling had them
+  // stair-stepping across their own frame.
+  //
+  // Colours per the standard picture: white centreline triples all five bars, red
+  // barrettes flanking the three bars nearest the threshold.
+  const APP_BARS = 5;
+  const appLights = new THREE.InstancedMesh(lightGeo, lightMat, RUNWAYS.length * 2 * APP_BARS * 9);
+  const railGeo = new THREE.BoxGeometry(1, 0.09, 0.09);
+  const appFrames = new THREE.InstancedMesh(railGeo, stalkMat, RUNWAYS.length * 2 * APP_BARS);
+  const appLegs = new THREE.InstancedMesh(poleStalkGeo, stalkMat, RUNWAYS.length * 2 * APP_BARS * 2);
+  let ai = 0, afi = 0, ali = 0;
+  const qr = new THREE.Quaternion(), Y_AXIS = new THREE.Vector3(0, 1, 0);
   for (const r of RUNWAYS) {
+    qr.setFromAxisAngle(Y_AXIS, r.heading);
     for (const end of [-1, 1]) {
       for (let bar = 1; bar <= APP_BARS; bar++) {
         const lz = end * (r.length / 2 + bar * 58);
-        for (let k = -1; k <= 1; k++) {
-          const lx = k * 5.0;
+        // one ground height for the whole bar, sampled at its centre
+        const cx = r.x + lz * r._s, cz = r.z + lz * r._c;
+        const gy = Math.max(0.2, heightAt(cx, cz));
+        const redBar = bar <= 3;
+        const lamps = redBar ? [[-10.5, lampRed], [-8.5, lampRed], [-6.5, lampRed], [-5, lampWhite], [0, lampWhite], [5, lampWhite], [6.5, lampRed], [8.5, lampRed], [10.5, lampRed]]
+                             : [[-5, lampWhite], [0, lampWhite], [5, lampWhite]];
+        s.set(1.25, 1.25, 1.25);
+        for (const [lx, col] of lamps) {
           const wx = r.x + lx * r._c + lz * r._s, wz = r.z - lx * r._s + lz * r._c;
-          p.set(wx, Math.max(0.2, heightAt(wx, wz)) + 0.45, wz);
+          p.set(wx, gy + 0.55, wz);
           appLights.setMatrixAt(ai, mtx.compose(p, q, s));
-          appLights.setColorAt(ai++, whiteC);
+          appLights.setColorAt(ai++, col);
+        }
+        // the rail spans the lamps; two legs carry it to the ground
+        const span = (redBar ? 22.5 : 11.5);
+        p.set(cx, gy + 0.38, cz);
+        s.set(span, 1, 1);
+        appFrames.setMatrixAt(afi++, mtx.compose(p, qr, s));
+        for (const leg of [-0.32, 0.32]) {
+          const lx = leg * span;
+          const wx = r.x + lx * r._c + lz * r._s, wz = r.z - lx * r._s + lz * r._c;
+          p.set(wx, gy + 0.19, wz);
+          s.set(1, 0.42, 1);          // the 0.95 stalk cut down to reach rail height
+          appLegs.setMatrixAt(ali++, mtx.compose(p, qr, s));
         }
       }
     }
   }
   appLights.count = ai;
-  group.add(appLights);
+  appFrames.count = afi; appFrames.castShadow = true;
+  appLegs.count = ali;
+  group.add(appLights, appFrames, appLegs);
 
   // ── AIRFIELD BUILDINGS, beside the primary strip ────────────────────────
   //
