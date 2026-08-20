@@ -15,10 +15,17 @@ import { fbm1 } from './noise.js';
 const G = 9.81;
 
 // strength = impact speed (m/s) above which the part lets go (±25% per crash)
+// Both airframes' shear points are listed; a name the mounted model lacks is simply not
+// found and never lets go. KX-1 wings ('wing flex joint') carried the gear with them; the
+// KX-2 parents its gear on the FIXED root segment inboard of the first flex joint, so its
+// sheared wing leaves a root stub and the gear stays with the fuselage — which is also
+// what the crash colliders then measure, since airframe.js reads the same names.
 const PART_DEFS = [
   { name: 'Propeller assembly', strength: 7 },
-  { name: 'Left wing flex joint', strength: 15 }, // takes gear + wheels along
+  { name: 'Left wing flex joint', strength: 15 },   // KX-1: takes gear + wheels along
   { name: 'Right wing flex joint', strength: 21 },
+  { name: 'Left wing flex inboard', strength: 15 }, // KX-2: gear stays on the root stub
+  { name: 'Right wing flex inboard', strength: 21 },
   { name: 'Tail wheel', strength: 19 },
   { name: 'Rudder hinge', strength: 26 },
   { name: 'Elevator controller', strength: 30 },

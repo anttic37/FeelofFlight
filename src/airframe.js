@@ -14,12 +14,22 @@ import * as THREE from 'three';
 // that has sheared off is simply not found and contributes nothing.
 //
 // Boxes, in the aeroplane's own frame (fwd -Z, up +Y, right +X).
+// THE UNION OF BOTH AIRFRAMES' NAMES. The KX-2 renamed several parts (its
+// aircraftCapabilities block documents the new rig: three cumulative flex joints per wing,
+// of which the INBOARD one carries everything outboard — the equivalent subtree to the
+// KX-1's single 'wing flex joint'). getObjectByName simply misses names the mounted model
+// does not have, so listing both sets keeps this file plane-agnostic: whichever aircraft
+// is flying, its parts are found and the other's rows contribute nothing.
 const PARTS = [
-  'Fuselage',
+  'Fuselage',                              // KX-1
+  'Fuselage shell with cockpit aperture',  // KX-2
   'Canopy glass',
-  'Left wing flex joint',
+  'Left wing flex joint',                  // KX-1
   'Right wing flex joint',
-  'Vertical stabilizer',
+  'Left wing flex inboard',                // KX-2: subtree = whole flexing wing
+  'Right wing flex inboard',
+  'Vertical stabilizer',                   // KX-1
+  'Airfoil vertical stabilizer',           // KX-2
   'Rudder hinge',
   'Left stabilizer',
   'Right stabilizer',

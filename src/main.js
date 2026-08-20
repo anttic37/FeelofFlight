@@ -13,7 +13,12 @@ import { createWorld, heightAt, surfaceAt } from './world.js';
 import { createDayNight } from './daynight.js';
 import { initGroundFX } from './groundfx.js';
 import { RUNWAYS } from './runways.js';
-import { buildPlane, updatePlaneVisual } from './crimson-kestrel.js'; // KX-1 with load-flexing wings
+// KX-2: same buildPlane/updatePlaneVisual contract as the KX-1 and the same wingFlexSm
+// input, but the flex rig is v2 — three cumulative spanwise joints per wing instead of one
+// rigid root rotation, so the wing takes a curve under load instead of folding at a hinge.
+// The module documents its own contract in aircraftCapabilities. The KX-1 stays in the
+// repo; swapping this import back is the whole revert.
+import { buildPlane, updatePlaneVisual } from './crimson-kestrel-mk2.js';
 import { FlightModel } from './physics.js';
 import { measureContacts } from './airframe.js';
 import { ChaseCam } from './camera.js';
