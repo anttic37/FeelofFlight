@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { heightAt, runwayInfluence, RUNWAYS } from './heightcore.js';
 import { tintUnlit, ATMO } from './atmosphere.js';
+import { noise2 } from './noise.js';
 
 // Radio masts on the high ground and a wind farm along a ridge. Both exist for the same
 // reason: an island of bare hills gives you nothing to judge SIZE or DISTANCE against, and a
@@ -363,6 +364,7 @@ export function createLandmarks(scene) {
   // instanced draw, which is the cheapest thing in this file.
   const PYL_H = 30, SPAN = 120, WIRE_CLEAR = 3;
   const pylons = [];
+  const trackRuns = [];   // per successful line: the chain of (x,z) it visits, for the service track
   const wireVerts = [];
   // where a conductor attaches on each kind of node
   const topOf = (n) => n.h + n.top;
@@ -417,6 +419,8 @@ export function createLandmarks(scene) {
     }
 
     pylons.push(...fresh);
+    // the maintenance chain: endpoint, every pylon, endpoint — the service track follows it
+    trackRuns.push([{ x: a.x, z: a.z }, ...fresh.map(f => ({ x: f.x, z: f.z })), { x: b.x, z: b.z }]);
     // two conductors, one either side, sagging between supports
     for (let i = 0; i < pts.length - 1; i++) {
       const p = pts[i], q = pts[i + 1];
@@ -529,7 +533,102 @@ export function createLandmarks(scene) {
       new THREE.CylinderGeometry(1.5, 1.9, 0.8, 4).translate(0, 0.4, 0),
     ]);
     group.add(contactPatches(pylons, 6, 0.22));
-    place(pylonGeo, steel, pylons, 0);
+    // PYLONS GET THEIR OWN STEEL, because they get their own atmosphere. A tower is a thin
+    // bright vertical against dark ground — fog alone leaves a picket fence on every far
+    // ridge (same story as the conductors, one step behind). Their steel fades out between
+    // 5.5 and 9 km, past where a 30 m lattice tower is a couple of pixels; masts and
+    // turbines keep the shared material and stay visible, because they are LANDMARKS and
+    // a pylon is furniture. Instance onBeforeCompile shadows the prototype ATMO hook
+    // (the v8.93 trap), so the shared uniforms are re-merged here.
+    const pylonSteel = steel.clone();
+    pylonSteel.transparent = true;
+    pylonSteel.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, ATMO);
+      shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>',
+        '#include <fog_fragment>\n  gl_FragColor.a *= 1.0 - smoothstep(5500.0, 9000.0, vFogDepth);');
+    };
+    place(pylonGeo, pylonSteel, pylons, 0);
+
+    // ── THE GROUND REMEMBERS THE GRID ────────────────────────────────────────────────────
+    // A tower standing on pristine hillside reads as placed by software. Real transmission
+    // towers sit in DISTURBED ground: a worn pad of bare dirt at each base, and a service
+    // track threading tower to tower, because every one of them was built and is maintained
+    // by something with wheels. Both are multiply-blend meshes draped on the terrain — the
+    // same machinery as the contact patches — tinted rather than darkened, so grass goes
+    // dry-tan and desert goes a shade warmer instead of everything going grey.
+    //
+    // THE TRACK WHITENS OUT BY 2.6 km (multiply-by-white = invisible; this material's
+    // blending ignores alpha) — a worn path at range is exactly the kind of crisp drawn
+    // line the conductors were just cured of, and the cure must not reintroduce the
+    // disease. The wear discs ride the same material: sub-pixel by then anyway.
+    const wearGeo = (() => {
+      const posA = [], colA = [], idxA = [];
+      const TINT = [1.0, 0.84, 0.64];      // multiply: grass -> dry dirt, desert -> warmer
+      // discs, rim-jittered so no two are the same stamped circle
+      for (const p of pylons) {
+        const SP = 12, base = posA.length / 3;
+        posA.push(p.x, heightAt(p.x, p.z) + 0.18, p.z);
+        colA.push(TINT[0], TINT[1], TINT[2]);
+        for (let a = 0; a < SP; a++) {
+          const th = a / SP * Math.PI * 2;
+          const rad = 4.6 * (0.75 + 0.5 * noise2(p.x * 0.13 + a * 0.71, p.z * 0.13));
+          const x = p.x + Math.cos(th) * rad, z = p.z + Math.sin(th) * rad;
+          posA.push(x, heightAt(x, z) + 0.18, z);
+          colA.push(1, 1, 1);              // multiply by 1 at the rim = fades to nothing
+          idxA.push(base, base + 1 + a, base + 1 + ((a + 1) % SP));
+        }
+      }
+      // the service track: a 2 m ribbon that wanders a little, as worn tracks do
+      for (const run of trackRuns) {
+        for (let s = 0; s < run.length - 1; s++) {
+          const A = run[s], B = run[s + 1];
+          const L = Math.hypot(B.x - A.x, B.z - A.z);
+          const n = Math.max(2, Math.round(L / 11));
+          const ux = (B.x - A.x) / L, uz = (B.z - A.z) / L;
+          const px = -uz, pz = ux;
+          let prev = -1;
+          for (let i = 0; i <= n; i++) {
+            const t = i / n;
+            const wob = (noise2(A.x * 0.05 + t * L * 0.055, A.z * 0.05) - 0.5) * 2.4;
+            const cx = A.x + (B.x - A.x) * t + px * wob;
+            const cz = A.z + (B.z - A.z) * t + pz * wob;
+            const y = heightAt(cx, cz) + 0.14;
+            const base = posA.length / 3;
+            posA.push(cx + px * 1.0, y, cz + pz * 1.0, cx - px * 1.0, y, cz - pz * 1.0);
+            const w = 0.55 + 0.45 * noise2(cx * 0.09, cz * 0.09);   // patchy wear, not paint
+            colA.push(
+              1 - (1 - TINT[0]) * w, 1 - (1 - TINT[1]) * w, 1 - (1 - TINT[2]) * w,
+              1 - (1 - TINT[0]) * w, 1 - (1 - TINT[1]) * w, 1 - (1 - TINT[2]) * w);
+            if (prev >= 0) idxA.push(prev, base, prev + 1, prev + 1, base, base + 1);
+            prev = base;
+          }
+        }
+      }
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.Float32BufferAttribute(posA, 3));
+      g.setAttribute('color', new THREE.Float32BufferAttribute(colA, 3));
+      g.setIndex(idxA);
+      return g;
+    })();
+    const wearMat = new THREE.MeshBasicMaterial({
+      vertexColors: true, blending: THREE.MultiplyBlending, transparent: true,
+      depthWrite: false, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6,
+      fog: false,   // a multiplier on ground that is already fogged — same rule as the patches
+    });
+    wearMat.onBeforeCompile = (shader) => {
+      // own varying, own fade: with fog off there is no vFogDepth here, so carry the view
+      // distance ourselves and multiply toward WHITE with range (= invisible under this
+      // blending, since it ignores alpha entirely)
+      shader.vertexShader = 'varying float vWearD;\n' + shader.vertexShader
+        .replace('#include <project_vertex>', '#include <project_vertex>\n  vWearD = -mvPosition.z;');
+      shader.fragmentShader = 'varying float vWearD;\n' + shader.fragmentShader
+        .replace('#include <color_fragment>',
+          '#include <color_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(1.0), smoothstep(1500.0, 2600.0, vWearD));');
+    };
+    const wear = new THREE.Mesh(wearGeo, wearMat);
+    wear.renderOrder = 1;
+    wear.frustumCulled = false;
+    group.add(wear);
   }
   if (wireVerts.length) {
     const wireGeo = new THREE.BufferGeometry();
