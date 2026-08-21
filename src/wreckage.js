@@ -22,15 +22,21 @@ const G = 9.81;
 // what the crash colliders then measure, since airframe.js reads the same names.
 const PART_DEFS = [
   { name: 'Propeller assembly', strength: 7 },
+  { name: 'Hamilton Standard four-blade propeller assembly', strength: 7 }, // P-51D
   { name: 'Left wing flex joint', strength: 15 },   // KX-1: takes gear + wheels along
   { name: 'Right wing flex joint', strength: 21 },
-  { name: 'Left wing flex inboard', strength: 15 }, // KX-2: gear stays on the root stub
+  { name: 'Left wing flex inboard', strength: 15 }, // KX-2 + P-51D: gear stays on the root stub
   { name: 'Right wing flex inboard', strength: 21 },
   { name: 'Tail wheel', strength: 19 },
+  { name: 'Retractable tailwheel assembly', strength: 19 },                 // P-51D
   { name: 'Rudder hinge', strength: 26 },
+  { name: 'Fabric-covered production rudder hinge', strength: 26 },         // P-51D
   { name: 'Elevator controller', strength: 30 },
+  { name: 'Elevator control assembly', strength: 30 },                      // P-51D
   { name: 'Left stabilizer', strength: 34 },
   { name: 'Right stabilizer', strength: 34 },
+  { name: 'Left all-metal horizontal stabilizer', strength: 34 },           // P-51D
+  { name: 'Right all-metal horizontal stabilizer', strength: 34 },
 ];
 
 export function createWreckage(scene, surfaceAt, heightAt) {

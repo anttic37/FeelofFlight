@@ -23,17 +23,24 @@ import * as THREE from 'three';
 const PARTS = [
   'Fuselage',                              // KX-1
   'Fuselage shell with cockpit aperture',  // KX-2
+  'Semi-monocoque fuselage shell',         // P-51D
   'Canopy glass',
+  'Sliding teardrop bubble canopy',        // P-51D
+  'Fixed framed windscreen',               // P-51D
   'Left wing flex joint',                  // KX-1
   'Right wing flex joint',
-  'Left wing flex inboard',                // KX-2: subtree = whole flexing wing
+  'Left wing flex inboard',                // KX-2 + P-51D: subtree = whole flexing wing
   'Right wing flex inboard',
   'Vertical stabilizer',                   // KX-1
-  'Airfoil vertical stabilizer',           // KX-2
+  'Airfoil vertical stabilizer',           // KX-2 + P-51D
   'Rudder hinge',
+  'Fabric-covered production rudder hinge', // P-51D
   'Left stabilizer',
   'Right stabilizer',
+  'Left all-metal horizontal stabilizer',  // P-51D
+  'Right all-metal horizontal stabilizer',
   'Tail wheel',
+  'Retractable tailwheel assembly',        // P-51D
 ];
 // 'Propeller assembly' is deliberately absent. Its bounding box is the swept DISC, 3 x 3 m,
 // and a 3 m cube on the nose is not what the aeroplane hits the ground with. It also shears at

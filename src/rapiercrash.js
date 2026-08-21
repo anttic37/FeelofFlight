@@ -211,11 +211,13 @@ export function createRapierCrash(plane) {
       // is friction and angular damping, not shape.
       const [hx, hy, hz] = part.half;
       let desc;
-      // startsWith, not equality: the KX-1 names it 'Fuselage', the KX-2 'Fuselage shell
-      // with cockpit aperture', and both deserve the capsule — the roll-not-tumble feel
-      // was tuned on this shape, and losing it to a rename would be invisible until the
-      // first crash felt like a diamond again.
-      if (part.name.startsWith('Fuselage')) {
+      // Substring, not equality or prefix: 'Fuselage' (KX-1), 'Fuselage shell with cockpit
+      // aperture' (KX-2), 'Semi-monocoque fuselage shell' (P-51D) — every airframe's body
+      // deserves the capsule, because the roll-not-tumble feel was tuned on this shape and
+      // losing it to a rename is invisible until the first crash feels like a diamond
+      // again. Safe as a substring: this only ever sees airframe.js's curated PARTS list,
+      // never decal names.
+      if (part.name.toLowerCase().includes('fuselage')) {
         const rad = Math.min(hx, hy);
         desc = R.ColliderDesc.capsule(Math.max(0.05, hz - rad), rad)
           // Rapier capsules run along Y; the fuselage runs along Z, a quarter turn about X.
