@@ -22,7 +22,8 @@ import { RUNWAYS } from './runways.js';
 // the whole change of aircraft.
 import { buildPlane, updatePlaneVisual } from './p-51d-mustang2.js';
 import { FlightModel } from './physics.js';
-import { measureContacts } from './airframe.js';
+import { measureContacts, measureParts } from './airframe.js';
+import { mergeStaticPlaneMeshes } from './planeoptimize.js';
 import { ChaseCam } from './camera.js';
 import { WingTrails } from './trails.js';
 import { createFX } from './fx.js';
@@ -81,6 +82,19 @@ dayNight.update(0);   // so frame one is already at the right time rather than a
 window.__dn = dayNight;
 // ?tod=0..1 pins the time of day (0 = dawn, 0.33 = noon, 0.67 = dusk, 0.85 = deep night)
 const plane = buildPlane();
+// STATIC-MESH MERGE. The hero airframes are ~260 meshes and three draws one call per mesh
+// regardless of shared material, so the aeroplane alone was the biggest draw cost in the
+// scene. Most of those meshes are static relative to some moving part; merging each such
+// cluster into one geometry per material (parented to that part, so wing detail still
+// flexes) cuts the plane's mesh count roughly in half with a provably pixel-identical
+// result. Runs before the shadow cull so the cull sizes against the merged geometry.
+// The protected list is the live collider parts — airframe/wreckage find those by name at
+// crash time and must never be merged away.
+{
+  const before = []; plane.group.traverse((o) => { if (o.isMesh) before.push(o); });
+  const r = mergeStaticPlaneMeshes(plane, measureParts(plane).map((p) => p.name));
+  console.log(`[flighfeel] plane meshes ${before.length} -> ${before.length - r.removed + r.mergedDraws} (merged ${r.removed} into ${r.mergedDraws}, -${r.netDrawsSaved} draws)`);
+}
 // SHADOW-CASTER CULL. The hero airframes are 200-300 meshes each and ship with nearly
 // every one flagged castShadow — so the shadow map redraws all of them every frame, when
 // the plane's ground shadow is a single soft PCF silhouette that only the big masses
