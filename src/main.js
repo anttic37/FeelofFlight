@@ -20,7 +20,7 @@ import { RUNWAYS } from './runways.js';
 // Kestrels, flex rig v2 (three cumulative spanwise joints per wing), documented in its own
 // aircraftCapabilities manifest. Both Kestrels stay in the repo; swapping this import is
 // the whole change of aircraft.
-import { buildPlane, updatePlaneVisual } from './p-51d-mustang.js';
+import { buildPlane, updatePlaneVisual } from './p-51d-mustang2.js';
 import { FlightModel } from './physics.js';
 import { measureContacts } from './airframe.js';
 import { ChaseCam } from './camera.js';

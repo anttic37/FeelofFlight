@@ -32,7 +32,8 @@ const PARTS = [
   'Left wing flex inboard',                // KX-2 + P-51D: subtree = whole flexing wing
   'Right wing flex inboard',
   'Vertical stabilizer',                   // KX-1
-  'Airfoil vertical stabilizer',           // KX-2 + P-51D
+  'Airfoil vertical stabilizer',           // KX-2 + P-51D v1
+  'Full-chord airfoil vertical stabilizer to rudder hinge', // P-51D v2
   'Rudder hinge',
   'Fabric-covered production rudder hinge', // P-51D
   'Left stabilizer',
