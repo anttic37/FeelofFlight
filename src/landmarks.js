@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { heightAt, runwayInfluence, RUNWAYS } from './heightcore.js';
-import { tintUnlit } from './atmosphere.js';
+import { tintUnlit, ATMO } from './atmosphere.js';
 
 // Radio masts on the high ground and a wind farm along a ridge. Both exist for the same
 // reason: an island of bare hills gives you nothing to judge SIZE or DISTANCE against, and a
@@ -536,7 +536,21 @@ export function createLandmarks(scene) {
     wireGeo.setAttribute('position', new THREE.Float32BufferAttribute(wireVerts, 3));
     // tintUnlit, because LineBasicMaterial takes no light: without it the wires would hold
     // their midday value through dusk and glow faintly against a dark hillside at night.
-    const wireMat = tintUnlit(new THREE.LineBasicMaterial({ color: 0x353a42 }));
+    //
+    // AND THEY FADE OUT WITH DISTANCE, unlike everything else. Fog is not enough for a
+    // conductor: haze mixes a 1-2 px near-black stroke toward the sky colour, but a dark
+    // stroke at half-haze is still a drawn line, and the grid read as crisp ink lines
+    // along every distant ridge. A 3 cm wire is physically invisible beyond a couple of
+    // km — so the conductors dissolve entirely by ~3.4 km and the PYLONS carry the line
+    // of the grid from there, which is exactly how a real one reads from the air.
+    // The instance onBeforeCompile SHADOWS the prototype ATMO hook (the v8.93 trap), so
+    // the shared uniforms are re-merged here or the fog chunk would read zeros.
+    const wireMat = tintUnlit(new THREE.LineBasicMaterial({ color: 0x353a42, transparent: true }));
+    wireMat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, ATMO);
+      shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>',
+        '#include <fog_fragment>\n  gl_FragColor.a *= 1.0 - smoothstep(1600.0, 3400.0, vFogDepth);');
+    };
     const wires = new THREE.LineSegments(wireGeo, wireMat);
     wires.frustumCulled = false;   // one object spanning the island; its bounds are the island
     group.add(wires);
