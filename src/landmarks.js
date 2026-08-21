@@ -644,7 +644,16 @@ export function createLandmarks(scene) {
     // of the grid from there, which is exactly how a real one reads from the air.
     // The instance onBeforeCompile SHADOWS the prototype ATMO hook (the v8.93 trap), so
     // the shared uniforms are re-merged here or the fog chunk would read zeros.
-    const wireMat = tintUnlit(new THREE.LineBasicMaterial({ color: 0x353a42, transparent: true }));
+    // STEEL-GREY, NOT BLACK. The conductors were 0x353a42 — near-black thread — which is
+    // why they read as ink strokes drawn over the landscape at any range. A real conductor
+    // is bare aluminium over a steel core: pale silver-grey that catches the sky, lighter
+    // than most ground it crosses and barely darker than the sky it hangs against. The
+    // tint follows the time of day, so it goes warm at dusk and dim at night like the rest
+    // of the unlit paint.
+    // 0x9aa1a7, one notch under pure silver: a WebGL line is one pixel wide at every range,
+    // which is already far fatter than a real conductor at 500 m, so brightness is the only
+    // lever left — a full silver read as a bright cable against dark hillside at midday.
+    const wireMat = tintUnlit(new THREE.LineBasicMaterial({ color: 0x9aa1a7, transparent: true }));
     wireMat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, ATMO);
       shader.fragmentShader = shader.fragmentShader.replace('#include <fog_fragment>',
