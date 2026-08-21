@@ -9,6 +9,9 @@ import { patchCloudShadow, attachCloudShadow, syncCloudShadow, setCloudShadowVie
 // Same deal, and it has to run AFTER the atmosphere patch: both wrap
 // Material.prototype.onBeforeCompile, and this one chains what it finds.
 patchCloudShadow();
+import { patchShadowFade } from './shadowfade.js';
+// ...and shadows that fade at the edge of the shadow box instead of snapping on and off.
+patchShadowFade();
 import { createWorld, heightAt, surfaceAt } from './world.js';
 import { createDayNight } from './daynight.js';
 import { initGroundFX } from './groundfx.js';
