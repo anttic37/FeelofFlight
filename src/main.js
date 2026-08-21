@@ -81,7 +81,47 @@ dayNight.update(0);   // so frame one is already at the right time rather than a
 window.__dn = dayNight;
 // ?tod=0..1 pins the time of day (0 = dawn, 0.33 = noon, 0.67 = dusk, 0.85 = deep night)
 const plane = buildPlane();
+// SHADOW-CASTER CULL. The hero airframes are 200-300 meshes each and ship with nearly
+// every one flagged castShadow — so the shadow map redraws all of them every frame, when
+// the plane's ground shadow is a single soft PCF silhouette that only the big masses
+// (fuselage, wings, tail, canopy, prop disc, gear legs) contribute to. Rivets, panel
+// lines, exhaust stains and gear-bay internals sit inside or on that silhouette and widen
+// it by nothing. Keep casting only on meshes whose own geometry spans >1.2 m; measured on
+// the P-51D that is 285 casters -> ~70, i.e. ~215 fewer draws per frame in the shadow
+// pass, with a shadow silhouette the eye cannot tell apart. Model-agnostic: it reads the
+// geometry, so it right-sizes whatever aircraft is mounted.
+const planeShadowCasters = [];
+{
+  const _s = new THREE.Vector3();
+  let dropped = 0;
+  plane.group.traverse((o) => {
+    if (!o.isMesh || !o.castShadow) return;
+    if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
+    o.geometry.boundingBox.getSize(_s);
+    if (Math.max(_s.x, _s.y, _s.z) < 1.2) { o.castShadow = false; dropped++; } else planeShadowCasters.push(o);
+  });
+  console.log(`[flighfeel] shadow casters: kept ${planeShadowCasters.length}, dropped ${dropped}`);
+}
 scene.add(plane.group);
+
+// ...AND SKIP THE PLANE'S SHADOW PASS WHEN IT CANNOT LAND ON THE GROUND. The shadow box is
+// a +/-160 m square that follows the plane; the plane's own shadow falls downsun by
+// AGL * horizontal(sun) / sun.y, so once that exceeds ~160 m the shadow is outside its own
+// box and nothing is drawn from those 69 casters anyway — yet the depth map still renders
+// them every frame. Toggling castShadow off above the sun-dependent limit skips all 69 in
+// the shadow pass through every second of cruise, which is most of the flight. Costs one
+// hypot and 69 boolean writes only on the frames the state flips.
+let _planeCasts = true;
+function updatePlaneShadowCulling() {
+  const agl = phys.pos.y - Math.max(0, heightAt(phys.pos.x, phys.pos.z));
+  const horiz = Math.hypot(SUN_DIR.x, SUN_DIR.z);
+  const maxVisAGL = 160 * Math.max(0, SUN_DIR.y) / Math.max(horiz, 0.04) + 25;
+  const want = agl < maxVisAGL;
+  if (want !== _planeCasts) {
+    _planeCasts = want;
+    for (const m of planeShadowCasters) m.castShadow = want;
+  }
+}
 
 // Half-width of whatever is dragging on the ground, taken from the same contact points the
 // wreck physics uses, so the dust burst and the collision are sized off one measurement
@@ -449,6 +489,7 @@ renderer.setAnimationLoop(() => {
   // stream terrain around the CAMERA in free flight, or you fly a few km out and the
   // island stops loading under you
   world.update(chase.free ? chase.camera.position : phys.pos, simTime);
+  updatePlaneShadowCulling();
   sound.update(dt, phys);
   hud.update(phys, input, dayNight.state);
   // the panel needs no per-frame tick: every control writes into the params object the
