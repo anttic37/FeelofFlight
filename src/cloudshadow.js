@@ -203,12 +203,26 @@ float ffCloudShadow() {
   // fractal cloud-shaped edges — the interior stays fully shadowed, the rim wanders in and out
   // the way a real cloud's does. A third slow octave adds broad light/dark mottling within the
   // shadow, which is what stops a big shadow reading as one flat grey disc.
-  float edge = ffCsNoise( hit.xz * 0.00263 ) * 0.60 + ffCsNoise( hit.xz * 0.00680 + 11.3 ) * 0.40;
-  cover += ( edge - 0.5 ) * 0.42 * uCsRagged;
-  float shade = smoothstep( uCsBar - uCsSoft, uCsBar + uCsSoft, cover );
-  // gentle interior variation, only where there is already shadow to vary
-  float mottle = ffCsNoise( hit.xz * 0.00090 + 4.7 );
-  shade *= mix( 1.0, 0.82 + 0.18 * mottle, uCsRagged );
+  // FOUR-OCTAVE fBm, weighted toward the fine end for a wispy edge. Accuracy is not the
+  // point — a cloud shadow reads by its torn, lacy outline, so the coverage is shredded
+  // hard (about +/-0.7 in coverage space, several times the threshold width) from big
+  // ~600 m lobes down to ~50 m wisps. Anywhere near the contour dissolves into fractal
+  // fingers; the deep interior of a thick cloud still stays dark because even -0.7 leaves
+  // it above the bar.
+  vec2 q = hit.xz;
+  float e = ( ffCsNoise( q * 0.00164 ) - 0.5 ) * 0.55
+          + ( ffCsNoise( q * 0.00381 + 7.1 ) - 0.5 ) * 0.42
+          + ( ffCsNoise( q * 0.00842 + 19.3 ) - 0.5 ) * 0.30
+          + ( ffCsNoise( q * 0.01950 + 3.7 ) - 0.5 ) * 0.20;
+  cover += e * uCsRagged;
+  // FEATHER the threshold too, so the shredded edge is soft-wispy rather than a crisp
+  // fractal cut — a cloud shadow has no hard rim.
+  float soft = uCsSoft + 0.13 * uCsRagged;
+  float shade = smoothstep( uCsBar - soft, uCsBar + soft, cover );
+  // and break up the interior with two more octaves so a big shadow is a drifting,
+  // patchy thing rather than one flat grey pool
+  float mottle = ffCsNoise( q * 0.00110 + 4.7 ) * 0.62 + ffCsNoise( q * 0.00420 + 8.1 ) * 0.38;
+  shade *= mix( 1.0, 0.66 + 0.34 * mottle, uCsRagged );
   return 1.0 - uCsStrength * shade;
 #endif
 }`;
