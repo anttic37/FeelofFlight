@@ -101,6 +101,9 @@ export const CLOUD_SHADOW = {
   // camera.matrixWorld, i.e. the inverse view matrix. Recovers world space from
   // vViewPosition in the fragment, which is how this avoids owning any varying.
   uCsViewInv: { value: new THREE.Matrix4() },
+  // 1 = fractal cloud-shaped edges, 0 = the old round-blob contour. A runtime A/B and
+  // an off-switch; there is no reason to run at 0 in the game.
+  uCsRagged: { value: 1 },
 };
 
 // The strength we ramp up to once the clouds land. Kept apart from the uniform so
@@ -149,9 +152,28 @@ export function patchCloudShadow() {
   THREE.ShaderChunk.lights_pars_begin += `
 uniform sampler2D uCsMap;
 uniform vec2 uCsOrigin;
-uniform float uCsTileM, uCsBase, uCsBar, uCsSoft, uCsStrength;
+uniform float uCsTileM, uCsBase, uCsBar, uCsSoft, uCsStrength, uCsRagged;
 uniform vec3 uCsSunDir;
 uniform mat4 uCsViewInv;
+
+// A smooth value noise for breaking the shadow contour. The weather map is one texture
+// stretched over a continent (~312 m/texel), so a single bilinear tap through a smooth
+// threshold can only ever make round soft blobs — which is exactly what the ground shadows
+// were. The rendered clouds carry fractal shape and detail on top of that coverage, so their
+// silhouettes are ragged; the shadow has to fake that same ragged edge or it reads as a coin
+// on the grass instead of a cloud overhead.
+float ffCsHash(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+float ffCsNoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);   // C1 smooth: no lattice creases in the shadow edge
+  float a = ffCsHash(i), b = ffCsHash(i + vec2(1.0, 0.0));
+  float c = ffCsHash(i + vec2(0.0, 1.0)), d = ffCsHash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
 
 float ffCloudShadow() {
 #ifdef FLAT_SHADED
@@ -176,7 +198,18 @@ float ffCloudShadow() {
   vec3 hit = world + uCsSunDir * ( dy / uCsSunDir.y );
   vec2 uv = uCsOrigin + vec2( ${AXIS.u.toFixed(1)} * hit.x, ${AXIS.v.toFixed(1)} * hit.z ) / uCsTileM;
   float cover = texture2D( uCsMap, uv ).r;
-  return 1.0 - uCsStrength * smoothstep( uCsBar - uCsSoft, uCsBar + uCsSoft, cover );
+  // RAGGED EDGE. Two octaves of value noise at cumulus scale (~380 m and ~150 m) perturb the
+  // coverage before the threshold, so the smooth round contour of the weather map breaks into
+  // fractal cloud-shaped edges — the interior stays fully shadowed, the rim wanders in and out
+  // the way a real cloud's does. A third slow octave adds broad light/dark mottling within the
+  // shadow, which is what stops a big shadow reading as one flat grey disc.
+  float edge = ffCsNoise( hit.xz * 0.00263 ) * 0.60 + ffCsNoise( hit.xz * 0.00680 + 11.3 ) * 0.40;
+  cover += ( edge - 0.5 ) * 0.42 * uCsRagged;
+  float shade = smoothstep( uCsBar - uCsSoft, uCsBar + uCsSoft, cover );
+  // gentle interior variation, only where there is already shadow to vary
+  float mottle = ffCsNoise( hit.xz * 0.00090 + 4.7 );
+  shade *= mix( 1.0, 0.82 + 0.18 * mottle, uCsRagged );
+  return 1.0 - uCsStrength * shade;
 #endif
 }`;
 
