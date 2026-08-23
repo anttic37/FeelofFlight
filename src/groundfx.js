@@ -1,3 +1,4 @@
+import * as THREE from 'three';
 import { getDetailTexture } from './grounddetail.js';
 import { ATMO } from './atmosphere.js';
 
@@ -264,4 +265,23 @@ export function injectGroundFX(material, { detail = true, clouds = true, splat =
 // The texture wants the renderer only for its anisotropy cap, and the materials
 // are built before anyone has a reason to pass one down — so let terrain.js hand
 // it over once at startup instead of threading it through every call site.
-export function initGroundFX(renderer) { uDetailTex.value = getDetailTexture(renderer); }
+//
+// DEFERRED PAST FIRST PAINT. Baking the detail texture synchronously here cost ~200 ms of
+// the boot. Instead we set a neutral 1x1 placeholder immediately — flat gray 128, against
+// which the splat term resolves to *1 (a mathematical no-op, not a wrong look) and the
+// derivative bump is 0 — so materials compile with a complete texture and no sync bake
+// fires (injectGroundFX's fallback only bakes when uDetailTex.value is null). Two frames
+// after first paint we bake the real texture and drop it onto the SAME uniform object, so
+// every terrain/runway material picks it up with no recompile. The splat layer only acts
+// within ~1.4 km and fades in over a frame or two — invisible behind the prep curtain.
+export function initGroundFX(renderer) {
+  const ph = new THREE.DataTexture(new Uint8Array([128, 128, 128, 128]), 1, 1, THREE.RGBAFormat);
+  ph.wrapS = ph.wrapT = THREE.RepeatWrapping;
+  ph.minFilter = ph.magFilter = THREE.LinearFilter;
+  ph.generateMipmaps = false;
+  ph.needsUpdate = true;
+  uDetailTex.value = ph;
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    uDetailTex.value = getDetailTexture(renderer);
+  }));
+}

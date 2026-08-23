@@ -54,8 +54,16 @@ const RINGS = [
 ];
 const EVICT_PAD = 300;        // hysteresis: build at radius, evict at radius+300
 const SHELL_Y = -4;
-const SHELL_MINS = 31;        // shell min-tap span: half of its 62 m spacing
-const SHELL_SEGS = 250;
+// COARSENED FOR LOAD TIME. The far shell only shows beyond the outer tile ring, under >70%
+// fog where a 162 m silhouette is unresolvable, so its resolution barely matters — but the
+// synchronous 251^2 bake (63k verts, 5 heightAt each) was ~980 ms of the boot, its single
+// biggest cost. At 96 segments the vertex-scaled work drops to ~15%, and the calibration
+// invariant is preserved: SHELL_MINS stays half the cell spacing (15600/96 = 162.5 m), so
+// the min-tap envelope still reaches exactly mid-span and can only ever LOWER a vertex —
+// the same anti-z-fight property the 62 m shell had. The worker still repaints the shell's
+// colours supersampled once the tile queue idles (shellColors), so the end look is intact.
+const SHELL_MINS = 81;        // shell min-tap span: half of its 162 m spacing
+const SHELL_SEGS = 96;
 const TELEPORT_D2 = 1500 * 1500; // jump larger than this = teleport, not flight
 const LOOKAHEAD_FRAMES = 90;  // priority aim point ~1.5 s ahead at 60 Hz
 const MAX_IN_FLIGHT = 2;
@@ -93,12 +101,16 @@ function bakeIslandGeometry(segments, minSpan, coarseColor = false) {
   const tCol = new Float32Array(tPos.count * 3);
   const _col = [0, 0, 0];
   // one AO lattice for the whole 15.6 km shell — per-vertex horizon sampling over 63k
-  // vertices would cost seconds of startup for a field that varies over tens of metres
-  bakeAOGrid(-7800, -7800, 15600, 64);
+  // vertices would cost seconds of startup for a field that varies over tens of metres.
+  // SKIPPED on the coarseColor startup shell: that ~48 ms AO-grid bake is thrown away a
+  // few seconds later anyway, because the async shellColors worker re-bakes the shell's
+  // colours WITH AO once the tile queue idles. The shell sits under >70% fog until then,
+  // where flat-vs-AO valley shading is invisible. The static A/B path keeps AO bit-for-bit.
+  if (!coarseColor) bakeAOGrid(-7800, -7800, 15600, 64);
   for (let i = 0; i < tPos.count; i++) {
     const _ax = tPos.getX(i), _az = tPos.getZ(i), _ah = tPos.getY(i);
     terrainColor(_ax, _az, _ah, tNorm.getY(i), _col, coarseColor);
-    if (_ah > 0.5) applyAO(_col, sampleAOGrid((_ax + 7800) / 15600, (_az + 7800) / 15600, 64), 0.62,
+    if (!coarseColor && _ah > 0.5) applyAO(_col, sampleAOGrid((_ax + 7800) / 15600, (_az + 7800) / 15600, 64), 0.62,
       sampleAOGridB((_ax + 7800) / 15600, (_az + 7800) / 15600, 64));
     tCol[i * 3] = _col[0]; tCol[i * 3 + 1] = _col[1]; tCol[i * 3 + 2] = _col[2];
   }
@@ -214,8 +226,11 @@ export function createTerrain(scene) {
   const finishedKeys = new Set(); // keys parked in finished[] — the want-scan must
                                   // see them or every streamed tile gets baked twice
   let nextId = 1, built = 0, evicted = 0, trisLive = 0, dispatched = 0;
-  // shell colour re-bake state: 4 row chunks over the 251-row shell grid
-  const SHELL_CHUNKS = [[0, 63], [63, 126], [126, 189], [189, 251]];
+  // shell colour re-bake state: 4 row chunks over the shell grid (SHELL_SEGS+1 rows).
+  // Generated from SHELL_SEGS so it tracks the coarsened shell — a hard-coded 251-row split
+  // would write past the end of the smaller colour attribute in the shellColors apply.
+  const SHELL_ROWS = SHELL_SEGS + 1;
+  const SHELL_CHUNKS = [0, 1, 2, 3].map((k) => [Math.round(k * SHELL_ROWS / 4), Math.round((k + 1) * SHELL_ROWS / 4)]);
   let shellChunkNext = 0, shellChunkInFlight = false;
 
   const worker = new Worker(new URL('./terrainworker.js', import.meta.url), { type: 'module' });

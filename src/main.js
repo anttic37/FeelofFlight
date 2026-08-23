@@ -297,6 +297,25 @@ if (new URLSearchParams(location.search).get('bloom') !== '0') {
 const CLOUD_KIND = new URLSearchParams(location.search).get('clouds') || 'old';
 let volClouds = null;
 let tweak = null;   // live tuning panel (P), built once the clouds land
+
+// PREP SCREEN dismissal. The overlay in index.html covers the ~2 s synchronous world bake
+// (JS is blocked, so it can only animate via CSS) and the async tail after it — the takram
+// atmosphere LUTs and the first cloud raymarch, which is what actually made "game starts"
+// feel laggy. We hide it once the clouds are up AND two frames have drawn with them (the
+// first cloud frame compiles a heavy shader and hitches), or on any fallback path so it can
+// never get stuck on screen.
+let cloudsUp = false, readyFired = false, readyFrames = 0;
+const prepStatus = (t) => { const el = document.getElementById('prep-status'); if (el) el.textContent = t; };
+const markReady = () => {
+  if (readyFired) return; readyFired = true;
+  const el = document.getElementById('prep');
+  if (!el) return;
+  el.classList.add('gone');
+  setTimeout(() => el.remove(), 800);
+};
+// hard backstop: never let the curtain hang, whatever happens to the async loads
+setTimeout(markReady, 9000);
+
 if (new URLSearchParams(location.search).get('vclouds') !== '0') {
   const load = CLOUD_KIND === 'new'
     ? import('./skyclouds.js').then(m => m.createSkyClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
@@ -316,6 +335,7 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
       dayNight.attachClouds(v);
       dayNight.update(0);
       console.log(`[flighfeel] ${CLOUD_KIND === 'new' ? 'sky' : 'volumetric'} clouds active`);
+      cloudsUp = true;   // the frame loop draws two frames then lifts the prep curtain
       // A PANEL EACH. They share the shell in panel.js but nothing else, because the two
       // expose nothing in common: skyclouds hands over a plain params object it re-reads
       // per frame, while the takram one is a library effect whose per-layer fields are
@@ -326,8 +346,11 @@ if (new URLSearchParams(location.search).get('vclouds') !== '0') {
         ? import('./tweak.js').then(t => { tweak = t.initTweakPanel({ sc: v, applyResize }); })
         : import('./tweakvol.js').then(t => { tweak = t.initVolTweakPanel({ vc: v, applyResize }); });
     })
-    .catch(e => console.error('[flighfeel] sky clouds failed:', e));
+    .catch(e => { console.error('[flighfeel] sky clouds failed:', e); cloudsUp = true; });
+} else {
+  cloudsUp = true;   // ?vclouds=0 — nothing async to wait on, lift after first frames
 }
+prepStatus('Loading atmosphere');
 const draw = () => {
   // Cloud shadows recover world position from vViewPosition, so they need the view
   // matrix of the frame ABOUT TO BE DRAWN — hence here, past every camera update,
@@ -510,4 +533,9 @@ renderer.setAnimationLoop(() => {
   // cloud pass already re-reads each frame
 
   draw();
+
+  // Lift the prep curtain once the clouds are up and we've actually drawn two frames with
+  // them — the first cloud frame compiles the raymarch shader and stalls, so waiting one
+  // extra frame means the world the player sees the instant it fades is already smooth.
+  if (cloudsUp && !readyFired && ++readyFrames >= 2) markReady();
 });

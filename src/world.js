@@ -136,11 +136,18 @@ export function createWorld(scene) {
   const up = new THREE.Vector3(0, 1, 0);
   const tint = new THREE.Color();
 
+  // DECORATIONS ARE OFF BY DEFAULT (see the long note below), and the placement scans are
+  // the single most wasteful thing at boot when they are: thousands of heightAt + slopeAt
+  // (4 heightAt) + vetoed() calls filling instance buffers that are then never added to the
+  // scene. Declared here (was below) so each placement loop can be gated on it — with props
+  // off the loops never run a single sample; with ?props=1 behaviour is byte-identical.
+  const SHOW_PROPS = new URLSearchParams(location.search).get('props') === '1';
+
   // pines: dense in the western woods, plus mountain flanks below the snowline
   const MAXP = 1600;
   const pines = new THREE.InstancedMesh(new THREE.ConeGeometry(1.6, 6, 6), whiteFlat(), MAXP);
   let nP = 0, tp = 0;
-  while (nP < MAXP && tp < MAXP * 28) {
+  while (SHOW_PROPS && nP < MAXP && tp < MAXP * 28) {
     tp++;
     let x, z;
     if (tp % 4 === 0) {
@@ -172,7 +179,7 @@ export function createWorld(scene) {
     new THREE.MeshStandardMaterial({ color: 0x7a5a3c, flatShading: true, roughness: 1 }), MAXD);
   const leaves = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1.9, 1), whiteFlat(), MAXD);
   let nD = 0, td = 0;
-  while (nD < MAXD && td < MAXD * 26) {
+  while (SHOW_PROPS && nD < MAXD && td < MAXD * 26) {
     td++;
     const x = HILLS_C.x + (noise2(td * 1.618 + 9.9, 0.31) * 2 - 1) * 2150;
     const z = HILLS_C.z + (noise2(0.7, td * 2.113 + 0.3) * 2 - 1) * 2150;
@@ -206,7 +213,7 @@ export function createWorld(scene) {
   const cacti1 = new THREE.InstancedMesh(cacGeo1, whiteFlat(), MAXC);
   const cacti2 = new THREE.InstancedMesh(cacGeo2, whiteFlat(), MAXC);
   let nC1 = 0, nC2 = 0, tc = 0;
-  while (nC1 + nC2 < MAXC * 2 && tc < MAXC * 50) {
+  while (SHOW_PROPS && nC1 + nC2 < MAXC * 2 && tc < MAXC * 50) {
     tc++;
     const x = DESERT_C.x + (noise2(tc * 1.618 + 5.5, 0.13) * 2 - 1) * 2350;
     const z = DESERT_C.z + (noise2(0.9, tc * 2.113 + 2.6) * 2 - 1) * 2350;
@@ -235,7 +242,7 @@ export function createWorld(scene) {
   const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), whiteFlat(), MAXR);
   let nR = 0, rt = 0;
   const hasGorge = CANYON_PATH.length > 1; // v6 islands only carve one on some archetypes
-  while (nR < MAXR && rt < MAXR * 22) {
+  while (SHOW_PROPS && nR < MAXR && rt < MAXR * 22) {
     rt++;
     const pick = hasGorge ? rt % 10 : 4 + (rt % 6); // no gorge: split between scree + shoreline
     let x, z, red = false;
@@ -282,8 +289,8 @@ export function createWorld(scene) {
   //
   // Kept as code rather than deleted: the placement rules (biome, slope, snowline and
   // corridor vetoes) are the useful part and would have to be written again for any
-  // replacement. ?props=1 puts them back.
-  const SHOW_PROPS = new URLSearchParams(location.search).get('props') === '1';
+  // replacement. ?props=1 puts them back. (SHOW_PROPS is declared up by the pines block so
+  // the placement loops can skip their scans when props are off.)
   if (SHOW_PROPS) {
     for (const m of [pines, trunks, leaves, cacti1, cacti2, rocks]) {
       m.castShadow = true;
@@ -296,7 +303,14 @@ export function createWorld(scene) {
   const water = createWater(scene, heightAt);
   // masts on the summits and a wind farm on the next tier down — built after the runways so
   // the site scan can reject anything sitting on a strip or its approach
-  const landmarks = createLandmarks(scene);
+  // LANDMARKS DEFERRED past first paint. createLandmarks runs two full-island site scans +
+  // ridge walks + wire-clearance sampling (~128 ms of boot). They are additive props sitting
+  // ON the terrain — not part of the no-hole shell — so building them a couple of frames in
+  // just makes them stream like the tiles and clouds already do, with no gap in the ground.
+  // The no-op stub covers update() for the ~2-frame gap; the update() below reads this outer
+  // binding each frame, so the real object takes over the instant it is assigned.
+  let landmarks = { update() {} };
+  requestAnimationFrame(() => requestAnimationFrame(() => { landmarks = createLandmarks(scene); }));
   // NEAR-FIELD PROPS, OFF. They existed to give a sense of speed close to the ground,
   // and they do — but they read as scattered white pebbles and teal cones sitting ON
   // the terrain rather than as anything growing out of it, and at altitude they are a
@@ -332,6 +346,9 @@ export function createWorld(scene) {
   // internal
   return {
     update, terrain, scatter, water, shoreRibbon, birds,
-    skyMat: sky.material, sun, hemi, sunSpr, landmarks,
+    skyMat: sky.material, sun, hemi, sunSpr,
+    // getter, not a value: landmarks is built a couple of frames after this object is
+    // returned, so a by-value field would freeze the no-op stub in place
+    get landmarks() { return landmarks; },
   };
 }

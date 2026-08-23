@@ -44,6 +44,49 @@
   #gvign, #gvign-red { position: absolute; inset: 0; opacity: 0; pointer-events: none; will-change: opacity; }
   #gvign { background: radial-gradient(ellipse at center, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 62%, rgba(0,0,0,0.97) 100%); }
   #gvign-red { background: radial-gradient(ellipse at center, rgba(60,0,0,0) 28%, rgba(120,8,8,0.5) 60%, rgba(150,10,14,0.95) 100%); }
+
+  /* PREP / LOADING SCREEN. It is markup in the HTML — not built by main.js — on purpose:
+     the browser paints it before the deferred module script runs, so it is on screen through
+     the whole ~2 s synchronous world bake that blocks JS. Everything here animates via CSS
+     transform/opacity, which the compositor runs off the main thread, so it keeps moving
+     smoothly even while the terrain bake has the JS thread pinned. main.js removes it (adds
+     .gone) once the clouds/atmosphere are actually up and a frame has drawn. */
+  #prep { position: fixed; inset: 0; z-index: 100; display: flex; flex-direction: column;
+          align-items: center; justify-content: center; gap: 22px;
+          font-family: ui-monospace, Consolas, monospace; color: #eaf4ff;
+          background:
+            radial-gradient(ellipse 120% 80% at 50% -10%, rgba(52,96,150,0.35), rgba(52,96,150,0) 60%),
+            radial-gradient(ellipse 80% 60% at 50% 120%, rgba(20,44,74,0.5), rgba(20,44,74,0) 55%),
+            linear-gradient(#0b1018, #070b11);
+          transition: opacity 0.7s ease; }
+  #prep.gone { opacity: 0; pointer-events: none; }
+  /* faint drifting horizon glow so the panel is not dead flat while JS is blocked */
+  #prep::before { content: ""; position: absolute; left: -20%; right: -20%; top: 58%; height: 2px;
+                  background: linear-gradient(90deg, transparent, rgba(150,200,255,0.35), transparent);
+                  filter: blur(1px); animation: prep-horizon 3.4s ease-in-out infinite; }
+  @keyframes prep-horizon { 0%,100% { opacity: 0.25; transform: translateY(0) scaleX(0.9); }
+                            50% { opacity: 0.6; transform: translateY(-6px) scaleX(1.05); } }
+  #prep .mark { font-size: clamp(22px, 5vw, 40px); letter-spacing: 12px; padding-left: 12px;
+                font-weight: 400; color: rgba(233,244,255,0.96);
+                text-shadow: 0 0 18px rgba(120,180,255,0.45), 0 2px 10px rgba(0,0,0,0.6);
+                animation: prep-breathe 2.6s ease-in-out infinite; }
+  @keyframes prep-breathe { 0%,100% { opacity: 0.82; } 50% { opacity: 1; } }
+  /* a little banking-plane glyph riding an arc, all CSS */
+  #prep .craft { font-size: 26px; line-height: 1; transform-origin: center;
+                 animation: prep-bank 3.2s ease-in-out infinite; filter: drop-shadow(0 2px 6px rgba(0,0,0,0.5)); }
+  @keyframes prep-bank { 0%,100% { transform: translateX(-14px) rotate(-12deg); }
+                         50% { transform: translateX(14px) rotate(12deg); } }
+  /* indeterminate shimmer bar — honest, since JS is frozen and can't report % */
+  #prep .bar { position: relative; width: min(240px, 52vw); height: 3px; border-radius: 3px;
+               background: rgba(150,200,255,0.14); overflow: hidden; }
+  #prep .bar::after { content: ""; position: absolute; top: 0; left: -40%; width: 40%; height: 100%;
+                      border-radius: 3px; background: linear-gradient(90deg, transparent, #9ecbff, transparent);
+                      animation: prep-sweep 1.25s ease-in-out infinite; }
+  @keyframes prep-sweep { 0% { left: -40%; } 100% { left: 100%; } }
+  #prep .status { font-size: 11px; letter-spacing: 3px; color: rgba(190,215,240,0.6);
+                  min-height: 14px; text-transform: uppercase; }
+  #prep .status::after { content: ""; animation: prep-dots 1.4s steps(4) infinite; }
+  @keyframes prep-dots { 0% { content: ""; } 25% { content: "."; } 50% { content: ".."; } 75% { content: "..."; } }
 </style>
 <script type="importmap">
 { "imports": {
@@ -60,6 +103,12 @@
 </script>
 </head>
 <body>
+<div id="prep">
+  <div class="mark">FLIGHFEEL</div>
+  <div class="craft">✈</div>
+  <div class="bar"></div>
+  <div class="status" id="prep-status">Preparing the island</div>
+</div>
 <div id="ui">
   <div id="brand">F L I G H F E E L</div>
   <canvas id="minimap" class="panel" width="280" height="280"></canvas>

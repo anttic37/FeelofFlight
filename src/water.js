@@ -536,14 +536,34 @@ roughnessFactor = mix(0.055, 0.34, smoothstep(1200.0, 26000.0, viewDist));`);
   geo.rotateX(-Math.PI / 2);            // baked flat so shader `position` == world xz
   const pos = geo.attributes.position;
   const depth = new Float32Array(pos.count);
-  // 5-tap smoothed depth: raw 55 m vertex sampling made the foam and shallow-tint
-  // bands zigzag along the shore at grid resolution
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i), z = pos.getZ(i);
-    const d = -heightAt(x, z)
-      + (-heightAt(x + 38, z)) + (-heightAt(x - 38, z))
-      + (-heightAt(x, z + 38)) + (-heightAt(x, z - 38));
-    depth[i] = Math.max(0, d / 5);
+  // COARSE-LATTICE SIGNED DEPTH. The old bake ran a 5-tap heightAt at EVERY one of the 58k
+  // verts — 290k calls, ~250 ms of the boot — purely so the foam/shallow bands would not
+  // zigzag along the shore at grid resolution. But this attribute is a FALLBACK: a few
+  // seconds in, shoreworker delivers the 8 m/texel uShoreTex and the fragment shader reads
+  // depth per-fragment instead (uShoreOn path above). So sample the SIGNED height field on a
+  // coarse lattice (every L-th vertex) and bilerp it to all 58k verts — smooth by
+  // construction, so no zigzag (the exact thing the 5-tap fixed), at ~1.3% of the calls.
+  // Signed, not clamped, so the bilerp lands the waterline zero-crossing in the right place;
+  // clamp to >=0 only after interpolating.
+  const N = SEG + 1;              // verts per row (row-major, matches PlaneGeometry layout)
+  const L = 4;                    // lattice stride (SEG % L === 0)
+  const LN = SEG / L + 1;         // lattice nodes per row
+  const lat = new Float32Array(LN * LN);
+  for (let jz = 0; jz < LN; jz++) {
+    for (let jx = 0; jx < LN; jx++) {
+      const idx = (jz * L) * N + (jx * L);
+      lat[jz * LN + jx] = -heightAt(pos.getX(idx), pos.getZ(idx));  // signed depth, metres
+    }
+  }
+  for (let iz = 0; iz < N; iz++) {
+    const gz = iz / L, jz = Math.min(LN - 2, gz | 0), fz = gz - jz;
+    for (let ix = 0; ix < N; ix++) {
+      const gx = ix / L, jx = Math.min(LN - 2, gx | 0), fx = gx - jx;
+      const a = lat[jz * LN + jx],       b = lat[jz * LN + jx + 1];
+      const c = lat[(jz + 1) * LN + jx], e = lat[(jz + 1) * LN + jx + 1];
+      const top = a + (b - a) * fx, bot = c + (e - c) * fx;
+      depth[iz * N + ix] = Math.max(0, top + (bot - top) * fz);
+    }
   }
   geo.setAttribute('shoreDepth', new THREE.BufferAttribute(depth, 1));
   geo.setAttribute('waveAmp', new THREE.BufferAttribute(new Float32Array(pos.count).fill(1), 1));
