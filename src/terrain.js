@@ -102,15 +102,17 @@ function bakeIslandGeometry(segments, minSpan, coarseColor = false) {
   const _col = [0, 0, 0];
   // one AO lattice for the whole 15.6 km shell — per-vertex horizon sampling over 63k
   // vertices would cost seconds of startup for a field that varies over tens of metres.
-  // SKIPPED on the coarseColor startup shell: that ~48 ms AO-grid bake is thrown away a
-  // few seconds later anyway, because the async shellColors worker re-bakes the shell's
-  // colours WITH AO once the tile queue idles. The shell sits under >70% fog until then,
-  // where flat-vs-AO valley shading is invisible. The static A/B path keeps AO bit-for-bit.
-  if (!coarseColor) bakeAOGrid(-7800, -7800, 15600, 64);
+  // AO IS KEPT ON THE SHELL even when coarse. It was briefly skipped as a load-time cut (the
+  // async shellColors worker re-adds it once the tile queue idles), but that left the far
+  // shell a flat, extra-bright brown while actively flying — the queue stays busy, so the
+  // repaint is delayed — which read as the shell being a visibly different "system" from the
+  // AO-shaded tiles. The AO grid is a fixed 65x65 lattice (~48 ms), independent of the shell's
+  // vertex count, so keeping it costs the same tiny amount at any SHELL_SEGS.
+  bakeAOGrid(-7800, -7800, 15600, 64);
   for (let i = 0; i < tPos.count; i++) {
     const _ax = tPos.getX(i), _az = tPos.getZ(i), _ah = tPos.getY(i);
     terrainColor(_ax, _az, _ah, tNorm.getY(i), _col, coarseColor);
-    if (!coarseColor && _ah > 0.5) applyAO(_col, sampleAOGrid((_ax + 7800) / 15600, (_az + 7800) / 15600, 64), 0.62,
+    if (_ah > 0.5) applyAO(_col, sampleAOGrid((_ax + 7800) / 15600, (_az + 7800) / 15600, 64), 0.62,
       sampleAOGridB((_ax + 7800) / 15600, (_az + 7800) / 15600, 64));
     tCol[i * 3] = _col[0]; tCol[i * 3 + 1] = _col[1]; tCol[i * 3 + 2] = _col[2];
   }
