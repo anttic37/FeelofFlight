@@ -1812,9 +1812,9 @@ export function buildPlane() {
     }),
     // NO TRANSMISSION IN THIS PROJECT. The canopy glass above already learned it
     // (transmission:0), but the gunsight lens still carried 0.45 — three's transmission
-    // pass breaks the ocean's onBeforeCompile shader and renders the whole sea black
-    // (fourth aircraft to arrive with this; see crimson-kestrel.js et al). Plain
-    // transparency on a lens this small is indistinguishable.
+    // pass breaks the ocean's onBeforeCompile shader and renders the whole sea black.
+    // FOUR separate aircraft arrived carrying this; grep any new model for `transmission`
+    // before mounting it. Plain transparency on a lens this small is indistinguishable.
     lens: new THREE.MeshPhysicalMaterial({
       color: 0xf6f1d8,
       transparent: true,

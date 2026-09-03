@@ -1,9 +1,8 @@
-// The tuning-panel shell, shared by both cloud systems (P opens whichever is running).
+// The tuning-panel shell (P opens it).
 //
 // This is chrome and bookkeeping only — sliders, section headings, the button bar, and the
-// localStorage persistence. What is actually tunable lives in tweak.js (skyclouds) and
-// tweakvol.js (the takram clouds), because the two have nothing in common: one exposes a
-// plain params object, the other a library effect with per-layer packed uniforms.
+// localStorage persistence. What is actually tunable lives in tweakvol.js, which knows how
+// the takram clouds expose themselves: a library effect with per-layer packed uniforms.
 //
 // Settings persist as a DIFF from the code defaults, keyed by section and label, so a control
 // that is later renamed or removed is skipped rather than restoring a stale number into

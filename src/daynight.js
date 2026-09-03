@@ -78,7 +78,7 @@ const SWAP_DIP = 0.015;
 const ENV_BASE = num('env', 0.62);
 
 const lin = (h) => new THREE.Color(h).convertSRGBToLinear();
-// cloud colours are authored in LINEAR already (skyclouds builds them from raw components),
+// cloud colours are authored in LINEAR already (they are built from raw components),
 // so they must not be sRGB-decoded a second time
 const raw = (r, g, b) => new THREE.Color().setRGB(r, g, b);
 
@@ -430,15 +430,9 @@ export function createDayNight({ scene, skyMat, sun, hemi, sunSpr, flare, water 
       if (w.uSunHalo) w.uSunHalo.value = P.halo;
     }
 
-    // --- clouds. Two systems, and neither shares the live vector: skyclouds clones it into
-    // its own uniforms, volclouds stores it in earth-centred space behind a transform. Both
-    // therefore have to be pushed to, and which one this is decides how.
-    if (clouds && clouds.cloudPass) {
-      const u2 = clouds.cloudPass.march.uniforms;
-      u2.sunDir.value.copy(SUN_DIR);
-      u2.sunColor.value.copy(P.cloudSun);
-      u2.ambientSky.value.copy(P.cloudAmb);
-    } else if (clouds && clouds.setSun) {
+    // --- clouds. volclouds does not share the live vector — it stores the sun in
+    // earth-centred space behind a transform — so it has to be pushed to every frame.
+    if (clouds && clouds.setSun) {
       // takram lights the volume from its own atmosphere model, so it takes a direction and
       // an intensity rather than a colour — what colour that produces is the model's answer,
       // not ours. By day that is the true sun (NOT SUN_DIR, which hands over to the moon and

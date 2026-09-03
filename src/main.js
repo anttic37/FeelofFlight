@@ -284,17 +284,16 @@ if (new URLSearchParams(location.search).get('bloom') !== '0') {
 // if the fetch fails outright, the bloom composer above keeps drawing a normal
 // (cloudless) sky rather than leaving a broken frame. ?vclouds=0 skips them.
 //
-// TWO CLOUD SYSTEMS LIVE SIDE BY SIDE, and the takram one (volclouds) is the default again
-// because it simply looks better. It is a physically-based renderer — precomputed atmospheric
-// scattering, real multiple scattering inside the volume, temporal reprojection paying for a
-// far denser march — against skyclouds, which is a hand-rolled raymarch of baked 3D noise.
-// The known cost of going back is the layer lid: minLayerHeights/maxLayerHeights are vec4
+// THE CLOUDS ARE THE TAKRAM VOLUMETRIC SYSTEM (volclouds), and they are now the only one.
+// It is a physically-based renderer — precomputed atmospheric scattering, real multiple
+// scattering inside the volume, temporal reprojection paying for a far denser march. A second
+// hand-rolled raymarch of baked 3D noise (skyclouds, behind ?clouds=new) lived beside it for a
+// while and was deleted once this one won on looks; git history has it if it is ever wanted.
+// The known cost of this system is the layer lid: minLayerHeights/maxLayerHeights are vec4
 // uniforms, one top and bottom for the WHOLE sky, so a layer ceiling is an iso-height plane
 // and that is the "cut" this system has always had.
 //
-// ?clouds=new selects skyclouds, which keeps the god rays, the ground cloud shadows and the
-// tuning panel. ?vclouds=0 skips clouds entirely.
-const CLOUD_KIND = new URLSearchParams(location.search).get('clouds') || 'old';
+// ?vclouds=0 skips clouds entirely.
 let volClouds = null;
 let tweak = null;   // live tuning panel (P), built once the clouds land
 
@@ -317,36 +316,28 @@ const markReady = () => {
 setTimeout(markReady, 9000);
 
 if (new URLSearchParams(location.search).get('vclouds') !== '0') {
-  const load = CLOUD_KIND === 'new'
-    ? import('./skyclouds.js').then(m => m.createSkyClouds({ renderer, scene, camera, sunDir: SUN_DIR }))
-    : import('./volclouds.js').then(m => m.createVolumetricClouds({ renderer, scene, camera, sunDir: SUN_DIR, overlayScene: overlay }));
-  load
+  import('./volclouds.js')
+    .then(m => m.createVolumetricClouds({ renderer, scene, camera, sunDir: SUN_DIR, overlayScene: overlay }))
     .then(v => {
       volClouds = v;
-      // one handle whichever system is running — skyclouds sets window.__sc from inside
-      // itself, so without this the old clouds are unreachable from the console
+      // one console handle for the cloud system, whatever it is
       window.__clouds = v;
       // The ground has been unshadowed until now — the weather map only exists once
-      // the cloud system does. skyclouds has no such map, so this is a no-op there.
+      // the cloud system does.
       if (!attachCloudShadow(v)) console.log('[flighfeel] no weather map: cloud shadows off');
       v.setSize(window.innerWidth, window.innerHeight);
-      // Both systems copy the sun at construction rather than sharing the live vector, so
-      // either way daynight has to push to them — attachClouds handles whichever this is.
+      // The clouds copy the sun at construction rather than sharing the live vector, so
+      // daynight has to push to them.
       dayNight.attachClouds(v);
       dayNight.update(0);
-      console.log(`[flighfeel] ${CLOUD_KIND === 'new' ? 'sky' : 'volumetric'} clouds active`);
+      console.log('[flighfeel] volumetric clouds active');
       cloudsUp = true;   // the frame loop draws two frames then lifts the prep curtain
-      // A PANEL EACH. They share the shell in panel.js but nothing else, because the two
-      // expose nothing in common: skyclouds hands over a plain params object it re-reads
-      // per frame, while the takram one is a library effect whose per-layer fields are
-      // repacked into vec4 uniforms every frame. Both end up equally live; only the route
-      // there differs. The game's own resize path is passed in so neither computes sizes.
+      // The tuning panel (P) shares its shell with the HUD panel in panel.js. The game's own
+      // resize path is passed in so the panel never computes sizes itself.
       const applyResize = () => v.setSize(window.innerWidth, window.innerHeight);
-      return CLOUD_KIND === 'new'
-        ? import('./tweak.js').then(t => { tweak = t.initTweakPanel({ sc: v, applyResize }); })
-        : import('./tweakvol.js').then(t => { tweak = t.initVolTweakPanel({ vc: v, applyResize }); });
+      return import('./tweakvol.js').then(t => { tweak = t.initVolTweakPanel({ vc: v, applyResize }); });
     })
-    .catch(e => { console.error('[flighfeel] sky clouds failed:', e); cloudsUp = true; });
+    .catch(e => { console.error('[flighfeel] clouds failed:', e); cloudsUp = true; });
 } else {
   cloudsUp = true;   // ?vclouds=0 — nothing async to wait on, lift after first frames
 }
@@ -361,9 +352,9 @@ const draw = () => {
   else if (composer) composer.render();
   else renderer.render(scene, camera);
   // Only the volumetric path composites the overlay itself. Every other path — the
-  // plain bloom composer before the clouds finish loading, skyclouds, no composer at
-  // all — draws it here instead, or the ribbons would not exist on those paths at
-  // all now that they no longer live in the world scene.
+  // plain bloom composer before the clouds finish loading, or no composer at all —
+  // draws it here instead, or the ribbons would not exist on those paths at all now
+  // that they no longer live in the world scene.
   if (!(volClouds && volClouds.handlesOverlay)) {
     const prev = renderer.autoClear;
     renderer.autoClear = false;

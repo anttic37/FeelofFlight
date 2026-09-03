@@ -1180,8 +1180,8 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir, 
       clouds.sunDirection.copy(dir).transformDirection(w2e).normalize();
       aerial.sunDirection.copy(clouds.sunDirection);
     },
-    // main.js draws the overlay itself on any path that has no such pass — skyclouds
-    // has its own composer, and the plain bloom composer runs before these load.
+    // main.js draws the overlay itself on any path that has no such pass — the plain
+    // bloom composer runs before these load.
     handlesOverlay: !!overlayScene,
     render: () => composer.render(),
     setSize: (w, h) => composer.setSize(w, h),

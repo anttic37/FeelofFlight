@@ -5,7 +5,7 @@
 // the shader reads vec4s. They connect because updateSharedUniforms repacks every layer field
 // into those vec4s on EVERY frame, and the clouds pass shares those exact uniform objects by
 // reference. So writing layer.densityScale from a slider does reach the shader with no
-// rebuild, no dirty flag, and no rebake — same immediacy the skyclouds panel has.
+// rebuild, no dirty flag, and no rebake.
 //
 // Verified by perturbing each field and differencing frames against a 0.04 noise floor: every
 // layer field, every march parameter and every lighting accessor moved the image. Worth
