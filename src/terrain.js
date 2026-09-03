@@ -60,8 +60,8 @@ const SHELL_Y = -4;
 // biggest cost. At 96 segments the vertex-scaled work drops to ~15%, and the calibration
 // invariant is preserved: SHELL_MINS stays half the cell spacing (15600/96 = 162.5 m), so
 // the min-tap envelope still reaches exactly mid-span and can only ever LOWER a vertex —
-// the same anti-z-fight property the 62 m shell had. The worker still repaints the shell's
-// colours supersampled once the tile queue idles (shellColors), so the end look is intact.
+// the same anti-z-fight property the 62 m shell had. Its PAINT does not depend on this
+// count at all any more: it samples a 1024^2 colormap texture (see SHELL COLORMAP below).
 const SHELL_MINS = 81;        // shell min-tap span: half of its 162 m spacing
 const SHELL_SEGS = 96;
 const TELEPORT_D2 = 1500 * 1500; // jump larger than this = teleport, not flight
@@ -102,12 +102,12 @@ function bakeIslandGeometry(segments, minSpan, coarseColor = false) {
   const _col = [0, 0, 0];
   // one AO lattice for the whole 15.6 km shell — per-vertex horizon sampling over 63k
   // vertices would cost seconds of startup for a field that varies over tens of metres.
-  // AO IS KEPT ON THE SHELL even when coarse. It was briefly skipped as a load-time cut (the
-  // async shellColors worker re-adds it once the tile queue idles), but that left the far
-  // shell a flat, extra-bright brown while actively flying — the queue stays busy, so the
-  // repaint is delayed — which read as the shell being a visibly different "system" from the
-  // AO-shaded tiles. The AO grid is a fixed 65x65 lattice (~48 ms), independent of the shell's
-  // vertex count, so keeping it costs the same tiny amount at any SHELL_SEGS.
+  // AO IS KEPT ON THE SHELL even when coarse. It was briefly skipped as a load-time cut, but
+  // that left the far shell a flat, extra-bright brown for the seconds before its proper paint
+  // arrived, which read as the shell being a visibly different "system" from the AO-shaded
+  // tiles. These vertex colours are the shell's fallback until the colormap texture lands, and
+  // the fallback has to look right too. The AO grid is a fixed 65x65 lattice (~48 ms),
+  // independent of the shell's vertex count, so keeping it costs the same at any SHELL_SEGS.
   bakeAOGrid(-7800, -7800, 15600, 64);
   for (let i = 0; i < tPos.count; i++) {
     const _ax = tPos.getX(i), _az = tPos.getZ(i), _ah = tPos.getY(i);
@@ -204,14 +204,58 @@ export function createTerrain(scene) {
   }
 
   // (a) far shell — synchronous, envelope-baked, small shore-faded sink
-  // coarseColor: the relief probe is skipped on the synchronous startup shell — 63k verts
-  // of 4-tap probes would push the cold start out for paint that sits under 70%+ fog.
-  // The async supersampled re-bake (terrainworker shellColors) paints it properly later.
+  // coarseColor: the relief probe is skipped on the synchronous startup shell — those
+  // vertex colours are only a FALLBACK now, shown until the colormap below lands (and for
+  // good if its worker dies), so they need to be cheap, not pretty.
   const shellGeo = bakeIslandGeometry(SHELL_SEGS, SHELL_MINS, true);
   sinkAboveShore(shellGeo.attributes.position.array, SHELL_Y);
   const shell = new THREE.Mesh(shellGeo, shellMaterial);
   shell.receiveShadow = true;
   scene.add(shell);
+
+  // SHELL COLORMAP. The seam between the streamed tiles and this shell was a COLOUR-
+  // RESOLUTION cliff, not a geometry one: relief paint lives at ~30 m, the outer tile ring
+  // carries it on 40 m cells, and per-vertex colour on 162 m shell cells averages every
+  // drainage streak into one flat brown gradient per cell. Making the shell finer did not
+  // help (96 vs 250 segments A/B'd identical) because vertex colour can never out-resolve
+  // its vertices. So the shell's paint stops being a property of geometry: a one-shot worker
+  // bakes the whole island's full-relief colour into a 1024^2 texture (15.2 m a texel, finer
+  // than the outer ring) and the shell samples it per fragment. Same pattern, same reason,
+  // as the water's shore-depth field. Until it lands the shell shows its vertex colours.
+  const SHELL_TEX_RES = 1024;
+  let shellTex = 0;   // 0 = vertex-colour fallback, 1 = colormap live (for stats)
+  try {
+    const cw = new Worker(new URL('./colormapworker.js', import.meta.url), { type: 'module' });
+    cw.onerror = (e) => {
+      console.error('[flighfeel] shell colormap bake failed — keeping vertex colours', e && (e.message || e.type));
+      cw.terminate();
+    };
+    cw.onmessage = (e) => {
+      const tex = new THREE.DataTexture(e.data.data, e.data.res, e.data.res, THREE.RGBAFormat, THREE.UnsignedByteType);
+      // sRGB-encoded bytes (see the worker) so three decodes to linear on sample
+      tex.colorSpace = THREE.SRGBColorSpace;
+      // MIPMAPPED, and it matters: the shell is only ever seen 5+ km out where a 15 m texel
+      // is far under a pixel, and an unmipped texture that minified would shimmer.
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+      tex.generateMipmaps = true;
+      tex.needsUpdate = true;
+      // swap the shell from vertex colour to the map. Both on at once would multiply the
+      // paint into itself, so vertexColors goes off; the one-time recompile re-runs the
+      // ground-detail hook, which is what it is for.
+      shellMaterial.map = tex;
+      shellMaterial.vertexColors = false;
+      shellMaterial.needsUpdate = true;
+      shellTex = 1;
+      console.log(`[flighfeel] shell colormap ${e.data.res}^2 (${(e.data.size / e.data.res).toFixed(1)} m/texel) in ${e.data.ms} ms`);
+      cw.terminate();
+    };
+    cw.postMessage({ type: 'seed', seed: getTerrainSeed() });
+    cw.postMessage({ size: 15600, res: SHELL_TEX_RES });
+  } catch (err) {
+    console.error('[flighfeel] shell colormap worker unavailable', err);
+  }
 
   // (b) ring-LOD tiles
   const indexCache = new Map(); // res -> shared index array (one per res, ever)
@@ -228,26 +272,11 @@ export function createTerrain(scene) {
   const finishedKeys = new Set(); // keys parked in finished[] — the want-scan must
                                   // see them or every streamed tile gets baked twice
   let nextId = 1, built = 0, evicted = 0, trisLive = 0, dispatched = 0;
-  // shell colour re-bake state: 4 row chunks over the shell grid (SHELL_SEGS+1 rows).
-  // Generated from SHELL_SEGS so it tracks the coarsened shell — a hard-coded 251-row split
-  // would write past the end of the smaller colour attribute in the shellColors apply.
-  const SHELL_ROWS = SHELL_SEGS + 1;
-  const SHELL_CHUNKS = [0, 1, 2, 3].map((k) => [Math.round(k * SHELL_ROWS / 4), Math.round((k + 1) * SHELL_ROWS / 4)]);
-  let shellChunkNext = 0, shellChunkInFlight = false;
 
   const worker = new Worker(new URL('./terrainworker.js', import.meta.url), { type: 'module' });
   // the worker has its OWN heightcore instance — seed it before any bake job
   worker.postMessage({ type: 'seed', seed: getTerrainSeed() });
   worker.onmessage = (e) => {
-    if (e.data.shellRows) {
-      // supersampled shell colours, one row chunk — copy straight into the live attribute
-      const n1 = e.data.segments + 1;
-      const attr = shellGeo.getAttribute('color');
-      attr.array.set(e.data.colors, e.data.j0 * n1 * 3);
-      attr.needsUpdate = true;
-      shellChunkInFlight = false;
-      return;
-    }
     const job = inFlight.get(e.data.id);
     inFlight.delete(e.data.id);
     if (job) {
@@ -443,26 +472,13 @@ export function createTerrain(scene) {
       pending.delete(best.key);
       buildTileSync(best.ring, best.ix, best.iz);
     }
-
-    // SHELL REPAINT, opportunistic. The startup shell's colours are point-sampled at 62 m
-    // with the relief probe skipped — the cheapest thing that gets a world on screen. Once
-    // the streamer goes idle, ask the worker for the shell's colours again, supersampled
-    // (see shellColors in terrainworker.js), one row chunk at a time so a fresh tile job
-    // never waits behind more than ~1 s of shell work. The gate re-arms between chunks,
-    // so flying off mid-repaint just pauses it until the queue drains again.
-    if (!workerDead && shellChunkNext < SHELL_CHUNKS.length && !shellChunkInFlight
-        && pending.size === 0 && inFlight.size === 0 && built >= 30) {
-      const c = SHELL_CHUNKS[shellChunkNext++];
-      shellChunkInFlight = true;
-      worker.postMessage({ type: 'shellColors', j0: c[0], j1: c[1], segments: SHELL_SEGS });
-    }
   }
 
   function stats() {
     return {
       mode: 'dynamic', tiles: tiles.size, queued: pending.size,
       inFlight: inFlight.size, tris: trisLive, built, evicted, dispatched,
-      workerDead, shellTris: SHELL_SEGS * SHELL_SEGS * 2, shellRepaint: shellChunkNext,
+      workerDead, shellTris: SHELL_SEGS * SHELL_SEGS * 2, shellTex,
     };
   }
 
