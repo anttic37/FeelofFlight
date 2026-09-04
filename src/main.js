@@ -24,6 +24,7 @@ import { buildPlane, updatePlaneVisual } from './p-51d-mustang2.js';
 import { FlightModel } from './physics.js';
 import { measureContacts, measureParts } from './airframe.js';
 import { mergeStaticPlaneMeshes } from './planeoptimize.js';
+import { createPlaneBlob } from './planeblob.js';
 import { ChaseCam } from './camera.js';
 import { WingTrails } from './trails.js';
 import { createFX } from './fx.js';
@@ -117,6 +118,8 @@ const planeShadowCasters = [];
   console.log(`[flighfeel] shadow casters: kept ${planeShadowCasters.length}, dropped ${dropped}`);
 }
 scene.add(plane.group);
+// the soft ground shadow that takes over above the shadow box — see planeblob.js
+const planeBlob = createPlaneBlob(scene, heightAt);
 
 // ...AND SKIP THE PLANE'S SHADOW PASS WHEN IT CANNOT LAND ON THE GROUND. The shadow box is
 // a +/-160 m square that follows the plane; the plane's own shadow falls downsun by
@@ -126,10 +129,12 @@ scene.add(plane.group);
 // the shadow pass through every second of cruise, which is most of the flight. Costs one
 // hypot and 69 boolean writes only on the frames the state flips.
 let _planeCasts = true;
+let _maxVisAGL = 185;   // the current limit, read by the blob shadow so it fades in exactly here
 function updatePlaneShadowCulling() {
   const agl = phys.pos.y - Math.max(0, heightAt(phys.pos.x, phys.pos.z));
   const horiz = Math.hypot(SUN_DIR.x, SUN_DIR.z);
   const maxVisAGL = 160 * Math.max(0, SUN_DIR.y) / Math.max(horiz, 0.04) + 25;
+  _maxVisAGL = maxVisAGL;
   const want = agl < maxVisAGL;
   if (want !== _planeCasts) {
     _planeCasts = want;
@@ -374,7 +379,7 @@ window.addEventListener('resize', () => {
 // debug / test hook — enough surface to step & render headlessly in tests
 window.__ff = {
   phys, input, chase, reset, fx, trails, hud, sound, scene, camera, renderer, plane, world, wreckage,
-  heightAt, surfaceAt, RUNWAYS, seed: terrainSeed,
+  heightAt, surfaceAt, RUNWAYS, seed: terrainSeed, planeBlob,
   step(dt) {
     input.update(dt);
     const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake, overdrive: input.overdrive };
@@ -518,6 +523,7 @@ renderer.setAnimationLoop(() => {
   // island stops loading under you
   world.update(chase.free ? chase.camera.position : phys.pos, simTime);
   updatePlaneShadowCulling();
+  planeBlob.update(phys.pos, _maxVisAGL);
   sound.update(dt, phys);
   hud.update(phys, input, dayNight.state);
   // the panel needs no per-frame tick: every control writes into the params object the
