@@ -41,7 +41,14 @@ import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setSize(window.innerWidth, window.innerHeight);
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+// PIXEL RATIO CAPPED AT 1.5, NOT 2. Measured with GPU timer queries on the same frame: the
+// whole scene renders in ~0.4 ms, and the post chain (cloud march, aerial perspective, god
+// rays, bloom, tone) is the rest — and it scales with pixels: 2.1 ms at 1280x720, 3.1 ms at
+// 1920x1080, 5.8 ms at 2560x1440. A 4K display at DPR 2 is 8.3 Mpx and lands near 12 ms for
+// post alone. At 1.5 a 4K panel still renders 2880x1620, which is above what the cloud march
+// (0.3x) or the bloom can resolve anyway. ?dpr=N overrides (e.g. ?dpr=2 for screenshots).
+const DPR_CAP = Number(new URLSearchParams(location.search).get('dpr')) || 1.5;
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, DPR_CAP));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;

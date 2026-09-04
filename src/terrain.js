@@ -168,6 +168,21 @@ export function createTerrain(scene) {
   }
   const materials = [ringMaterial(0), ringMaterial(1), ringMaterial(2)];
   const shellMaterial = ringMaterial(3);
+  // THE SHELL COMPILES ITS FINAL SHADER VARIANT AT STARTUP, NOT MID-FLIGHT. When the colormap
+  // lands (~13 s in) the shell switches from vertex colours to a map. Doing that by flipping
+  // vertexColors off and setting map on changes the shader's defines, and the ground shader
+  // is heavy: measured 318 ms for the frame that compiles a new terrain variant — a stall a
+  // third of a second long, every flight, right when you are getting going. So the material
+  // carries a 1x1 WHITE map from creation with vertexColors left ON: map x vertex colour is
+  // the vertex colour, a no-op, and the USE_MAP variant compiles behind the prep screen with
+  // everything else. On arrival the map's texture object is swapped (no define changes, no
+  // recompile) and the vertex colours are written to white, which is a 9409-vertex upload.
+  {
+    const ph = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat);
+    ph.colorSpace = THREE.SRGBColorSpace;
+    ph.needsUpdate = true;
+    shellMaterial.map = ph;
+  }
 
   // LOD sink is applied PER VERTEX, faded out below 12 m: sinking a whole
   // mesh moved its WATERLINE sideways by tens of meters (beach slopes are
@@ -247,12 +262,14 @@ export function createTerrain(scene) {
       tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
       tex.generateMipmaps = true;
       tex.needsUpdate = true;
-      // swap the shell from vertex colour to the map. Both on at once would multiply the
-      // paint into itself, so vertexColors goes off; the one-time recompile re-runs the
-      // ground-detail hook, which is what it is for.
+      // swap the TEXTURE OBJECT only (same defines, no recompile — see the placeholder at
+      // shellMaterial's creation) and neutralize the vertex colours, so map x white = map
+      const ph = shellMaterial.map;
       shellMaterial.map = tex;
-      shellMaterial.vertexColors = false;
-      shellMaterial.needsUpdate = true;
+      if (ph && ph.image && ph.image.width === 1) ph.dispose();
+      const col = shellGeo.getAttribute('color');
+      col.array.fill(1);
+      col.needsUpdate = true;
       shellTex = 1;
       // ...and the height map the same bake produced, for the terrain self-shadow march.
       // HALF-FLOAT, not float: WebGL2 filters 16-bit float textures in core, while 32-bit
