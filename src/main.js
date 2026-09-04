@@ -353,6 +353,8 @@ const draw = () => {
   // rather than back with the rest of the per-frame bookkeeping.
   camera.updateMatrixWorld();
   setCloudShadowView(camera);
+  // integrate one frame of sea-foam accumulation before anything samples it (foamaccum.js)
+  world.water.stepFoam(renderer, camera);
   if (volClouds) volClouds.render();
   else if (composer) composer.render();
   else renderer.render(scene, camera);

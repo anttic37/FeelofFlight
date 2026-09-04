@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SKY, SUN_DIR } from './atmosphere.js';
 import { getTerrainSeed } from './heightcore.js';
+import { createFoamAccum } from './foamaccum.js';
 
 // Shore-aware animated ocean.
 //
@@ -114,6 +115,13 @@ export function createWater(scene, heightAt) {
   const mat = new THREE.MeshStandardMaterial({
     color: 0xffffff, roughness: 0.08, metalness: 0.0, fog: false, transparent: true,
   });
+  // TEMPORAL FOAM. The accumulation buffer shares uWind and uTime with this material by
+  // reference, so it injects foam exactly where the whitecaps below are painted, then keeps
+  // it for seconds and drifts it downwind — see foamaccum.js. ?foamacc=0 shows the
+  // instantaneous caps alone (the A/B that proves the streaks are the buffer).
+  const foam = createFoamAccum(shared);
+  Object.assign(shared, foam.uniforms);
+  shared.uFoamAcc = { value: new URLSearchParams(location.search).get('foamacc') === '0' ? 0 : 1 };
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, shared);
 
@@ -148,6 +156,9 @@ uniform float uGlint, uGlintAmp, uChop, uHazeNear, uHazeFar, uCaps, uFoam, uBody
 uniform sampler2D uShoreTex;
 uniform float uShoreOn, uShoreSize;
 uniform vec2 uWind;
+uniform sampler2D uFoamTex;
+uniform vec2 uFoamOrigin;
+uniform float uFoamSize, uFoamAcc;
 uniform vec3 uSubsurface;
 varying float vShoreDepth;
 varying float vWaveAmp;
@@ -434,7 +445,17 @@ float crest = smoothstep(0.02, 0.34, hBig);
 float steep = smoothstep(0.13, 0.30, steepMag);
 float breaking = steep * crest * (0.30 + 0.70 * face);
 float capMask = smoothstep(8.0, 24.0, shoreD);
-diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), breaking * capMask * uCaps);
+// ACCUMULATED FOAM: what the last several seconds of breaking left behind, drifted
+// downwind — the streaks a sea shows from altitude (foamaccum.js). Sampled by world
+// position inside the camera-following window and faded out toward its edge so the
+// 2 km boundary never draws a line; outside it the instantaneous caps stand alone.
+vec2 fuv = (q - uFoamOrigin) / uFoamSize;
+float fin = smoothstep(0.0, 0.08, fuv.x) * smoothstep(0.0, 0.08, fuv.y)
+          * (1.0 - smoothstep(0.92, 1.0, fuv.x)) * (1.0 - smoothstep(0.92, 1.0, fuv.y));
+float accum = texture2D(uFoamTex, fuv).r * fin * uFoamAcc;
+// the fresh breaker is brightest; the trail behind it is thinner, lacier foam
+float caps = max(breaking, accum * 0.75);
+diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.85, 0.92, 0.98), caps * capMask * uCaps);
 
 // ── SHORELINE ────────────────────────────────────────────────────────────────
 // The old version was an opaque sheet with a white band painted along its edge, and
@@ -637,5 +658,6 @@ roughnessFactor = mix(0.055, 0.34, smoothstep(1200.0, 26000.0, viewDist));`);
   }
 
   window.__water = { material: mat, uniforms: shared, sheet: water, far };
-  return { update, material: mat, uniforms: shared };
+  // stepFoam: once per frame before the main render, from wherever the renderer lives
+  return { update, material: mat, uniforms: shared, stepFoam: foam.step, foam };
 }
