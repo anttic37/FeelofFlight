@@ -13,7 +13,7 @@ import { injectGroundFX } from './groundfx.js';
 //         draw on top and win the z-buffer; the shell alone is only visible
 //         beyond the outer tile ring where fog is >70%;
 //     (b) world-aligned square tiles in three rings around the plane (5 m
-//         triangles near, coarser out to 5.2 km), baked in a module worker
+//         triangles near, coarser out to 6.8 km), baked in a pool of module workers
 //         from the same analytic heightAt/terrainColor as everything else.
 //         Each ring's meshes sink by a small y bias (0 / -0.9 / -1.8, shell
 //         -2.5) so a coarser surface can never poke through a finer one, and
@@ -46,11 +46,16 @@ import { injectGroundFX } from './groundfx.js';
 //     would spend its life over shell instead of tiles, which is a much worse artifact than
 //     the pop it was buying. One bake worker at MAX_IN_FLIGHT 2 is the binding constraint, so
 //     any future move outward has to come after more bake throughput, not before it.
-// Hence: unchanged. The pop is real but every lever available today costs more than it buys.
+// THE THROUGHPUT ARRIVED, SO THE RADII MOVED. The bake pool (below) scales with cores; measured
+// cold fill of the spawn ring at a mountain went 5.73 s on one worker to 1.42 s on four, a
+// clean 4x. That is the "more bake throughput FIRST" the note above demanded, so these are the
+// 1500 / 4000 / 6800 radii that were measured for pop (4.7->3.8, 3.1->2.0, 1.8->1.4 px) and
+// rejected purely for streaming. They also push the tile/shell boundary ~1.6 km further into
+// the haze. Cruise keep-up re-measured with the pool before shipping — see the commit.
 const RINGS = [
-  { lod: 0, tile: 480,  res: 96, radius: 1100, skirt: 5,  bias: 0,    minS: 0 },
-  { lod: 1, tile: 960,  res: 64, radius: 3000, skirt: 8,  bias: -0.5, minS: 7.5 },
-  { lod: 2, tile: 1920, res: 48, radius: 5200, skirt: 16, bias: -1,   minS: 20 },
+  { lod: 0, tile: 480,  res: 96, radius: 1500, skirt: 5,  bias: 0,    minS: 0 },
+  { lod: 1, tile: 960,  res: 64, radius: 4000, skirt: 8,  bias: -0.5, minS: 7.5 },
+  { lod: 2, tile: 1920, res: 48, radius: 6800, skirt: 16, bias: -1,   minS: 20 },
 ];
 const EVICT_PAD = 300;        // hysteresis: build at radius, evict at radius+300
 const SHELL_Y = -4;
@@ -273,28 +278,49 @@ export function createTerrain(scene) {
                                   // see them or every streamed tile gets baked twice
   let nextId = 1, built = 0, evicted = 0, trisLive = 0, dispatched = 0;
 
-  const worker = new Worker(new URL('./terrainworker.js', import.meta.url), { type: 'module' });
-  // the worker has its OWN heightcore instance — seed it before any bake job
-  worker.postMessage({ type: 'seed', seed: getTerrainSeed() });
-  worker.onmessage = (e) => {
+  // A POOL OF BAKE WORKERS, NOT ONE. One worker at two jobs in flight was measured as the
+  // binding constraint on everything terrain-side: cold fill at a mountain spawn took ~5 s,
+  // and pushing the outer ring out (the safe lever against LOD pop and the tile/shell seam)
+  // was tried and reverted because the queue never drained at cruise. Baking is pure CPU
+  // on an independent heightcore instance per worker, so it scales with cores. Sized to
+  // leave the main thread and the other workers (shore, ribbon, colormap) room; ?workers=N
+  // overrides for A/B. Each worker keeps its own in-flight cap and its own death: a job
+  // remembers which worker it went to, so one crashing requeues only its own jobs.
+  const N_WORKERS = Math.max(1, Math.min(4,
+    Number(new URLSearchParams(location.search).get('workers')) || ((navigator.hardwareConcurrency || 4) - 2)));
+  const workers = [], busy = [], dead = [];
+  const onResult = (e) => {
     const job = inFlight.get(e.data.id);
     inFlight.delete(e.data.id);
     if (job) {
+      busy[job.w]--;
       finished.push({ job, positions: e.data.positions, colors: e.data.colors, normals: e.data.normals });
       finishedKeys.add(job.key);
     }
   };
   // a dead worker (404 after a server restart, module error, uncaught throw)
-  // must not pin the in-flight slots forever and silently stall all streaming:
-  // log once, requeue the lost jobs, and fall back to main-thread baking
-  let workerDead = false;
-  worker.onerror = worker.onmessageerror = (e) => {
-    if (!workerDead) console.error('terrain worker failed — falling back to main-thread tile baking', e && (e.message || e.type));
-    workerDead = true;
-    for (const job of inFlight.values()) if (!pending.has(job.key) && !tiles.has(job.key)) pending.set(job.key, job);
-    inFlight.clear();
+  // must not pin its in-flight slots forever and silently stall streaming:
+  // log once, requeue ITS lost jobs, and if every worker is gone fall back to main-thread baking
+  let workerDead = false;   // true only when the whole pool is dead
+  const onDeath = (w) => (e) => {
+    if (!dead[w]) console.error(`terrain worker ${w} failed`, e && (e.message || e.type));
+    dead[w] = true; busy[w] = 0;
+    for (const [id, job] of inFlight) {
+      if (job.w !== w) continue;
+      inFlight.delete(id);
+      if (!pending.has(job.key) && !tiles.has(job.key)) pending.set(job.key, job);
+    }
+    workerDead = dead.every(Boolean);
+    if (workerDead) console.error('all terrain workers failed — falling back to main-thread tile baking');
   };
-
+  for (let w = 0; w < N_WORKERS; w++) {
+    const wk = new Worker(new URL('./terrainworker.js', import.meta.url), { type: 'module' });
+    // each worker has its OWN heightcore instance — seed it before any bake job
+    wk.postMessage({ type: 'seed', seed: getTerrainSeed() });
+    wk.onmessage = onResult;
+    wk.onerror = wk.onmessageerror = onDeath(w);
+    workers.push(wk); busy.push(0); dead.push(false);
+  }
   function tileKey(lod, ix, iz) { return lod + ':' + ix + ':' + iz; }
 
   function addTile(key, ring, ix, iz, positions, colors, normals) {
@@ -442,8 +468,12 @@ export function createTerrain(scene) {
       break;
     }
 
-    // dispatch: LOD ascending, then distance to the look-ahead point
-    while (!workerDead && inFlight.size < MAX_IN_FLIGHT && pending.size) {
+    // dispatch: LOD ascending, then distance to the look-ahead point. Each job goes to the
+    // LEAST-BUSY live worker; MAX_IN_FLIGHT is per worker, so the pool's total is N x that.
+    while (!workerDead && pending.size) {
+      let w = -1, wBusy = MAX_IN_FLIGHT;
+      for (let k = 0; k < workers.length; k++) if (!dead[k] && busy[k] < wBusy) { wBusy = busy[k]; w = k; }
+      if (w < 0) break; // every live worker is at its cap
       let best = null, bestScore = Infinity;
       for (const job of pending.values()) {
         const dx = job.cx - lookX, dz = job.cz - lookZ;
@@ -453,9 +483,11 @@ export function createTerrain(scene) {
       pending.delete(best.key);
       if (tiles.has(best.key)) continue; // already built — never re-dispatch
       const id = nextId++;
+      best.w = w;
       inFlight.set(id, best);
+      busy[w]++;
       dispatched++;
-      worker.postMessage({
+      workers[w].postMessage({
         id, x0: best.ix * best.ring.tile, z0: best.iz * best.ring.tile,
         size: best.ring.tile, res: best.ring.res, skirt: best.ring.skirt, minSpan: best.ring.minS,
       });
@@ -478,7 +510,8 @@ export function createTerrain(scene) {
     return {
       mode: 'dynamic', tiles: tiles.size, queued: pending.size,
       inFlight: inFlight.size, tris: trisLive, built, evicted, dispatched,
-      workerDead, shellTris: SHELL_SEGS * SHELL_SEGS * 2, shellTex,
+      workerDead, workers: N_WORKERS, workersDead: dead.filter(Boolean).length,
+      shellTris: SHELL_SEGS * SHELL_SEGS * 2, shellTex,
     };
   }
 

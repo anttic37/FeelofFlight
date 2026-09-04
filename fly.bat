@@ -9,7 +9,7 @@ rem and change PORT here and the matching entry in ..\.claude\launch.json.
 rem
 rem KEEP THIS FILE CRLF. cmd.exe mis-parses LF-only batch files, eating leading characters
 rem off most lines - it fails in ways that look like anything except an encoding problem.
-set PORT=4790
+set PORT=4795
 
 start "flighfeel server" /min powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0..\.claude\flighfeel-server.ps1" -Port %PORT%
 
