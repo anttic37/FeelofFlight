@@ -12,7 +12,7 @@ patchCloudShadow();
 import { patchShadowFade } from './shadowfade.js';
 // ...and shadows that fade at the edge of the shadow box instead of snapping on and off.
 patchShadowFade();
-import { createWorld, heightAt, surfaceAt } from './world.js';
+import { createWorld, heightAt, surfaceAt, SHADOW_LIGHT_DIST, SHADOW_FAR_CAP, SHADOW_DEPTH_USE } from './world.js';
 import { createDayNight } from './daynight.js';
 import { initGroundFX } from './groundfx.js';
 import { RUNWAYS } from './runways.js';
@@ -121,19 +121,21 @@ scene.add(plane.group);
 // the soft ground shadow that takes over above the shadow box — see planeblob.js
 const planeBlob = createPlaneBlob(scene, heightAt);
 
-// ...AND SKIP THE PLANE'S SHADOW PASS WHEN IT CANNOT LAND ON THE GROUND. The shadow box is
-// a +/-160 m square that follows the plane; the plane's own shadow falls downsun by
-// AGL * horizontal(sun) / sun.y, so once that exceeds ~160 m the shadow is outside its own
-// box and nothing is drawn from those 69 casters anyway — yet the depth map still renders
-// them every frame. Toggling castShadow off above the sun-dependent limit skips all 69 in
-// the shadow pass through every second of cruise, which is most of the flight. Costs one
-// hypot and 69 boolean writes only on the frames the state flips.
+// ...AND SKIP THE PLANE'S SHADOW PASS WHEN IT CANNOT LAND ON THE GROUND. The shadow camera's
+// far plane follows the shadow's landing point up to SHADOW_FAR_CAP (world.js); past that the
+// ground point is beyond the depth range and nothing is drawn from those casters anyway — yet
+// the depth map would still render them every frame. The limit is the AGL at which the
+// landing point reaches the cap: (cap - light distance - margin) * sunY, i.e. ~1500 m at noon
+// and ~360 m at a 10 degree sun. Above it castShadow goes off and the blob shadow takes over.
+// (This used to hand over at 185 m on a belief the shadow left the box laterally; it never
+// did — plane and shadow share a light ray — so the real shadow now runs ~8x further.)
 let _planeCasts = true;
-let _maxVisAGL = 185;   // the current limit, read by the blob shadow so it fades in exactly here
+let _maxVisAGL = 1500;   // the current limit, read by the blob shadow so it fades in exactly here
 function updatePlaneShadowCulling() {
   const agl = phys.pos.y - Math.max(0, heightAt(phys.pos.x, phys.pos.z));
-  const horiz = Math.hypot(SUN_DIR.x, SUN_DIR.z);
-  const maxVisAGL = 160 * Math.max(0, SUN_DIR.y) / Math.max(horiz, 0.04) + 25;
+  // the AGL at which the landing point reaches the usable part of the capped depth range
+  // (same constants and margin world.js sizes the far plane with)
+  const maxVisAGL = (SHADOW_DEPTH_USE * SHADOW_FAR_CAP - SHADOW_LIGHT_DIST - 40) * Math.max(0.08, SUN_DIR.y);
   _maxVisAGL = maxVisAGL;
   const want = agl < maxVisAGL;
   if (want !== _planeCasts) {
@@ -525,7 +527,7 @@ renderer.setAnimationLoop(() => {
   // island stops loading under you
   world.update(chase.free ? chase.camera.position : phys.pos, simTime);
   updatePlaneShadowCulling();
-  planeBlob.update(phys.pos, _maxVisAGL);
+  planeBlob.update(phys.pos, _maxVisAGL, phys.quat);
   sound.update(dt, phys);
   hud.update(phys, input, dayNight.state);
   // the panel needs no per-frame tick: every control writes into the params object the

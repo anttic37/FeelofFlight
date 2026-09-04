@@ -16,6 +16,7 @@ import { createWater } from './water.js';
 import { createLandmarks } from './landmarks.js';
 import { createShoreRibbon } from './shoreribbon.js';
 import { createBirds } from './birds.js';
+import { groundHitAlongSun } from './planeblob.js';
 
 // Scene construction for the procedural island: sky/sun/lights, the static
 // terrain mesh, vegetation scatter, runways, water. Clouds are not scene
@@ -38,6 +39,26 @@ export { heightAt, surfaceAt } from './heightcore.js';
 // of the frame at best and nothing at four of them, for 4x the shadow-map fill, and
 // the longer far plane changed 0.000% at 300, 900 and 1500 m AGL. None of it earned
 // its keep. This is the original box, unchanged.
+
+// THE PLANE'S SHADOW IS CUT BY THE FAR PLANE, NOT THE BOX. The plane and the spot its shadow
+// lands on lie on the SAME light ray, so in the shadow camera's frame the shadow is always at
+// the centre of the +/-160 m box however high you fly — the old note about it "leaving the box
+// laterally" had the geometry wrong. What actually ends it is depth: the ground point sits at
+// light-depth SHADOW_LIGHT_DIST + AGL / sunY, and with a fixed far of 1000 the shadow vanished
+// above 410 m at noon and above ~100 m at a 10 degree sun. So the far plane now FOLLOWS the
+// landing point every frame (see update), up to this cap, and the blob shadow takes over only
+// past it: ~1500 m AGL at noon, ~360 m at 10 degrees. Bias is scaled with the range so its
+// world-space size stays what it was tuned at.
+export const SHADOW_LIGHT_DIST = 420;
+export const SHADOW_FAR_CAP = 3200;
+// shadowfade.js fades every shadow toward lit over the LAST 18% of the shadow camera's depth
+// range (smoothstep 0.82..1.0 on depth) so casters stop snapping at the box edge. The landing
+// point therefore has to sit BEFORE that band: the far plane is sized so it lands at this
+// fraction of the range. Measured before this existed: with the landing point at 94-97% of the
+// range the plane's shadow was 119 px at 600 m AGL and 0 px at 1200 m — faded out by the very
+// thing meant to soften edges.
+export const SHADOW_DEPTH_USE = 0.78;
+const _sunHit = new THREE.Vector3();   // scratch for the per-frame landing-point march
 
 export function createWorld(scene) {
   // fogColor is now only a fallback: the patched fog chunk computes the haze
@@ -331,8 +352,23 @@ export function createWorld(scene) {
     uGroundTime.value = time;
     // sunDir is SUN_DIR, which daynight.js rewrites in place, so the light and the disc
     // both follow the time of day without being told about it separately.
-    sun.position.copy(planePos).addScaledVector(sunDir, 420);
+    sun.position.copy(planePos).addScaledVector(sunDir, SHADOW_LIGHT_DIST);
     sun.target.position.copy(planePos);
+    // FAR PLANE FOLLOWS THE SHADOW'S LANDING POINT (see SHADOW_FAR_CAP). One flat-ground step
+    // down-sun, one correction against the height there, plus a margin for relief below it.
+    {
+      // the same march the blob shadow uses, so both agree on where the shadow lands
+      const t = groundHitAlongSun(planePos, heightAt, _sunHit);
+      const far = Math.min(SHADOW_FAR_CAP, Math.max(700, (SHADOW_LIGHT_DIST + t + 40) / SHADOW_DEPTH_USE));
+      const cam = sun.shadow.camera;
+      if (Math.abs(cam.far - far) > 2) {
+        cam.far = far;
+        cam.updateProjectionMatrix();
+        // constant bias is in NDC, so it scales with the depth range: keep its WORLD size at
+        // the value it was tuned at (-0.0006 over the original 950 m range)
+        sun.shadow.bias = -0.0006 * 950 / (far - cam.near);
+      }
+    }
     sky.position.set(planePos.x, 0, planePos.z);
     terrain.update(planePos);
     scatter.update(planePos, time);
