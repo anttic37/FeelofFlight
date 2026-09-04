@@ -1,5 +1,6 @@
 ﻿import * as THREE from 'three';
 import { EffectComposer, RenderPass, EffectPass, ToneMappingEffect, ToneMappingMode, BloomEffect } from 'postprocessing';
+import { createGodRays } from './godrays.js';
 import { CloudsEffect, CloudShape, CloudShapeDetail, LocalWeather, Turbulence } from '@takram/three-clouds';
 import { AerialPerspectiveEffect, PrecomputedTexturesLoader, DEFAULT_PRECOMPUTED_TEXTURES_URL } from '@takram/three-atmosphere';
 import { STBNLoader, DEFAULT_STBN_URL } from '@takram/three-geospatial';
@@ -1115,7 +1116,11 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir, 
   // ?bloom=0 already existed for main.js's composer; it has to be honoured here
   // too or the flag silently stops working the moment this path takes over.
   if (new URLSearchParams(location.search).get('bloom') === '0') bloom.intensity = 0;
-  composer.addPass(new EffectPass(camera, bloom,
+  // GOD RAYS go in the same pass as bloom, ahead of it, so the shafts glow a little. They
+  // read the cloud overlay (coverage alpha) and the depth buffer for occlusion — see
+  // godrays.js for why the library's own physically-based shafts were not enough.
+  const rays = createGodRays();
+  composer.addPass(new EffectPass(camera, rays.effect, bloom,
     new ToneMappingEffect({ mode: ToneMappingMode.ACES_FILMIC })));
 
   // A FAILED GL CALL ON EVERY SINGLE FRAME, and the console was the reason nobody saw it.
@@ -1182,8 +1187,13 @@ export async function createVolumetricClouds({ renderer, scene, camera, sunDir, 
     },
     // main.js draws the overlay itself on any path that has no such pass — the plain
     // bloom composer runs before these load.
+    godRays: rays,   // tune.strength / uniforms, for the panel and the runtime A/B
     handlesOverlay: !!overlayScene,
-    render: () => composer.render(),
+    // rays first: the sun's screen position and the live overlay texture are per frame
+    render: () => {
+      rays.update(sunDir, camera, clouds.atmosphereOverlay && clouds.atmosphereOverlay.map);
+      composer.render();
+    },
     setSize: (w, h) => composer.setSize(w, h),
     dispose: () => { procedural.forEach(p => p.dispose && p.dispose()); composer.dispose(); },
   };
