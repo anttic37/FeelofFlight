@@ -36,6 +36,11 @@ self.onmessage = (e) => {
   const t0 = performance.now();
   const half = size * 0.5, cell = size / res;
   const out = new Uint8Array(res * res * 4);
+  // ...and the HEIGHT at every texel, for free: it is already computed for the paint. The
+  // ground shader marches this toward the sun to shadow hills with their own bulk
+  // (see ffTerrainShadow in cloudshadow.js). Posted as float32; the main thread packs it to
+  // half-float, which WebGL2 filters in core.
+  const hgt = new Float32Array(res * res);
   // one island-wide AO lattice, exactly as the shell's own vertex bake uses
   bakeAOGrid(-half, -half, size, 64);
   const PS = 12; // same fixed paint-normal stencil as bakeTile / the old shell repaint
@@ -50,6 +55,7 @@ self.onmessage = (e) => {
     for (let c = 0; c < res; c++, o += 4) {
       const x = -half + (c + 0.5) * cell;
       const h = heightAt(x, z);
+      hgt[r * res + c] = h;
       const gx = (heightAt(x + PS, z) - heightAt(x - PS, z)) / (2 * PS);
       const gz = (heightAt(x, z + PS) - heightAt(x, z - PS)) / (2 * PS);
       const ny = 1 / Math.sqrt(1 + gx * gx + gz * gz);
@@ -60,5 +66,6 @@ self.onmessage = (e) => {
       out[o] = toSRGB8(_c[0]); out[o + 1] = toSRGB8(_c[1]); out[o + 2] = toSRGB8(_c[2]); out[o + 3] = 255;
     }
   }
-  self.postMessage({ type: 'colormap', res, size, ms: Math.round(performance.now() - t0), data: out }, [out.buffer]);
+  self.postMessage({ type: 'colormap', res, size, ms: Math.round(performance.now() - t0), data: out, heights: hgt },
+    [out.buffer, hgt.buffer]);
 };

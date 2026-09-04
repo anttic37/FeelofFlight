@@ -104,6 +104,17 @@ export const CLOUD_SHADOW = {
   // 1 = fractal cloud-shaped edges, 0 = the old round-blob contour. A runtime A/B and
   // an off-switch; there is no reason to run at 0 in the game.
   uCsRagged: { value: 1 },
+
+  // TERRAIN SELF-SHADOW. Terrain tiles only RECEIVE three's shadow map (they never cast — the
+  // box is +/-160 m around the plane, a hill is kilometres), so hills never shaded their own
+  // valleys and low sun, which most spawns are weighted toward, lost its whole drama. These
+  // drive ffTerrainShadow(): a height map of the island (half-float, 15.2 m/texel, baked by
+  // the colormap worker alongside the paint) marched a few taps toward the sun from every lit
+  // fragment. Off (uTsOn 0) until the map lands. ?tshadow=0 keeps it off for A/B.
+  uTsMap:      { value: blackPixel() },
+  uTsSize:     { value: 15600 },
+  uTsOn:       { value: 0 },
+  uTsStrength: { value: 0.88 },
 };
 
 // The strength we ramp up to once the clouds land. Kept apart from the uniform so
@@ -225,6 +236,53 @@ float ffCloudShadow() {
   shade *= mix( 1.0, 0.66 + 0.34 * mottle, uCsRagged );
   return 1.0 - uCsStrength * shade;
 #endif
+}
+
+// TERRAIN SELF-SHADOW, by marching the island's height map toward the sun.
+//
+// Same world recovery, same injection point, same rule about what it touches: only the
+// DIRECT sun term, so a valley in a hill's shadow goes blue-grey under the sky, not black.
+// Twelve taps with geometric spacing from ~14 m out to ~1.8 km: dense near the surface,
+// where a ridge two hundred metres away decides most shadows, sparse far out, where only a
+// big mountain can matter and it is big enough to hit anyway. The occluder test is soft —
+// how far BELOW the marching ray the ground sits, feathered over a few metres that widen with
+// distance — so the shadow edge is a penumbra rather than a saw-tooth of 15 m texels. The
+// ray starts a little above the fragment and the first tap is skipped a step out, which is
+// what keeps a surface from shadowing itself on its own texel.
+uniform sampler2D uTsMap;
+uniform float uTsSize, uTsOn, uTsStrength;
+float ffTsHeight( vec2 xz ) {
+  // texel rows run +z -> -z (same layout as the colormap the same worker bakes)
+  vec2 uv = vec2( xz.x / uTsSize + 0.5, 0.5 - xz.y / uTsSize );
+  return texture2D( uTsMap, uv ).r;
+}
+float ffTerrainShadow() {
+#ifdef FLAT_SHADED
+  return 1.0;
+#else
+  if ( uTsOn < 0.5 ) return 1.0;
+  // the sun on the horizon shadows everything from everything; let dusk carry it
+  if ( uCsSunDir.y < 0.035 ) return 1.0;
+  vec3 world = ( uCsViewInv * vec4( - vViewPosition, 1.0 ) ).xyz;
+  // nothing above the island's tallest point can be in a hill's shadow, and the water at
+  // sea level far out is out of the map anyway: cheap exits for the sky-side of the frame
+  if ( world.y > 900.0 ) return 1.0;
+  if ( abs( world.x ) > uTsSize * 0.5 || abs( world.z ) > uTsSize * 0.5 ) return 1.0;
+  vec3 p = world + vec3( 0.0, 2.5, 0.0 );
+  float occ = 0.0;
+  float t = 14.0;
+  for ( int i = 0; i < 12; i++ ) {
+    vec3 q = p + uCsSunDir * t;
+    float h = ffTsHeight( q.xz );
+    // how deep under the ground this point of the ray is; the feather widens with range so
+    // far occluders throw a soft penumbra and near ones a crisp edge
+    float soft = 3.0 + t * 0.06;
+    occ = max( occ, smoothstep( 0.0, soft, h - q.y ) );
+    if ( occ >= 0.999 ) break;
+    t *= 1.56;
+  }
+  return 1.0 - uTsStrength * occ;
+#endif
 }`;
 
   // THE HOOK. Multiplying the directional light's colour right after it is fetched
@@ -242,7 +300,7 @@ float ffCloudShadow() {
     return;
   }
   THREE.ShaderChunk.lights_fragment_begin = THREE.ShaderChunk.lights_fragment_begin
-    .replace(NEEDLE, NEEDLE + '\n\t\tdirectLight.color *= ffCloudShadow();');
+    .replace(NEEDLE, NEEDLE + '\n\t\tdirectLight.color *= ffCloudShadow() * ffTerrainShadow();');
 }
 
 // ---------------------------------------------------------------------------
@@ -278,4 +336,15 @@ export function syncCloudShadow(vc) {
   const o = clouds.localWeatherOffset.x;
   const pin = (0.5 * repeat + o) % 1;
   CLOUD_SHADOW.uCsOrigin.value.setScalar(pin < 0 ? pin + 1 : pin);
+}
+
+// ---------------------------------------------------------------------------
+// Bind the island height map for the terrain self-shadow. Called by terrain.js when the
+// colormap worker lands (it bakes both in one pass). ?tshadow=0 leaves the march off, which
+// is the A/B: a runtime toggle of uTsOn and a frame diff is the proof this draws.
+const TSHADOW_ON = typeof location === 'undefined' || new URLSearchParams(location.search).get('tshadow') !== '0';
+export function attachTerrainShadow(tex, size) {
+  CLOUD_SHADOW.uTsMap.value = tex;
+  CLOUD_SHADOW.uTsSize.value = size;
+  CLOUD_SHADOW.uTsOn.value = TSHADOW_ON ? 1 : 0;
 }

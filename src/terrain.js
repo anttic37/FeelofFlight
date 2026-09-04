@@ -3,6 +3,7 @@ import { heightAt, getTerrainSeed } from './heightcore.js';
 import { terrainColor } from './colorcore.js';
 import { bakeTile, buildTileIndex, tileVertexCount, bakeAOGrid, sampleAOGrid, sampleAOGridB, applyAO } from './tilebake.js';
 import { injectGroundFX } from './groundfx.js';
+import { attachTerrainShadow } from './cloudshadow.js';
 
 // The terrain engine. Two modes, selected by URL param:
 //   ?terrain=static — EXACTLY the pre-dynamic path: one PlaneGeometry
@@ -253,6 +254,21 @@ export function createTerrain(scene) {
       shellMaterial.vertexColors = false;
       shellMaterial.needsUpdate = true;
       shellTex = 1;
+      // ...and the height map the same bake produced, for the terrain self-shadow march.
+      // HALF-FLOAT, not float: WebGL2 filters 16-bit float textures in core, while 32-bit
+      // needs OES_texture_float_linear — and a texture the GPU cannot filter samples as
+      // black, i.e. a silently missing feature. 0.5 m steps at these heights is nothing
+      // against a shadow test feathered over metres.
+      if (e.data.heights) {
+        const hf = new Uint16Array(e.data.heights.length);
+        for (let i = 0; i < hf.length; i++) hf[i] = THREE.DataUtils.toHalfFloat(e.data.heights[i]);
+        const hTex = new THREE.DataTexture(hf, e.data.res, e.data.res, THREE.RedFormat, THREE.HalfFloatType);
+        hTex.minFilter = hTex.magFilter = THREE.LinearFilter;
+        hTex.wrapS = hTex.wrapT = THREE.ClampToEdgeWrapping;
+        hTex.generateMipmaps = false;
+        hTex.needsUpdate = true;
+        attachTerrainShadow(hTex, e.data.size);
+      }
       console.log(`[flighfeel] shell colormap ${e.data.res}^2 (${(e.data.size / e.data.res).toFixed(1)} m/texel) in ${e.data.ms} ms`);
       cw.terminate();
     };
