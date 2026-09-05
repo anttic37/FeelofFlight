@@ -16,11 +16,12 @@ import { createWorld, heightAt, surfaceAt, SHADOW_LIGHT_DIST, SHADOW_FAR_CAP, SH
 import { createDayNight } from './daynight.js';
 import { initGroundFX } from './groundfx.js';
 import { RUNWAYS } from './runways.js';
-// P-51D Mustang: same buildPlane/updatePlaneVisual contract and wingFlexSm input as the
-// Kestrels, flex rig v2 (three cumulative spanwise joints per wing), documented in its own
-// aircraftCapabilities manifest. Both Kestrels stay in the repo; swapping this import is
-// the whole change of aircraft.
-import { buildPlane, updatePlaneVisual } from './p-51d-mustang2.js';
+// P-51D Mustang, asset revision 2.1.1 (p-51d-mustang3.js). Same buildPlane/updatePlaneVisual
+// contract, same part names the crash code looks up, same wingFlexSm input; its return object
+// is a superset of the 1.3.1 model's (p-51d-mustang2.js, kept in the repo). Flex rig v2 (three
+// cumulative spanwise joints per wing) is documented in its aircraftCapabilities manifest.
+// Swapping this import is the whole change of aircraft.
+import { buildPlane, updatePlaneVisual } from './p-51d-mustang3.js';
 import { FlightModel } from './physics.js';
 import { measureContacts, measureParts } from './airframe.js';
 import { mergeStaticPlaneMeshes } from './planeoptimize.js';
