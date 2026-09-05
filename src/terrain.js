@@ -163,7 +163,11 @@ export function createTerrain(scene) {
       vertexColors: true, flatShading: FLAT_SHADE, roughness: 1,
       polygonOffset: po > 0, polygonOffsetFactor: po, polygonOffsetUnits: po,
     });
-    injectGroundFX(mat);
+    // ring 0 owns the beach near the plane — see COAST in groundfx.js. Ring 1 (15 m chords,
+    // the streaming safety net) stops at 0.6 m; ring 2 (40 m) and the shell (162 m) stop at
+    // 2.5 m, because their chords bridge shallow lagoons well above the water: measured, the
+    // shell sat at +1.25 m over a bed at -0.47 m and drew the pool as a hexagon of sand.
+    injectGroundFX(mat, { coastCut: po > 0, coastY: po >= 2 ? 2.5 : 0.6 });
     return mat;
   }
   const materials = [ringMaterial(0), ringMaterial(1), ringMaterial(2)];

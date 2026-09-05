@@ -8,7 +8,7 @@ import {
   HILLS_C, DESERT_C, FOREST_C, MTN_A, MTN_B,
 } from './heightcore.js';
 import { createTerrain } from './terrain.js';
-import { uGroundTime } from './groundfx.js';
+import { uGroundTime, setCoastCenter } from './groundfx.js';
 import { createScatter } from './scatter.js';
 import { SUN_DIR, SKY, createSkyMaterial } from './atmosphere.js';
 import { createRunways } from './runways.js';
@@ -352,6 +352,8 @@ export function createWorld(scene) {
     uGroundTime.value = time;
     // sunDir is SUN_DIR, which daynight.js rewrites in place, so the light and the disc
     // both follow the time of day without being told about it separately.
+    // the coarse LOD layers stop drawing at the waterline inside this disc (groundfx COAST)
+    setCoastCenter(planePos.x, planePos.z);
     sun.position.copy(planePos).addScaledVector(sunDir, SHADOW_LIGHT_DIST);
     sun.target.position.copy(planePos);
     // FAR PLANE FOLLOWS THE SHADOW'S LANDING POINT (see SHADOW_FAR_CAP). One flat-ground step

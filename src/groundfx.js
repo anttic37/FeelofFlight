@@ -23,6 +23,31 @@ const uDetailTex = { value: null };
 // roughly twice as strong.
 export const uBumpScale = { value: 1.1 };
 
+// THE ONE RULE THAT OWNS THE SHORELINE. The terrain is several overlapping layers — three LOD
+// rings and a far shell — held apart vertically so they never z-fight. That works for opaque
+// land and fails at the coast, twice over: a coarse chord crossing the waterline rises above
+// the fine surface as a flat tongue over the sea, and everything sunk beneath the sea to hide
+// it is visible anyway, because the water is clear in the shallows. The history here is ten
+// coast commits and one full revert, each softening how much of a coarse layer shows at the
+// waterline. None asked the PS2-era question: why is a coarse layer drawn there at all?
+//
+// Now it is not. Within uCoastR of the plane — inside the disc where the finest ring is
+// guaranteed to be tiled — a coarse layer discards every fragment below its coast height:
+// 0.6 m for ring 1 (15 m chords, kept as the safety net if a fine tile is still streaming),
+// 2.5 m for ring 2 and the shell, whose 40 m and 162 m chords bridge shallow lagoons well
+// ABOVE the water — measured by ray census over a tidal pool, the shell sat at +1.25 m over
+// a bed at -0.47 m and drew the pool as a hexagon of sand. The finest ring and the shore
+// ribbon own everything in the beach band; the coarse chords that made the ledges are simply
+// never rasterised where you can see them. Failure is benign by construction: if the fine tile has not streamed in yet, the
+// hole is under the water surface, which covers it. Beyond the disc nothing changes — there
+// the coarse ring IS the finest present and must keep drawing. ?coastcut=0 is the A/B.
+export const COAST = {
+  uCoastCenter: { value: new THREE.Vector2(1e9, 1e9) },
+  uCoastR: { value: (typeof location !== 'undefined' && new URLSearchParams(location.search).get('coastcut') === '0') ? 0 : 1100 },
+};
+const COAST_Y = 0.6;   // metres above sea level; the beach's last 0.6 m and everything under water
+export function setCoastCenter(x, z) { COAST.uCoastCenter.value.set(x, z); }
+
 const NOISE_GLSL = `
 uniform float uGroundTime;
 uniform sampler2D uDetailTex;
@@ -231,7 +256,7 @@ if (gBumpFade > 0.002) {
 // is the detail or the paint underneath it
 const SPLAT_ON = typeof location === 'undefined' || new URLSearchParams(location.search).get('splat') !== '0';
 
-export function injectGroundFX(material, { detail = true, clouds = true, splat = detail } = {}) {
+export function injectGroundFX(material, { detail = true, clouds = true, splat = detail, coastCut = false, coastY = COAST_Y } = {}) {
   splat = splat && SPLAT_ON;
   if (splat && !uDetailTex.value) uDetailTex.value = getDetailTexture(null); // initGroundFX normally wins the race
   material.onBeforeCompile = (shader) => {
@@ -244,6 +269,18 @@ export function injectGroundFX(material, { detail = true, clouds = true, splat =
     shader.uniforms.uGroundTime = uGroundTime;
     shader.uniforms.uDetailTex = uDetailTex;
     shader.uniforms.uBumpScale = uBumpScale;
+    if (coastCut) {
+      // see COAST above: this material is a coarse layer, and near the plane it does not
+      // exist at or below the waterline. The discard sits first thing in main(), before any
+      // lighting is paid for on a fragment that is about to be thrown away.
+      shader.uniforms.uCoastCenter = COAST.uCoastCenter;
+      shader.uniforms.uCoastR = COAST.uCoastR;
+      shader.fragmentShader = shader.fragmentShader
+        .replace('#include <clipping_planes_fragment>',
+          `#include <clipping_planes_fragment>
+  if (vGWPos.y < ${coastY.toFixed(2)} && distance(vGWPos.xz, uCoastCenter) < uCoastR) discard;`);
+      shader.fragmentShader = 'uniform vec2 uCoastCenter;\nuniform float uCoastR;\n' + shader.fragmentShader;
+    }
     shader.vertexShader = shader.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vGWPos;\nvarying vec3 vGWNrm;')
       .replace('#include <beginnormal_vertex>',
