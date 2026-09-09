@@ -41,6 +41,18 @@
   /* moved up from bottom-left: the dial strip now owns the bottom of the screen */
   #help { position: absolute; top: 14px; left: 16px; padding: 9px 13px; font-size: 11.5px; line-height: 1.75; color: rgba(210,232,250,0.82); }
   #help kbd { background: rgba(140,190,240,0.16); border: 1px solid rgba(160,210,255,0.25); border-radius: 4px; padding: 0 5px; font-family: inherit; }
+  #help { max-width: calc(100vw - 206px); box-sizing: border-box; }
+  #paused { top: 130px; }
+  #camera-tools { position: absolute; right: 16px; top: 196px; width: 234px; padding: 10px; pointer-events: auto; }
+  #camera-tools .camera-label { font-size: 10px; letter-spacing: 2px; color: #b5cce1; margin-bottom: 7px; }
+  #camera-tools .camera-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; margin-top: 5px; }
+  #camera-tools button { border: 1px solid #7292ad70; border-radius: 4px; background: #122433c9; color: #dcecff; padding: 7px 3px; cursor: pointer; font: 10px ui-monospace, Consolas, monospace; }
+  #camera-tools button:hover, #camera-tools button:focus-visible { background: #29465e; outline: 1px solid #b7d9ef; }
+  #camera-tools button[aria-pressed="true"] { color: #fff0c3; border-color: #f3cf83; background: #51482bcc; }
+  #camera-tools button:disabled { opacity: 0.4; cursor: default; }
+  #camera-tools .camera-hint { font-size: 9px; color: #a5bdd0; margin-top: 7px; }
+  @media (max-width: 900px) { #camera-tools { right: 8px; width: 206px; padding: 7px; } }
+  @media (max-height: 620px) { #camera-tools .camera-hint { display: none; } }
   #gvign, #gvign-red { position: absolute; inset: 0; opacity: 0; pointer-events: none; will-change: opacity; }
   #gvign { background: radial-gradient(ellipse at center, rgba(0,0,0,0) 30%, rgba(0,0,0,0.55) 62%, rgba(0,0,0,0.97) 100%); }
   #gvign-red { background: radial-gradient(ellipse at center, rgba(60,0,0,0) 28%, rgba(120,8,8,0.5) 60%, rgba(150,10,14,0.95) 100%); }
@@ -124,7 +136,21 @@
   <div id="help" class="panel">
     <kbd>S</kbd> pull up &nbsp; <kbd>W</kbd> nose down &nbsp; <kbd>A</kbd>/<kbd>D</kbd> roll &nbsp; <kbd>Q</kbd>/<kbd>E</kbd> rudder<br>
     <kbd>X</kbd>/<kbd>Z</kbd> throttle &nbsp; <kbd>G</kbd> gear &nbsp; <kbd>F</kbd> flaps &nbsp; <kbd>Space</kbd> brake &nbsp; <kbd>T</kbd> next runway<br>
-    <kbd>R</kbd> reset &nbsp; <kbd>C</kbd> camera &nbsp; <kbd>V</kbd> view &nbsp; <kbd>B</kbd> free cam &nbsp; <kbd>P</kbd> tuning &nbsp; <kbd>Esc</kbd> pause &nbsp; <kbd>I</kbd> invert &nbsp; <kbd>M</kbd> mute &nbsp; mouse drag look &nbsp; wheel zoom &nbsp; gamepad
+    <kbd>R</kbd> reset &nbsp; <kbd>C</kbd> chase feel &nbsp; <kbd>V</kbd> chase / close / wing &nbsp; <kbd>B</kbd> free cam &nbsp; <kbd>P</kbd> tuning &nbsp; <kbd>Esc</kbd> pause &nbsp; <kbd>I</kbd> invert &nbsp; <kbd>M</kbd> mute &nbsp; mouse drag orbit &nbsp; wheel or <kbd>+</kbd>/<kbd>−</kbd> zoom &nbsp; gamepad
+  </div>
+  <div id="camera-tools" class="panel" aria-label="Camera controls">
+    <div class="camera-label">CAMERA · V TO CYCLE</div>
+    <div class="camera-row">
+      <button type="button" data-camera-view="0" aria-pressed="true">Chase</button>
+      <button type="button" data-camera-view="1" aria-pressed="false">Close</button>
+      <button type="button" data-camera-view="2" aria-pressed="false">Wing side</button>
+    </div>
+    <div class="camera-row">
+      <button type="button" id="camera-closer" title="Move camera closer (+)">+ Closer</button>
+      <button type="button" id="camera-farther" title="Move camera farther away (−)">− Farther</button>
+      <button type="button" id="camera-frame" title="Restore this view's default distance and angle">Reframe</button>
+    </div>
+    <div class="camera-hint">Drag to orbit · Scroll to change distance</div>
   </div>
   <div id="gvign"></div>
   <div id="gvign-red"></div>

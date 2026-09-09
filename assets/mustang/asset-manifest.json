@@ -1,0 +1,541 @@
+{
+  "asset": "P-51D Mustang",
+  "revision": "blender-mustang-0.9.0",
+  "stage": "articulated-game-asset-with-real-wheel-wells",
+  "gameReplacementInstalled": false,
+  "gameAdapter": "game/mustang.js",
+  "gameViewer": "game/index.html",
+  "animation": {
+    "version": "p51d-game-rig/1",
+    "clips": [
+      {
+        "name": "Gear_Retract",
+        "durationSeconds": 4,
+        "nodes": [
+          "RIG | Gear port retract",
+          "DETAIL \u2022 GEAR \u2022 PORT hydraulic retraction cylinder",
+          "DETAIL \u2022 GEAR \u2022 PORT retracting strut connecting rod",
+          "RIG | Gear starboard retract",
+          "DETAIL \u2022 GEAR \u2022 STARBOARD hydraulic retraction cylinder",
+          "DETAIL \u2022 GEAR \u2022 STARBOARD retracting strut connecting rod",
+          "RIG | Gear tail retract",
+          "DETAIL \u2022 GEAR \u2022 tail steering tension link +1",
+          "DETAIL \u2022 GEAR \u2022 tail steering tension link -1",
+          "RIG | Door main-inner port",
+          "RIG | Door tail port",
+          "RIG | Door main-trunnion port",
+          "RIG | Door main-inner starboard",
+          "RIG | Door tail starboard",
+          "RIG | Door main-trunnion starboard"
+        ],
+        "samples": 121,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Flaps",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | flap_port",
+          "RIG | flap_starboard"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Aileron_Port",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | aileron_port"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Aileron_Starboard",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | aileron_starboard"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Elevators",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | elevator_port",
+          "RIG | elevator_starboard"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Rudder",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | rudder"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Radiator",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | radiator"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Canopy",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | canopy_slide"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Propeller_Spin",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | propeller_spin"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Wheel_Spin",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | Wheel port spin",
+          "RIG | Wheel starboard spin",
+          "RIG | Wheel tail spin"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      },
+      {
+        "name": "Tailwheel_Steer",
+        "durationSeconds": 2,
+        "nodes": [
+          "RIG | Wheel tail steering",
+          "DETAIL \u2022 GEAR \u2022 tail steering tension link +1",
+          "DETAIL \u2022 GEAR \u2022 tail steering tension link -1"
+        ],
+        "samples": 61,
+        "channels": [
+          "translation",
+          "rotation",
+          "scale"
+        ]
+      }
+    ],
+    "controlUnits": "normalized inputs; sample clips by absolute time, do not blend unrelated controls",
+    "clipSampling": "Map normalized state over earliest to latest keyed times, not 0 to clip.duration; authored frame-1 keys can start at 1/30 second",
+    "wingControlComposition": "Apply full-endpoint linear morph flex then rotate around flexed hinge endpoints. Supplied adapter composes this after sampling TRS.",
+    "gearInput": "gear=0 deployed, gear=1 retracted; legacy physics.gearTransit is the opposite"
+  },
+  "nativeAxes": {
+    "up": "+Z",
+    "nose": "+Y",
+    "starboard": "+X",
+    "units": "metres"
+  },
+  "glbAxes": {
+    "up": "+Y",
+    "nose": "-Z",
+    "starboard": "+X"
+  },
+  "wingFlex": {
+    "version": 1,
+    "profileVersion": 2,
+    "updated": true,
+    "namespace": "blender-gltf-morph",
+    "keys": [
+      "WingFlex_Up",
+      "WingFlex_Down"
+    ],
+    "range": [
+      0,
+      1
+    ],
+    "default": [
+      0,
+      0
+    ],
+    "rule": "Set Up OR Down per side; reset opposite key. Drive ALL tagged meshes on that side, including accessories.",
+    "tipDisplacementMetres": {
+      "up": 0.44,
+      "down": -0.24
+    },
+    "startExposedSpanFraction": 0.18,
+    "amplitudePolicy": "Expressive game deformation, twice the 0.8 profile; not a real structural-load or damage limit",
+    "covePolicy": "Endpoint-only clearance relief is baked into fixed-wing morphs; do not apply it to articulated hinge points",
+    "meshSideTag": "wing_flex_side",
+    "meshes": [
+      "BAY | port fixed hydraulic clevis",
+      "BAY | port fixed main trunnion bearing 1",
+      "BAY | port fixed main trunnion bearing 2",
+      "BAY | port hydraulic roof carrier",
+      "BAY | port main trunnion carrier 1",
+      "BAY | port main trunnion carrier 2",
+      "BAY | port roof stiffener 1",
+      "BAY | port roof stiffener 2",
+      "BAY | starboard fixed hydraulic clevis",
+      "BAY | starboard fixed main trunnion bearing 1",
+      "BAY | starboard fixed main trunnion bearing 2",
+      "BAY | starboard hydraulic roof carrier",
+      "BAY | starboard main trunnion carrier 1",
+      "BAY | starboard main trunnion carrier 2",
+      "BAY | starboard roof stiffener 1",
+      "BAY | starboard roof stiffener 2",
+      "DETAIL \u2022 PITOT \u2022 port forward pressure tube",
+      "DETAIL \u2022 PITOT \u2022 port under-wing mounting pylon",
+      "P51D | port continuous main wing",
+      "P51D | port main wing aileron",
+      "P51D | port main wing flap",
+      "P51D | starboard continuous main wing",
+      "P51D | starboard main wing aileron",
+      "P51D | starboard main wing flap",
+      "Wing | port gun port 1",
+      "Wing | port gun port 2",
+      "Wing | port gun port 3",
+      "Wing | port inset navigation lens",
+      "Wing | starboard gun port 1",
+      "Wing | starboard gun port 2",
+      "Wing | starboard gun port 3",
+      "Wing | starboard inset navigation lens"
+    ],
+    "legacyCompatibility": "New morph API; NOT a drop-in replacement for existing JS wingFlex v3."
+  },
+  "flightLife": {
+    "version": "p51d-flight-life/1",
+    "updated": true,
+    "defaultEnabled": false,
+    "runtime": "game/flight-motion.js",
+    "adapter": "game/mustang.js",
+    "procedural": true,
+    "physicsPolicy": "Visual-only child transform. Host owns plane.group position/rotation/scale; no physics forces are applied",
+    "inputs": {
+      "flightMotion": [
+        0,
+        1
+      ],
+      "engineVibration": [
+        0,
+        1
+      ],
+      "turbulence": [
+        0,
+        1
+      ],
+      "controlVibration": [
+        0,
+        1
+      ],
+      "airspeed": {
+        "units": "metres/second",
+        "range": [
+          0,
+          250
+        ]
+      },
+      "flightTime": {
+        "units": "seconds",
+        "optional": true,
+        "purpose": "Deterministic pause/replay/scrubbing; otherwise accumulate deltaSeconds"
+      }
+    },
+    "limits": {
+      "engineTranslationMetres": 0.0015,
+      "gustTranslationMetres": 0.012,
+      "gustRollRadians": 0.006,
+      "gustWingMorphDelta": 0.225,
+      "aileronVibrationDegrees": 0.28,
+      "elevatorVibrationDegrees": 0.14,
+      "rudderVibrationDegrees": 0.18,
+      "radiatorVibrationDegrees": 0.22
+    },
+    "composition": "Sample independent clips; add bounded wing gusts; solve bent control hinges; clamp travel; apply pinned hose morphs; solve steering rods",
+    "determinism": "Analytic multi-frequency sine signals, no random-per-frame noise or accumulated transform offsets",
+    "detailTag": "flight_life_role",
+    "detailReport": "flight-life-detail-validation.json",
+    "details": {
+      "version": 1,
+      "pass": true,
+      "scope": "Existing brake hoses only; endpoint/clip-pinned 1.2mm cosmetic flex; no neutral mesh changes",
+      "keys": [
+        "HoseSway_Positive",
+        "HoseSway_Negative"
+      ],
+      "owners": [
+        {
+          "name": "DETAIL \u2022 GEAR \u2022 PORT flexible brake line",
+          "side": "port",
+          "pass": true,
+          "vertices": 96,
+          "pinnedVertices": 72,
+          "pinnedErrorM": 0.0,
+          "maximumDisplacementM": 0.0011999606849326305,
+          "signedSymmetryErrorM": 0.0,
+          "signedStates": 41,
+          "closedStates": 41,
+          "simultaneousTargetClosure": true,
+          "minimumVolume": 0.00011944328923558661
+        },
+        {
+          "name": "DETAIL \u2022 GEAR \u2022 STARBOARD flexible brake line",
+          "side": "starboard",
+          "pass": true,
+          "vertices": 96,
+          "pinnedVertices": 72,
+          "pinnedErrorM": 0.0,
+          "maximumDisplacementM": 0.0011999606849326305,
+          "signedSymmetryErrorM": 0.0,
+          "signedStates": 41,
+          "closedStates": 41,
+          "simultaneousTargetClosure": true,
+          "minimumVolume": 0.00011981604599747221
+        }
+      ],
+      "neutralGeometry": [
+        {
+          "name": "DETAIL \u2022 GEAR \u2022 PORT flexible brake line",
+          "neutralUnchanged": true,
+          "idempotent": false
+        },
+        {
+          "name": "DETAIL \u2022 GEAR \u2022 STARBOARD flexible brake line",
+          "neutralUnchanged": true,
+          "idempotent": false
+        }
+      ],
+      "objectsAdded": 0
+    },
+    "hoseGate": "1-smoothstep(0.02,0.10,gear); zero during remaining retraction and fully stored",
+    "limitation": "Art-directed vibration, not aeroelastic flutter, structural fatigue or physical suspension; independent GLB clips remain 11"
+  },
+  "dimensionsMetres": {
+    "wingspan": 11.289999961853027,
+    "length": 9.830000400543213,
+    "height": 3.550272822380066
+  },
+  "surfaceClosure": {
+    "allAircraftPartsClosed": true,
+    "validation": "validation.json",
+    "note": "Per-component manifold checks, not a single Boolean-unioned mesh."
+  },
+  "assemblyValidation": {
+    "report": "assembly-validation.json",
+    "pass": true
+  },
+  "motionValidation": {
+    "report": "motion-validation.json",
+    "pass": true
+  },
+  "propellerClearance": {
+    "report": "propeller-clearance.json",
+    "pass": true
+  },
+  "landingGear": {
+    "version": 3,
+    "state": "deployed",
+    "retractionAnimation": true,
+    "meshRoleTag": "detail_role",
+    "sideTag": "assembly_side",
+    "jointMetadata": "assembly_joints_json",
+    "jointCoordinateSystem": {
+      "up": "+Y",
+      "nose": "-Z",
+      "starboard": "+X",
+      "units": "metres",
+      "space": "unwarped authoring datums"
+    },
+    "kinematics": {
+      "version": 1,
+      "input": "normalized animation progress",
+      "range": [
+        0,
+        1
+      ],
+      "zero": "gear deployed, inner and tail doors open",
+      "one": "gear fully stored, all bay doors closed",
+      "sequence": {
+        "legTravel": [
+          0,
+          0.82
+        ],
+        "doorClosing": [
+          0.82,
+          1
+        ]
+      },
+      "mainPivotSource": [
+        1.9,
+        -0.17,
+        -1.28
+      ],
+      "mainWheelDownSource": [
+        1.9335,
+        -1.2302,
+        -1.5
+      ],
+      "mainWheelUpSource": [
+        0.8398,
+        -0.2035,
+        -1.5
+      ],
+      "tailPivotSource": [
+        0,
+        0.31,
+        4.38
+      ],
+      "mainGearDirection": "inward 90 degrees",
+      "tailDirection": "forward 90 degrees",
+      "tailSteeringRangeDegrees": [
+        -30,
+        30
+      ],
+      "animatedNodes": [
+        "RIG | Gear port retract",
+        "DETAIL \u2022 GEAR \u2022 PORT hydraulic retraction cylinder",
+        "DETAIL \u2022 GEAR \u2022 PORT retracting strut connecting rod",
+        "RIG | Gear starboard retract",
+        "DETAIL \u2022 GEAR \u2022 STARBOARD hydraulic retraction cylinder",
+        "DETAIL \u2022 GEAR \u2022 STARBOARD retracting strut connecting rod",
+        "RIG | Gear tail retract",
+        "DETAIL \u2022 GEAR \u2022 tail steering tension link +1",
+        "DETAIL \u2022 GEAR \u2022 tail steering tension link -1",
+        "RIG | Door main-inner port",
+        "RIG | Door tail port",
+        "RIG | Door main-trunnion port",
+        "RIG | Door main-inner starboard",
+        "RIG | Door tail starboard",
+        "RIG | Door main-trunnion starboard"
+      ],
+      "wheelNodes": [
+        "RIG | Wheel port spin",
+        "RIG | Wheel starboard spin",
+        "RIG | Wheel tail spin"
+      ],
+      "steeringNodes": [
+        "RIG | Wheel tail steering"
+      ],
+      "tailSteeringLinkNodes": [
+        "DETAIL \u2022 GEAR \u2022 tail steering tension link +1",
+        "DETAIL \u2022 GEAR \u2022 tail steering tension link -1"
+      ],
+      "combinedControlRule": "Solve tagged link_root_node/link_end_node segments after mixing gear and steering clips; centre steering during first 18% of retraction.",
+      "retractionRig": "ordinary glTF object transforms; baked clips, no Python runtime required",
+      "hydraulics": "fixed wing bearing, swivelling fixed-length cylinder, solved telescoping rod",
+      "oleoCompression": false,
+      "referenceUrls": [
+        "https://www.aircorpsaviation.com/mark-on-maintenance-p-51-landing-gear-retration-rod-end-failure-safety-spring-installation/"
+      ],
+      "limitation": "Reference-guided game kinematics, not certified engineering dimensions."
+    },
+    "wheelWells": {
+      "report": "wheel-well-validation.json",
+      "pass": true
+    },
+    "note": "Baked inward main-gear and forward tailwheel travel, independent wheel rotation and tail steering; real enclosed bays and sequenced doors."
+  },
+  "exhaust": {
+    "version": 2,
+    "stacksPerBank": 6,
+    "interiors": "Closed blind cavities, not uncapped holes."
+  },
+  "materials": "Packed basecolor, ORM, normal PNG maps; no external texture dependencies.",
+  "materialRevision": "pbr-material-character-1.4",
+  "cockpitRim": {
+    "version": 1,
+    "updated": true,
+    "report": "cockpit-rim-validation.json",
+    "pass": true,
+    "construction": "Continuous explicit recess edge loops, supported aft edge flow and differential hull normals; final-skin-fitted bevelled sills with integral 8mm seal; sharp glass thickness rims",
+    "motion": "Hood crown and 75mm lift/440mm aft-slide geometry unchanged; sampled over actual clip key interval",
+    "metadataCoordinates": "Opening boundary and seal path metadata use unwarped source axes; authoring vertex indices predate bay booleans"
+  },
+  "surfaceDetail": {
+    "version": 3,
+    "updated": true,
+    "pbrSets": 10,
+    "packedImages": 31,
+    "scope": "Separate rolled aluminum, silver lacquer, doped fabric, cast metal, wiped oleos, heat/soot exhaust, rubber and clear glazing; localized service wear",
+    "materialReport": "material-finish-validation.json",
+    "mechanicalFinishReport": "mechanical-finish-validation.json",
+    "normalPolicy": "No subtexel normal grain or periodic sheet ripples. Shallow resolved seams, rivets and local scratches only; mesh normals and silhouette unchanged",
+    "seamReport": "seam-shading-validation.json",
+    "approximation": "Authored game surface detail, not factory-exact rivet spacing or service-panel tooling"
+  },
+  "flightControlDetails": {
+    "version": 1,
+    "updated": true,
+    "report": "flight-control-detail-validation.json",
+    "pass": true,
+    "construction": "Closed fitted hinge-nose collars, pin caps, flush service fittings and trim-setting hardware integrated into seven parent control meshes",
+    "finish": "Riveted metal flaps/ailerons/later-D elevators; shallow fabric rib tapes on rudder; flush neutral trim demarcations",
+    "animation": "Seven control owners and 11 portable clips retained; all wing-control detail follows stronger profile-v2 bend morphs",
+    "trimLimitation": "Trim tabs are fixed-setting surface/hardware detail, following their parent control; no independent trim command in this revision"
+  },
+  "paintProjection": {
+    "fuselage": "Physical side-view projection using the varying superellipse section and final aft datum",
+    "uvLayout": "Bilateral physical-Y atlas; linear projection through triangles, no cylindrical interpolation kink",
+    "paintEdges": "Large insignia: two-texel pigment guard. Small stencils: area-sampled coverage with correlated paint/metal blend, no expanded outline or embossed relief",
+    "panelReliefMetres": 7.5e-05,
+    "rigChanged": false
+  },
+  "shadingValidation": {
+    "report": "shading-validation.json",
+    "pass": true,
+    "geometryUnchanged": true
+  },
+  "livery": "Fictional period-inspired silver / blue / olive; not a claimed historical serial reproduction.",
+  "limitations": [
+    "No detailed cockpit furnishings or physical suspension simulation",
+    "No production LOD/collision meshes; integrate supplied adapter with host game physics",
+    "Reference-guided approximation, not a manufacturing model"
+  ]
+}

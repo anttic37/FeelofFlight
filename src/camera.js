@@ -1,34 +1,35 @@
 import * as THREE from 'three';
 import { fbm1 } from './noise.js';
 
-// Spring chase camera. The lag between plane and camera is deliberate — it is
-// most of the "feel". Partial roll-follow, speed-driven FOV, noise shake.
+// Aircraft-relative chase camera. Angular/radial damping gives follow weight
+// without letting translation lag move the aim behind the eye at close zoom.
 // Mouse: drag to orbit around the plane (eases back behind when released),
 // wheel to zoom in/out.
 
 const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
-// how hard the camera is glued to the plane — cycled with C. k = spring
-// stiffness, damp = damping ratio (1 critical, lower floats), look = aim lag
+// How hard the angular tether follows the plane — cycled with C. Close zoom
+// raises the response floor in every mode; wide shots retain their own feel.
 const TIGHTNESS = [
-  { name: 'TIGHT', k: 60, damp: 1.0, look: 4.5, speedLag: 0.4 },
-  { name: 'NORMAL', k: 26, damp: 0.92, look: 2.2, speedLag: 1.0 },
-  { name: 'LOOSE', k: 12, damp: 0.85, look: 1.4, speedLag: 1.7 },
-  { name: 'FLOATY', k: 6, damp: 0.8, look: 0.9, speedLag: 2.6 },
+  { name: 'TIGHT', response: 7.5, look: 4.5, speedLag: 0.4 },
+  { name: 'NORMAL', response: 4.8, look: 2.2, speedLag: 1.0 },
+  { name: 'LOOSE', response: 3.2, look: 1.4, speedLag: 1.7 },
+  { name: 'FLOATY', response: 2.1, look: 0.9, speedLag: 2.6 },
 ];
 
-// V cycles rigid onboard views between the chase cam: cockpit (pilot's head
-// behind the windscreen) and wing (mounted just outboard of the right tip,
-// looking forward along the wing — shows the flex, ailerons and ground rush).
-// Offsets are body-frame (fwd = -Z), applied with the plane's quaternion.
+// V cycles external views. No cockpit: this aircraft is an exterior game asset.
+// The close view holds its orbit so small details can be inspected while flying.
+// Wing-side is aft of the wing, looking AT the aircraft rather than past its nose.
 const VIEWS = [
-  { name: 'CHASE' },
-  { name: 'COCKPIT', off: { x: 0, y: 1.18, z: -0.42 }, look: { x: 0, y: 0.9, z: -60 }, fov: 72 },
-  { name: 'WING', off: { x: 6.2, y: 1.05, z: 1.7 }, look: { x: 1.2, y: 0.4, z: -30 }, fov: 66 },
+  { name: 'CHASE', zoomMin: -14, zoomMax: 110 },
+  { name: 'CLOSE', zoomMin: -5.3, zoomMax: 40, distance: 11.5, fov: 58 },
+  { name: 'WING SIDE', zoomMin: -3.7, zoomMax: 75,
+    off: { x: 8.4, y: 2.6, z: 8.2 }, look: { x: 0, y: 0.18, z: -0.45 }, fov: 64 },
 ];
+const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
 
 export class ChaseCam {
-  constructor(camera, heightAt) {
+  constructor(camera, heightAt, domElement = window) {
     this.camera = camera;
     this.heightAt = heightAt;
     this.pos = new THREE.Vector3();
@@ -40,20 +41,31 @@ export class ChaseCam {
     this.accLagSm = 0; // smoothed speed-change lag (accel back, decel closer)
     this._prevSpeed = 0;
     this.mode = 1;     // TIGHTNESS index, default NORMAL
-    this.view = 0;     // VIEWS index: 0 chase, 1 cockpit, 2 wing
+    this.view = 0;     // VIEWS index: 0 chase, 1 close orbit, 2 rear wing-side
 
     // mouse orbit + zoom
     this.orbitYaw = 0;
     this.orbitPitch = 0;
     this.zoomOff = 0;
     this.zoomSm = 0;
+    this._viewZoom = [0, 0, 0];
     this._dragging = false;
     this._lx = 0;
     this._ly = 0;
+    this._pointerId = null;
+    this._anchor = new THREE.Vector3();
+    this._haveAnchor = false;
 
-    window.addEventListener('pointerdown', e => { this._dragging = true; this._lx = e.clientX; this._ly = e.clientY; });
+    domElement.addEventListener('pointerdown', e => {
+      if ((e.button !== undefined && e.button !== 0) || e.isPrimary === false) return;
+      this._dragging = true; this._lx = e.clientX; this._ly = e.clientY;
+      this._pointerId = e.pointerId ?? null;
+      if (e.pointerId !== undefined) domElement.setPointerCapture?.(e.pointerId);
+    });
     window.addEventListener('pointermove', e => {
       if (!this._dragging) return;
+      if (this._pointerId !== null && e.pointerId !== undefined && e.pointerId !== this._pointerId) return;
+      if (e.buttons === 0) { this._dragging = false; this._pointerId = null; return; }
       const dx = e.clientX - this._lx, dy = e.clientY - this._ly;
       if (this.free) {
         // free look: absolute heading, and pitch stops just short of the poles so the
@@ -69,21 +81,23 @@ export class ChaseCam {
       this._ly = e.clientY;
     });
     window.addEventListener('pointerup', () => { this._dragging = false; });
+    window.addEventListener('pointercancel', () => { this._dragging = false; });
+    domElement.addEventListener('lostpointercapture', () => { this._dragging = false; this._pointerId = null; });
     window.addEventListener('blur', () => { this._dragging = false; });
-    // Zoom range runs much further back now (34 -> 110 m of extra tether), and
-    // the step scales with how far out you already are: fine control close to
-    // the aircraft where a metre matters, and you are not scrolling for a week
-    // to get out to the wide shots.
-    window.addEventListener('wheel', e => {
-      if (this.free) {
-        // in free flight the wheel is the throttle, not a zoom — geometric so one
-        // scroll gesture covers walking pace to crossing the island
-        this.freeSpeed = Math.max(2, Math.min(4000, this.freeSpeed * Math.exp(-e.deltaY * 0.0012)));
-        return;
-      }
-      const step = e.deltaY * 0.012 * (1 + Math.max(0, this.zoomOff) * 0.055);
-      this.zoomOff = Math.max(-8, Math.min(110, this.zoomOff + step));
-    }, { passive: true });
+    domElement.addEventListener('wheel', e => {
+      e.preventDefault();
+      // Normalize pixel, line and page deltas for mice and trackpads alike.
+      this.zoomBy(e.deltaY * (e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? 500 : 1));
+    }, { passive: false });
+    window.addEventListener('keydown', e => {
+      if (e.ctrlKey || e.metaKey || e.altKey || e.target?.isContentEditable ||
+          /^(INPUT|TEXTAREA|SELECT|BUTTON)$/.test(e.target?.tagName || '')) return;
+      // Prefer the printed key, so +/− also work on non-US keyboard layouts.
+      const direction = e.key === '+' || e.key === '=' ? -1 : e.key === '-' ? 1 :
+        e.code === 'NumpadAdd' ? -1 : e.code === 'NumpadSubtract' ? 1 :
+        !e.key && e.code === 'Equal' ? -1 : !e.key && e.code === 'Minus' ? 1 : 0;
+      if (direction) { e.preventDefault(); this.zoomBy(direction * 100); }
+    });
     window.addEventListener('contextmenu', e => e.preventDefault());
 
     // pilot head: a small sprung mass on the airframe. It lags acceleration,
@@ -111,16 +125,60 @@ export class ChaseCam {
     this._crashDir = new THREE.Vector3(0, 0, 1);
     this._crashSpeed = 0;
     this._crashDist = 30;
+    this._crashZoom = 0;
 
     this._t = { fwd: new THREE.Vector3(), up: new THREE.Vector3(), mix: new THREE.Vector3(),
                 des: new THREE.Vector3(), lt: new THREE.Vector3(), right: new THREE.Vector3(),
                 a: new THREE.Vector3(), dir: new THREE.Vector3(),
-                acc: new THREE.Vector3(), hd: new THREE.Vector3(), q: new THREE.Quaternion() };
+                acc: new THREE.Vector3(), hd: new THREE.Vector3(), q: new THREE.Quaternion(),
+                offset: new THREE.Vector3(), goal: new THREE.Vector3(), back: new THREE.Vector3(),
+                aimUp: new THREE.Vector3(), wantUp: new THREE.Vector3(), cross: new THREE.Vector3(),
+                stepQ: new THREE.Quaternion() };
   }
 
   cycleTightness() {
     this.mode = (this.mode + 1) % TIGHTNESS.length;
     return TIGHTNESS[this.mode].name;
+  }
+
+  get viewName() { return this.free ? 'FREE' : VIEWS[this.view].name; }
+
+  zoomBy(deltaPixels) {
+    if (!Number.isFinite(deltaPixels)) return;
+    if (this.free) {
+      this.freeSpeed = clamp(this.freeSpeed * Math.exp(-deltaPixels * 0.0012), 2, 4000);
+      return;
+    }
+    const view = VIEWS[this.view];
+    const step = deltaPixels * 0.012 * (1 + Math.max(0, this.zoomOff) * 0.055);
+    this.zoomOff = clamp(this.zoomOff + step, view.zoomMin, view.zoomMax);
+    this._viewZoom[this.view] = this.zoomOff;
+  }
+
+  setView(index, phys) {
+    if (!Number.isInteger(index) || !VIEWS[index]) return this.viewName;
+    this._viewZoom[this.view] = this.zoomOff;
+    this.view = index;
+    this.zoomOff = this._viewZoom[index];
+    this.zoomSm = this.zoomOff;
+    this.orbitYaw = 0; this.orbitPitch = 0; this._dragging = false;
+    // Keep the current eye when switching: _followOffset takes the safe arc to the
+    // new preset. A straight interpolation cuts through the fuselage at close range.
+    if (phys && !this.free) {
+      this.pos.copy(this.camera.position); this.look.copy(phys.pos);
+      this.velC.set(0, 0, 0); this.accLagSm = 0; this._prevSpeed = phys.speed;
+      this._anchor.copy(phys.pos); this._haveAnchor = true;
+    }
+    return this.viewName;
+  }
+
+  resetFraming(phys) {
+    this.zoomOff = 0; this._viewZoom[this.view] = 0;
+    this.orbitYaw = 0; this.orbitPitch = 0;
+    this._dragging = false;
+    if (phys && !this.free) {
+      this.velC.set(0, 0, 0); this.accLagSm = 0; this._prevSpeed = phys.speed;
+    }
   }
 
   // Enter free flight from exactly where the chase camera already is, aimed exactly
@@ -131,7 +189,7 @@ export class ChaseCam {
     if (this.free) {
       this.freePos.copy(this.camera.position);
       this.freeVel.set(0, 0, 0);
-      const d = this._t.dir.copy(this.look).sub(this.camera.position);
+      const d = this.camera.getWorldDirection(this._t.dir);
       const len = d.length();
       if (len > 1e-4) {
         d.divideScalar(len);
@@ -139,7 +197,9 @@ export class ChaseCam {
         this.freePitch = Math.asin(Math.max(-1, Math.min(1, d.y)));
       }
     } else if (phys) {
-      this.snap(phys);
+      this.pos.copy(this.camera.position); this.look.copy(phys.pos);
+      this.velC.set(0, 0, 0); this.accLagSm = 0; this._prevSpeed = phys.speed;
+      this._anchor.copy(phys.pos); this._haveAnchor = true;
     }
     return this.free;
   }
@@ -170,17 +230,14 @@ export class ChaseCam {
     this.freePos.addScaledVector(this.freeVel, dt);
 
     this.camera.position.copy(this.freePos);
-    this.camera.up.copy(WORLD_UP);
-    this.camera.lookAt(t.lt.copy(this.freePos).add(fwd));
+    this._aim(t.lt.copy(this.freePos).add(fwd), WORLD_UP, dt);
     this.fov += (62 - this.fov) * Math.min(1, dt * 5);
     this.camera.fov = this.fov;
     this.camera.updateProjectionMatrix();
   }
 
   cycleView(phys) {
-    this.view = (this.view + 1) % VIEWS.length;
-    if (this.view === 0 && phys) this.snap(phys); // spring restarts from behind the plane
-    return VIEWS[this.view].name;
+    return this.setView((this.view + 1) % VIEWS.length, phys);
   }
 
   snap(phys) {
@@ -197,6 +254,69 @@ export class ChaseCam {
     this.headV.set(0, 0, 0);
     this._haveVel = false;        // teleports must not read as a huge acceleration
     this._wasCrashed = false;
+    this._anchor.copy(phys.pos); this._haveAnchor = true;
+  }
+
+  // Follow in aircraft-relative space, on a SPHERE. Cartesian spring motion can
+  // shortcut an orbit through the aircraft; world-space aim lag can leave the
+  // look target behind the camera at 80 m/s. Position translation is transported
+  // separately in update; only angle and distance lag behind a manoeuvre.
+  _followOffset(desired, origin, angularRate, radialRate, dt) {
+    const t = this._t;
+    const current = t.offset.copy(this.pos).sub(origin);
+    const goal = t.goal.copy(desired).sub(origin);
+    const radius = Math.max(6.3, current.length());
+    const goalRadius = Math.max(6.3, goal.length());
+    if (current.lengthSq() < 1e-8) current.copy(goal);
+    current.normalize(); goal.normalize();
+    t.q.setFromUnitVectors(current, goal);
+    const turn = 2 * Math.acos(clamp(t.q.w, -1, 1));
+    // Preset switches and large drag events cannot demand a one-frame whip-pan.
+    const angularBlend = Math.min(1 - Math.exp(-angularRate * dt), turn > 1e-6 ? 4.5 * dt / turn : 1);
+    t.stepQ.identity().slerp(t.q, angularBlend);
+    current.applyQuaternion(t.stepQ).normalize();
+    const nextRadius = radius + (goalRadius - radius) * (1 - Math.exp(-radialRate * dt));
+    this.pos.copy(origin).addScaledVector(current, nextRadius);
+    this.velC.set(0, 0, 0);
+  }
+
+  // Aim stays on the aircraft; only roll is damped. Projecting the previous up
+  // into the new view plane parallel-transports the horizon through verticals.
+  // Never normalize a world-up + inverted-plane-up cancellation into a 180° flip.
+  _aim(target, preferredUp, dt) {
+    const t = this._t;
+    const back = t.back.copy(this.camera.position).sub(target).normalize();
+    const up = t.aimUp.set(0, 1, 0).applyQuaternion(this.camera.quaternion);
+    up.addScaledVector(back, -up.dot(back));
+    if (up.lengthSq() < 1e-6) {
+      up.set(1, 0, 0).addScaledVector(back, -back.x);
+      if (up.lengthSq() < 1e-6) up.set(0, 0, 1).addScaledVector(back, -back.z);
+    }
+    up.normalize();
+    const want = t.wantUp.copy(preferredUp).addScaledVector(back, -preferredUp.dot(back));
+    if (want.lengthSq() > 0.04) {
+      want.normalize();
+      const angle = Math.atan2(back.dot(t.cross.copy(up).cross(want)), clamp(up.dot(want), -1, 1));
+      up.applyAxisAngle(back, clamp(angle * (1 - Math.exp(-dt * 5)), -dt * 1.6, dt * 1.6));
+    }
+    this.camera.up.copy(up);
+    this.camera.lookAt(target);
+  }
+
+  _constrainEye(origin, groundClearance) {
+    const eye = this.camera.position;
+    // Raising an under-wing eye to the ground can collapse a safe orbit radius
+    // into the fuselage. Resolve ground clearance AND aircraft clearance together.
+    for (let pass = 0; pass < 4; pass++) {
+      eye.y = Math.max(eye.y, Math.max(0, this.heightAt(eye.x, eye.z)) + groundClearance);
+      const dx = eye.x - origin.x, dy = eye.y - origin.y, dz = eye.z - origin.z;
+      if (dx * dx + dy * dy + dz * dz >= 6.3 * 6.3 - 1e-7) break;
+      const horizontal = Math.hypot(dx, dz);
+      const safeHorizontal = Math.sqrt(Math.max(0, 6.3 * 6.3 - dy * dy)) + 0.001;
+      eye.x = origin.x + (horizontal > 1e-6 ? dx / horizontal : 0) * safeHorizontal;
+      eye.z = origin.z + (horizontal > 1e-6 ? dz / horizontal : 1) * safeHorizontal;
+    }
+    eye.y = Math.max(eye.y, Math.max(0, this.heightAt(eye.x, eye.z)) + groundClearance);
   }
 
   // Pilot-head spring. Acceleration in BODY frame drives an offset in the
@@ -233,34 +353,57 @@ export class ChaseCam {
   }
 
   update(dt, phys, input) {
+    dt = Number.isFinite(dt) ? clamp(dt, 0, 0.05) : 0;
     const t = this._t;
     this.time += dt;
     if (this.free) { this._updateFree(dt, input); return; }
+    if (this._haveAnchor) {
+      const travel = t.a.copy(phys.pos).sub(this._anchor);
+      this.pos.add(travel); this.look.add(travel);
+    }
+    this._anchor.copy(phys.pos); this._haveAnchor = true;
     this._updateHead(dt, phys);
     const fwd = t.fwd.set(0, 0, -1).applyQuaternion(phys.quat);
     const planeUp = t.up.set(0, 1, 0).applyQuaternion(phys.quat);
 
-    // rigid onboard views (V): bolted to the airframe — no spring, no orbit,
-    // just a touch of buffet so speed and stall still reach the eye
-    if (this.view !== 0) {
+    this.zoomSm += (this.zoomOff - this.zoomSm) * Math.min(1, dt * 6);
+    // External detail views follow the airframe directly, with damped zoom.
+    // A crash always switches to the existing world-up observer behaviour.
+    if (this.view !== 0 && !phys.crashed) {
       const v = VIEWS[this.view];
-      const sm = phys.stallMargin ?? 0;
-      // engine vibration: always there, strongest at high power and low speed
-      const vib = 0.010 * (phys.throttle ?? 0) * (1 - Math.min(1, phys.speed / 120));
-      const amp = Math.pow(phys.speed / 115, 2) * 0.09 + sm * sm * 0.20 + (phys.stalled ? 0.14 : 0)
-        + (phys.flapBuffet ?? 0) * 0.12 + (phys.overspeed ?? 0) * 0.15;
-      // head offset rides in the body frame, so it leans with the airframe
-      this.camera.position.set(v.off.x + this.head.x, v.off.y + this.head.y, v.off.z + this.head.z)
-        .applyQuaternion(phys.quat).add(phys.pos)
-        .addScaledVector(planeUp, fbm1(this.time * 7.1, 7) * amp + fbm1(this.time * 41, 15) * vib)
-        .addScaledVector(fwd, fbm1(this.time * 37, 16) * vib);
-      t.lt.set(v.look.x, v.look.y, v.look.z).applyQuaternion(phys.quat).add(phys.pos);
+      if (this.view === 1) {
+        const distance = Math.max(6.2, v.distance + this.zoomSm);
+        const elevation = clamp(0.22 - this.orbitPitch, -1.2, 1.48);
+        const yaw = 0.65 + this.orbitYaw;
+        t.des.set(Math.sin(yaw) * Math.cos(elevation), Math.sin(elevation), Math.cos(yaw) * Math.cos(elevation))
+          .multiplyScalar(distance);
+        t.lt.set(0, 0.18, 0);
+      } else {
+        if (!this._dragging) {
+          const ease = 1 - Math.exp(-dt * 2.2);
+          this.orbitYaw *= 1 - ease; this.orbitPitch *= 1 - ease;
+        }
+        t.lt.set(v.look.x, v.look.y, v.look.z);
+        t.des.set(v.off.x, v.off.y, v.off.z).sub(t.lt);
+        t.des.setLength(Math.max(8, t.des.length() + this.zoomSm));
+        t.des.applyAxisAngle(WORLD_UP, this.orbitYaw);
+        t.right.copy(WORLD_UP).cross(t.des).normalize();
+        t.des.applyAxisAngle(t.right, this.orbitPitch);
+      }
+      t.des.add(t.lt).applyQuaternion(phys.quat).add(phys.pos);
+      t.lt.applyQuaternion(phys.quat).add(phys.pos);
+      this._followOffset(t.des, phys.pos, 10, 10, dt);
+      this.camera.position.copy(this.pos);
+      this._constrainEye(phys.pos, 0.65);
+      this.pos.copy(this.camera.position); this.velC.set(0, 0, 0);
+      this.look.copy(t.lt); this._wasCrashed = false;
+      // Keep chase acceleration history current while a different view is active.
+      this._prevSpeed = phys.speed; this.accLagSm = 0;
       this.fov += (v.fov - this.fov) * Math.min(1, dt * 5);
       this.camera.fov = this.fov;
       this.camera.updateProjectionMatrix();
-      this.camera.up.copy(planeUp);
-      this.camera.lookAt(t.lt);
-      return; // cycleView snaps the spring when we come back to CHASE
+      this._aim(t.lt, this.view === 2 ? planeUp : WORLD_UP, dt);
+      return;
     }
 
     // CRASH: the wreck tumbles, the camera must not. Everything below derives
@@ -300,18 +443,14 @@ export class ChaseCam {
       // about even with every distance term nailed down. Floored so a slow crash cannot
       // leave the wreck tumbling in the camera's lap.
       this._crashDist = Math.max(24, this.pos.distanceTo(phys.pos));
+      this._crashZoom = this.zoomSm;
     }
     this._wasCrashed = crashed;
 
-    // camera up: mostly world in level flight so banking reads on screen, but as
-    // the nose leaves level (loops, verticals) blend toward the plane's own up —
-    // a world-locked up flips/spins the view when fwd nears +-Y.
-    const sv = Math.min(1, Math.max(0, (Math.abs(fwd.y) - 0.45) / 0.45));
-    const steep = sv * sv * (3 - 2 * sv); // smoothstep(0.45, 0.9, |fwd.y|)
-    const upMix = crashed
-      ? t.mix.copy(WORLD_UP)
-      : t.mix.copy(WORLD_UP).multiplyScalar(0.75 * (1 - steep))
-          .addScaledVector(planeUp, 0.25 + 0.75 * steep).normalize();
+    // Orbit axes stay in one continuous body frame through rolls and loops.
+    // Horizon stabilization is separate in _aim: mixing world/plane up here
+    // used to cancel at certain inverted attitudes and flip both orbit axes.
+    const upMix = t.mix.copy(crashed ? WORLD_UP : planeUp);
 
     // orbit eases back behind the plane when the mouse is released
     if (!this._dragging) {
@@ -319,7 +458,6 @@ export class ChaseCam {
       this.orbitYaw -= this.orbitYaw * rc;
       this.orbitPitch -= this.orbitPitch * rc;
     }
-    this.zoomSm += (this.zoomOff - this.zoomSm) * Math.min(1, dt * 6);
 
     // G-lag: sustained pull eases the camera back a touch — pulls feel heavier
     const gk = Math.min(1, Math.max(0, ((phys.gLoad ?? 1) - 1) / 3));
@@ -348,9 +486,12 @@ export class ChaseCam {
     // and the speed term is held at the impact speed rather than following the wreck down to
     // nothing, so the shot does not creep in over the slide either
     const distSpeed = crashed ? this._crashSpeed : phys.speed;
+    // Cinematic acceleration/G tugs are useful from afar, not at inspection range.
+    const cinematic = clamp((this.zoomSm + 12) / 12, 0, 1);
     const dist = crashed
-      ? this._crashDist + this.zoomSm      // frozen framing; the wheel still works
-      : Math.max(7, 17 + distSpeed * 0.04 + this.zoomSm + this.gLagSm * 0.9 + this.accLagSm);
+      ? Math.max(7, this._crashDist + this.zoomSm - this._crashZoom)
+      : Math.max(6.5, 17 + distSpeed * 0.04 + this.zoomSm + cinematic * (this.gLagSm * 0.9 + this.accLagSm));
+    const wide = clamp((dist - 6.5) / 12, 0, 1);
     // a crashed airframe's forward vector is meaningless, so hold the bearing
     // frozen at impact instead of orbiting with the tumble
     const dir = crashed ? t.dir.copy(this._crashDir) : t.dir.copy(fwd).negate();
@@ -360,29 +501,28 @@ export class ChaseCam {
       const rightAxis = t.right.copy(upMix).cross(dir).normalize();
       dir.applyAxisAngle(rightAxis, this.orbitPitch);
     }
-    const des = t.des.copy(phys.pos).addScaledVector(dir, dist).addScaledVector(upMix, 3.6);
+    const des = t.des.copy(phys.pos).addScaledVector(dir, dist).addScaledVector(upMix, 1.6 + 2 * wide);
 
-    // spring toward desired position; stiffness/damping come from the C-cycled
-    // tightness mode (underdamped modes hover and float around the plane)
-    const k = tn.k, damp = 2 * Math.sqrt(k) * tn.damp;
-    t.a.copy(des).sub(this.pos).multiplyScalar(k).addScaledVector(this.velC, -damp);
-    this.velC.addScaledVector(t.a, dt);
-    this.pos.addScaledVector(this.velC, dt);
+    // Damped angular tether: safe arcs, with a faster close-range response.
+    const response = tn.response;
+    const closeFollow = 1 - clamp((dist - 8) / 12, 0, 1);
+    this._followOffset(des, phys.pos, Math.max(response, closeFollow * 10),
+      Math.max(response, 7), dt);
 
-    // look slightly ahead of the plane; when orbiting, center on the plane itself.
-    // Deliberately loose aim: a slow spring (2.2/s) plus a G-load offset push the
-    // plane away from screen center in maneuvers; the camera catches up afterwards.
+    // Look slightly ahead in wide shots; near zoom centers the aircraft. The
+    // target is already translated with the plane, so only this small local lead
+    // is damped — never the plane's whole world-space motion.
     // Aim: lead the plane in flight, but sit straight on the wreck after a crash.
     // Leading along a tumbling forward vector would swing the aim around the
     // frame, and the g-load term spikes hard on impact.
-    const ahead = crashed ? 0 : 9 / (1 + 3 * orbitMag);
-    const gOff = crashed ? 0 : Math.max(-0.8, Math.min(1.6, (phys.gLoad - 1) * 0.55));
+    const ahead = crashed ? 0 : 4 * wide * cinematic / (1 + 3 * orbitMag);
+    const gOff = crashed ? 0 : cinematic * Math.max(-0.8, Math.min(1.6, (phys.gLoad - 1) * 0.55));
     const lt = t.lt.copy(phys.pos).addScaledVector(fwd, ahead)
       .addScaledVector(crashed ? WORLD_UP : planeUp, 0.8 + gOff);
-    this.look.lerp(lt, 1 - Math.exp(-dt * tn.look));
+    this.look.lerp(lt, 1 - Math.exp(-dt * Math.max(tn.look, 12 * closeFollow)));
 
     // FOV stretches with speed
-    const fovTarget = Math.min(84, Math.max(60, 62 + Math.max(0, phys.speed - 32) * 0.24));
+    const fovTarget = 58 + wide * (Math.min(84, Math.max(60, 62 + Math.max(0, phys.speed - 32) * 0.24)) - 58);
     this.fov += (fovTarget - this.fov) * Math.min(1, dt * 3);
     this.camera.fov = this.fov;
     this.camera.updateProjectionMatrix();
@@ -390,22 +530,23 @@ export class ChaseCam {
     // shake: speed² + PRE-stall burble (squared so it creeps in, then bites) +
     // stall break + flaps-overspeed buffet + airframe overspeed
     const sm = phys.stallMargin ?? 0;
-    const amp = Math.pow(phys.speed / 115, 2) * 0.25 + sm * sm * 0.45 + (phys.stalled ? 0.3 : 0)
-      + (phys.flapBuffet ?? 0) * 0.35 + (phys.overspeed ?? 0) * 0.4;
+    const motionScale = 0.08 + 0.92 * cinematic;
+    const amp = motionScale * (Math.pow(phys.speed / 115, 2) * 0.25 + sm * sm * 0.45 + (phys.stalled ? 0.3 : 0)
+      + (phys.flapBuffet ?? 0) * 0.35 + (phys.overspeed ?? 0) * 0.4);
     const right = t.right.copy(fwd).cross(upMix).normalize();
     // the chase camera feels the head spring too, at reduced weight — it reads
     // as the whole rig being shoved around rather than a floating tripod
     this.camera.position.copy(this.pos)
-      .addScaledVector(right, fbm1(this.time * 6.5, 6) * amp + this.head.x * 1.6)
-      .addScaledVector(upMix, fbm1(this.time * 7.1, 7) * amp + this.head.y * 1.6)
-      .addScaledVector(fwd, this.head.z * -1.6);
+      .addScaledVector(right, fbm1(this.time * 6.5, 6) * amp + this.head.x * 1.6 * motionScale)
+      .addScaledVector(upMix, fbm1(this.time * 7.1, 7) * amp + this.head.y * 1.6 * motionScale)
+      .addScaledVector(fwd, this.head.z * -1.6 * motionScale);
 
     // never sink below the terrain
-    const gy = Math.max(0, this.heightAt(this.camera.position.x, this.camera.position.z)) + 1.6;
-    if (this.camera.position.y < gy) this.camera.position.y = gy;
-    if (this.pos.y < gy) this.pos.y = gy;
+    t.hd.copy(this.camera.position);
+    this._constrainEye(phys.pos, 1.6);
+    // Feed only collision correction back into the tether, not the visual shake.
+    this.pos.add(t.goal.copy(this.camera.position).sub(t.hd));
 
-    this.camera.up.copy(upMix);
-    this.camera.lookAt(this.look);
+    this._aim(this.look, WORLD_UP, dt);
   }
 }

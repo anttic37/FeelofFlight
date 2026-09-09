@@ -42,6 +42,14 @@ const WRECK_CONTACTS = [
 
 const clamp = (v, a, b) => v < a ? a : v > b ? b : v;
 
+function lowestSupport(points, ux, uy, uz) {
+  let lowest = Infinity;
+  for (const point of points) {
+    lowest = Math.min(lowest, point[0] * ux + point[1] * uy + point[2] * uz);
+  }
+  return lowest;
+}
+
 export class FlightModel {
   constructor(surfaceAt) {
     this.surfaceAt = surfaceAt;
@@ -102,6 +110,8 @@ export class FlightModel {
     this.onRunwaySurface = false;
     this.justTouchedDown = null;       // sink m/s on touchdown frame; integrator clears
     this.justGearMoved = false;        // integrator clears
+    this._groundContact = null;        // optional model-measured geometry; old aircraft keep their tuning
+    this._stancePitch = STANCE_PITCH;
     // grounded attitude is authoritative in yaw/pitch/bank, rebuilt into quat
     this._gYaw = 0; this._gPitch = 0; this._gBank = 0;
 
@@ -121,6 +131,92 @@ export class FlightModel {
     };
 
     this.reset();
+  }
+
+  // Contact points in plane.group coordinates, measured with gear DOWN and controls neutral.
+  // main is one main tire's bottom point; its x coordinate is mirrored for the other wheel.
+  // Optional supportPoints {mainPort,mainStarboard,tail} are compact arrays of actual tire
+  // hull vertices. They capture rounded tire support as the attitude changes, rather than
+  // rotating a fixed bottom point that no longer lies at the bottom after pitching.
+  // This only configures ground placement: masses, forces and aerodynamic tuning stay intact.
+  configureAirframe(contact) {
+    if (contact == null) {
+      this._groundContact = null;
+      this._stancePitch = STANCE_PITCH;
+      return this;
+    }
+    const point = value => Array.isArray(value) && value.length === 3 && value.every(Number.isFinite);
+    if (!point(contact.main) || !point(contact.tail) ||
+        !Number.isFinite(contact.bellyHeight) || contact.bellyHeight <= 0 ||
+        contact.tail[2] - contact.main[2] <= 1e-4) {
+      throw new TypeError('groundContact requires finite main/tail [x,y,z] points, tail behind main, and a positive bellyHeight');
+    }
+    let supportPoints = null;
+    if (contact.supportPoints != null) {
+      supportPoints = {};
+      for (const name of ['mainPort', 'mainStarboard', 'tail']) {
+        const points = contact.supportPoints[name];
+        if (!Array.isArray(points) || !points.length || !points.every(point)) {
+          throw new TypeError(`groundContact.supportPoints.${name} requires finite [x,y,z] points`);
+        }
+        supportPoints[name] = points.map(value => [...value]);
+      }
+    }
+    this._groundContact = {
+      main: [...contact.main], tail: [...contact.tail], bellyHeight: contact.bellyHeight,
+      supportPoints,
+    };
+    // Rotating around +X sends body +Z downward: equal world tire heights solve this angle.
+    this._stancePitch = Math.atan2(contact.tail[1] - contact.main[1], contact.tail[2] - contact.main[2]);
+    if (supportPoints) {
+      const difference = pitch => {
+        const uy = Math.cos(pitch), uz = -Math.sin(pitch);
+        const mainY = Math.min(lowestSupport(supportPoints.mainPort, 0, uy, uz),
+          lowestSupport(supportPoints.mainStarboard, 0, uy, uz));
+        return mainY - lowestSupport(supportPoints.tail, 0, uy, uz);
+      };
+      // Solve once at model configuration, not each simulation step. The prior point
+      // estimate brackets ordinary taildraggers; a wider interval supports other layouts.
+      let lo = Math.max(-1.2, this._stancePitch - .25);
+      let hi = Math.min(1.2, this._stancePitch + .25);
+      if (difference(lo) > 0 || difference(hi) < 0) { lo = -1.2; hi = 1.2; }
+      if (difference(lo) <= 0 && difference(hi) >= 0) {
+        for (let i = 0; i < 48; i++) {
+          const middle = (lo + hi) * .5;
+          if (difference(middle) < 0) lo = middle;
+          else hi = middle;
+        }
+        this._stancePitch = (lo + hi) * .5;
+      }
+    }
+    return this;
+  }
+
+  get stancePitch() { return this._stancePitch; }
+
+  groundHeight(quat = this.quat, gearTransit = this.gearTransit) {
+    const contact = this._groundContact;
+    if (!contact) return gearTransit > 0.5 ? 1.55 : 0.9;
+    const { x, y, z, w } = quat;
+    // World-up projection of each body axis. This includes bank and is yaw independent.
+    const ux = 2 * (x * y + w * z);
+    const uy = 1 - 2 * (x * x + z * z);
+    const uz = 2 * (y * z - w * x);
+    let mainY, tailY;
+    if (contact.supportPoints) {
+      const supports = contact.supportPoints;
+      mainY = Math.min(lowestSupport(supports.mainPort, ux, uy, uz),
+        lowestSupport(supports.mainStarboard, ux, uy, uz));
+      tailY = lowestSupport(supports.tail, ux, uy, uz);
+    } else {
+      const main = contact.main, tail = contact.tail;
+      mainY = uy * main[1] + uz * main[2] - Math.abs(ux * main[0]);
+      tailY = ux * tail[0] + uy * tail[1] + uz * tail[2];
+    }
+    const belly = Math.max(0, contact.bellyHeight * uy);
+    const wheels = Math.max(belly, -mainY, -tailY);
+    // The gear cannot change the body's contact clearance discontinuously at half travel.
+    return belly + (wheels - belly) * clamp(gearTransit, 0, 1);
   }
 
   reset() {
@@ -174,11 +270,11 @@ export class FlightModel {
     this.grounded = !!grounded;
     const surf = this.surfaceAt(x, z);
     const contact = Math.max(0, surf.h);
-    const gearH = this.gearTransit > 0.5 ? 1.55 : 0.9;
     this._gYaw = yaw || 0;
-    this._gPitch = this.grounded ? STANCE_PITCH : 0; // sit on the tailwheel from frame one
+    this._gPitch = this.grounded ? this.stancePitch : 0; // sit on the tailwheel from frame one
     this._gBank = 0;
     this.quat.setFromEuler(t.e.set(this._gPitch, this._gYaw, 0));
+    const gearH = this.groundHeight();
     this.pos.set(x, this.grounded ? contact + gearH : (y != null ? y : contact + 170), z);
     const fwd = t.v.set(0, 0, -1).applyQuaternion(this.quat);
     this.vel.copy(fwd).multiplyScalar(speed || 0);
@@ -523,7 +619,6 @@ export class FlightModel {
 
     const surf = this.surfaceAt(this.pos.x, this.pos.z);
     const contact = Math.max(0, surf.h);
-    const gearHeight = this.gearTransit > 0.5 ? 1.55 : 0.9; // wheels vs belly
     this.onRunwaySurface = surf.type === 'runway';
 
     const qn = Math.min(2.5, q / 1500);          // control authority factor
@@ -559,7 +654,7 @@ export class FlightModel {
       w.x += (tqx / this.inertia.x) * dt;
       this._gPitch += w.x * dt;
       const slow = Math.max(0, 1 - speed / 18);
-      this._gPitch += (STANCE_PITCH - this._gPitch) * Math.min(1, dt * 4 * slow);
+      this._gPitch += (this.stancePitch - this._gPitch) * Math.min(1, dt * 4 * slow);
       if (this._gPitch < -0.06) { this._gPitch = -0.06; if (w.x < 0) w.x = 0; } // prop guard
       if (this._gPitch > 0.32) { this._gPitch = 0.32; if (w.x > 0) w.x = 0; }   // tail strike guard
       // yaw-then-pitch: default XYZ order would corrupt pitch into roll on
@@ -569,7 +664,7 @@ export class FlightModel {
       if (liftN > 1.02 * this.mass * G) {
         this.grounded = false; // rotation takeoff
       } else {
-        this.pos.y = contact + gearHeight; // wheels follow the terrain
+        this.pos.y = contact + this.groundHeight(); // wheels follow terrain at the current pitch/bank
         if (this.vel.y < 0) this.vel.y = 0;
       }
       return;
@@ -651,6 +746,7 @@ export class FlightModel {
     }
 
     // ground / water contact: land if gentle + gear down + level, otherwise crash
+    const gearHeight = this.groundHeight(); // measure AFTER integrating the landing attitude
     if (this.pos.y <= contact + gearHeight && (this.vel.y <= 0 || this.pos.y <= contact)) {
       const fwdG = t.v2.set(0, 0, -1).applyQuaternion(this.quat);
       const yawG = Math.atan2(-fwdG.x, -fwdG.z);

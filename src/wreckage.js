@@ -6,7 +6,7 @@ import { fbm1 } from './noise.js';
 // slopes, splash and float on water. The fuselage keeps flying the existing
 // wreck physics; the chase camera stays glued to it and never needs to know.
 //
-// Parts are detached by NAME from the built plane graph and re-centered on a
+// Parts are supplied by the airframe adapter (legacy models fall back to names) and re-centered on a
 // pivot group (several assemblies keep their origin at the aircraft origin, so
 // tumbling them directly would swing them on multi-metre lever arms). restore()
 // puts every part back on its original parent with its original local
@@ -54,14 +54,18 @@ export function createWreckage(scene, surfaceAt, heightAt) {
     plane.group.quaternion.copy(phys.quat);
     plane.group.updateMatrixWorld(true);
 
-    for (let i = 0; i < PART_DEFS.length; i++) {
-      const def = PART_DEFS[i];
+    const definitions = Array.isArray(plane.breakawayParts) ? plane.breakawayParts : PART_DEFS;
+    for (let i = 0; i < definitions.length; i++) {
+      const def = definitions[i];
       const jitter = 0.75 + 0.5 * fbm1(phys.pos.x * 0.043 + i * 17.7, 5.1);
       if (severity < def.strength * jitter) continue;
-      const obj = plane.group.getObjectByName(def.name);
+      const obj = def.object || plane.group.getObjectByName(def.name);
       if (!obj) continue;
+      let ancestor = obj.parent;
+      while (ancestor && ancestor !== plane.group) ancestor = ancestor.parent;
+      if (!ancestor) continue; // detached already, or carried away with a parent assembly
 
-      box.setFromObject(obj);
+      box.setFromObject(obj, true); // current morph/skinned pose, not the union of morph targets
       if (box.isEmpty()) continue;
       const center = box.getCenter(new THREE.Vector3());
       box.getSize(size);
@@ -74,6 +78,7 @@ export function createWreckage(scene, surfaceAt, heightAt) {
       const parent = obj.parent;
       const localPos = obj.position.clone();
       const localQuat = obj.quaternion.clone();
+      const localScale = obj.scale.clone();
       pivot.attach(obj); // keeps the part's world pose
 
       // fling outward from the fuselage + up, harder parts fly further
@@ -89,7 +94,7 @@ export function createWreckage(scene, surfaceAt, heightAt) {
       vel.y += 1.5 + severity * 0.08 * (0.5 + Math.abs(r2));
 
       parts.push({
-        obj, pivot, parent, localPos, localQuat, restH,
+        obj, pivot, parent, localPos, localQuat, localScale, restH,
         vel,
         angVel: new THREE.Vector3(r1 * 8, (r1 - r2) * 6, r2 * 8),
         asleep: false,
@@ -158,6 +163,7 @@ export function createWreckage(scene, surfaceAt, heightAt) {
       p.parent.add(p.obj);
       p.obj.position.copy(p.localPos);
       p.obj.quaternion.copy(p.localQuat);
+      p.obj.scale.copy(p.localScale);
       scene.remove(p.pivot);
     }
     parts.length = 0;

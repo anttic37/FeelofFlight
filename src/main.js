@@ -16,15 +16,11 @@ import { createWorld, heightAt, surfaceAt, SHADOW_LIGHT_DIST, SHADOW_FAR_CAP, SH
 import { createDayNight } from './daynight.js';
 import { initGroundFX } from './groundfx.js';
 import { RUNWAYS } from './runways.js';
-// P-51D Mustang, asset revision 2.1.1 (p-51d-mustang3.js). Same buildPlane/updatePlaneVisual
-// contract, same part names the crash code looks up, same wingFlexSm input; its return object
-// is a superset of the 1.3.1 model's (p-51d-mustang2.js, kept in the repo). Flex rig v2 (three
-// cumulative spanwise joints per wing) is documented in its aircraftCapabilities manifest.
-// Swapping this import is the whole change of aircraft.
-import { buildPlane, updatePlaneVisual } from './p-51d-mustang3.js';
+// Blender asset + game-specific trail, collision and breakaway bindings.
+// The GLB is preloaded before the simulation starts; physics still owns plane.group.
+import { loadPlane, updatePlaneVisual } from './mustang-game.js';
 import { FlightModel } from './physics.js';
 import { measureContacts, measureParts } from './airframe.js';
-import { mergeStaticPlaneMeshes } from './planeoptimize.js';
 import { createPlaneBlob } from './planeblob.js';
 import { ChaseCam } from './camera.js';
 import { WingTrails } from './trails.js';
@@ -90,20 +86,27 @@ const dayNight = createDayNight({
 dayNight.update(0);   // so frame one is already at the right time rather than at midday
 window.__dn = dayNight;
 // ?tod=0..1 pins the time of day (0 = dawn, 0.33 = noon, 0.67 = dusk, 0.85 = deep night)
-const plane = buildPlane();
-// STATIC-MESH MERGE. The hero airframes are ~260 meshes and three draws one call per mesh
-// regardless of shared material, so the aeroplane alone was the biggest draw cost in the
-// scene. Most of those meshes are static relative to some moving part; merging each such
-// cluster into one geometry per material (parented to that part, so wing detail still
-// flexes) cuts the plane's mesh count roughly in half with a provably pixel-identical
-// result. Runs before the shadow cull so the cull sizes against the merged geometry.
-// The protected list is the live collider parts — airframe/wreckage find those by name at
-// crash time and must never be merged away.
-{
-  const before = []; plane.group.traverse((o) => { if (o.isMesh) before.push(o); });
-  const r = mergeStaticPlaneMeshes(plane, measureParts(plane).map((p) => p.name));
-  console.log(`[flighfeel] plane meshes ${before.length} -> ${before.length - r.removed + r.mergedDraws} (merged ${r.removed} into ${r.mergedDraws}, -${r.netDrawsSaved} draws)`);
+const aircraftStatus = document.getElementById('prep-status');
+if (aircraftStatus) aircraftStatus.textContent = 'Loading Mustang';
+let plane;
+try {
+  plane = await loadPlane(undefined, (event) => {
+    if (!aircraftStatus) return;
+    aircraftStatus.textContent = event.lengthComputable
+      ? `Loading Mustang ${Math.round(event.loaded / event.total * 100)}%`
+      : `Loading Mustang ${(event.loaded / 1048576).toFixed(1)} MB`;
+  });
+} catch (error) {
+  if (aircraftStatus) {
+    aircraftStatus.textContent = 'Mustang could not load. Refresh to retry; check the game asset files.';
+    aircraftStatus.style.maxWidth = '36em';
+    aircraftStatus.style.textAlign = 'center';
+  }
+  throw error;
 }
+// Do NOT run the old procedural static-mesh merger here: animation clips target
+// named nodes and wing/hoses use morph attributes, both of which must survive.
+console.log(`[flighfeel] loaded ${plane.manifest.revision}; ${plane.flexMeshes.length} flexible meshes`);
 // SHADOW-CASTER CULL. The hero airframes are 200-300 meshes each and ship with nearly
 // every one flagged castShadow — so the shadow map redraws all of them every frame, when
 // the plane's ground shadow is a single soft PCF silhouette that only the big masses
@@ -158,6 +161,7 @@ function updatePlaneShadowCulling() {
 const wreckRadius = (c) => (c ? Math.max(0.5, (c[3][0] - c[2][0]) / 2) : 0.68);
 
 const phys = new FlightModel(surfaceAt);
+phys.configureAirframe(plane.groundContact);
 // Crashes go to a real rigid-body solver; ?physics=builtin keeps the hand-rolled one. The
 // flight model is not touched either way — this only takes over once the airframe is broken.
 // It is the default because the hand-rolled wreck CANNOT TOPPLE: give it perfectly correct
@@ -173,7 +177,10 @@ if (new URLSearchParams(location.search).get('physics') !== 'builtin') {
   }).catch((e) => console.warn('[ff] rapier unavailable, keeping built-in wreck', e));
 }
 const input = new Input();
-const chase = new ChaseCam(camera, heightAt);
+// The physics root and chase camera remain steady. Secondary movement affects
+// only the child visual root. ?motion=off disables it without changing physics.
+input.flightMotion = new URLSearchParams(location.search).get('motion') === 'off' ? 0 : 1;
+const chase = new ChaseCam(camera, heightAt, renderer.domElement);
 // THE OVERLAY SCENE. Additive in-air effects live here, not in the world, because
 // the cloud composite multiplies them away — see the overlay note in volclouds.js.
 // Same camera, drawn after the clouds.
@@ -190,7 +197,7 @@ function syncPlaneToPhysics() {
   plane.group.updateMatrixWorld(true);
 }
 
-// wings bend with lift load: 1 g rest, ~3.5 g = full +8° bow, pushovers droop
+// Wings bend with lift load: 1 g rest, ~3.5 g = full +44 cm tip rise.
 function updateWingFlex(dt) {
   const target = Math.max(-1, Math.min(1, (phys.gLoad - 1) / 2.5));
   input.wingFlexSm += (target - input.wingFlexSm) * Math.min(1, dt * 5);
@@ -210,6 +217,8 @@ function reset(message) {
   wreckage.restore(plane); // reattach any sheared-off parts before flying again
   phys.reset();
   input.throttle = 0.65;
+  input.wingFlexSm = 0;
+  updatePlaneVisual(plane, input, phys, 0);
   syncPlaneToPhysics();
   chase.snap(phys);
   trails.reset();
@@ -220,8 +229,31 @@ input.onReset = () => reset('RESET');
 input.onMute = () => hud.msg(sound.toggleMute() ? 'MUTED' : 'SOUND ON', 1200);
 input.onGear = () => phys.toggleGear();
 input.onFlaps = () => { if (phys.setFlaps) phys.setFlaps(((phys.flapSetting || 0) + 1) % 3); };
-input.onCamera = () => hud.msg(`CAMERA ${chase.cycleTightness()}`, 1200);
-input.onView = () => hud.msg(`VIEW ${chase.cycleView(phys)}`, 1200);
+input.onCamera = () => hud.msg(`CHASE FEEL ${chase.cycleTightness()}`, 1200);
+const syncCameraButtons = () => {
+  for (const button of document.querySelectorAll('[data-camera-view]')) {
+    button.setAttribute('aria-pressed', String(!chase.free && Number(button.dataset.cameraView) === chase.view));
+  }
+  for (const id of ['camera-closer', 'camera-farther', 'camera-frame']) {
+    const button = document.getElementById(id); if (button) button.disabled = chase.free;
+  }
+  const hint = document.querySelector('#camera-tools .camera-hint');
+  if (hint) hint.textContent = chase.free ? 'Free: WASD move · Scroll changes speed' : 'Drag to orbit · Scroll to change distance';
+};
+const selectCamera = (index) => {
+  if (chase.free) { chase.toggleFree(phys); input.freeCam = false; }
+  const name = chase.setView(index, phys);
+  syncCameraButtons();
+  hud.msg(`${name} VIEW — ${index === 1 ? 'DRAG TO ORBIT' : 'SCROLL TO ZOOM'}`, 1700);
+};
+input.onView = () => selectCamera((chase.view + 1) % 3);
+for (const button of document.querySelectorAll('[data-camera-view]')) {
+  button.addEventListener('click', () => { selectCamera(Number(button.dataset.cameraView)); button.blur(); });
+}
+document.getElementById('camera-closer')?.addEventListener('click', (event) => { chase.zoomBy(-140); event.currentTarget.blur(); });
+document.getElementById('camera-farther')?.addEventListener('click', (event) => { chase.zoomBy(140); event.currentTarget.blur(); });
+document.getElementById('camera-frame')?.addEventListener('click', (event) => { chase.resetFraming(phys); event.currentTarget.blur(); });
+syncCameraButtons();
 let runwayCycle = -1;
 // PAUSE. Esc (or the Pause key) stops the simulation where it stands. The clouds keep
 // evolving because they run off the render clock, not the sim — which is exactly what you
@@ -248,6 +280,7 @@ input.onTweak = () => {
 input.onFreeCam = () => {
   const on = chase.toggleFree(phys);
   input.freeCam = on;
+  syncCameraButtons();
   hud.msg(on ? 'FREE CAM — WASD MOVE · Q/E DOWN/UP · SHIFT FAST · Z SLOW · WHEEL SPEED · B EXIT'
              : 'FREE CAM OFF', on ? 4200 : 1200);
 };
@@ -258,8 +291,10 @@ input.onRunwaySpawn = () => {
   // threshold at the +Z end, facing down the strip (yaw 0 faces -Z)
   const fx0 = -Math.sin(r.heading), fz0 = -Math.cos(r.heading);
   const back = r.length / 2 - 30;
-  phys.resetTo({ x: r.x - fx0 * back, z: r.z - fz0 * back, y: r.elev + 1.55, yaw: r.heading, speed: 0, grounded: true, gearDown: true });
+  phys.resetTo({ x: r.x - fx0 * back, z: r.z - fz0 * back, yaw: r.heading, speed: 0, grounded: true, gearDown: true });
   input.throttle = 0;
+  input.wingFlexSm = 0;
+  updatePlaneVisual(plane, input, phys, 0);
   syncPlaneToPhysics();
   chase.snap(phys);
   trails.reset();
@@ -392,6 +427,7 @@ window.addEventListener('resize', () => {
 window.__ff = {
   phys, input, chase, reset, fx, trails, hud, sound, scene, camera, renderer, plane, world, wreckage,
   heightAt, surfaceAt, RUNWAYS, seed: terrainSeed, planeBlob,
+  updatePlaneVisual, measureParts, measureContacts, setPaused,
   step(dt) {
     input.update(dt);
     const controls = { pitch: input.pitchSm, roll: input.rollSm, yaw: input.yawSm, throttle: input.throttle, brake: input.brake, overdrive: input.overdrive };
@@ -406,9 +442,11 @@ window.__ff = {
       phys.justWreckHit = 0;
     }
     syncPlaneToPhysics();
-    updateWingFlex(dt);
-    updatePlaneVisual(plane, input, phys, dt);
-    if (wreckage.active) wreckage.update(dt);
+    if (!chase.free && !paused) {
+      updateWingFlex(dt);
+      updatePlaneVisual(plane, input, phys, dt);
+      if (wreckage.active) wreckage.update(dt);
+    }
     chase.update(dt, phys, input);
     trails.update(dt, phys);
     fx.update(dt, phys);
@@ -469,7 +507,7 @@ renderer.setAnimationLoop(() => {
     // sized by what touches: the main gear, whose tyres measure 1.65 m either side of the
     // centreline — or the belly at 0.68 m if the wheels are still up
     fx.touchdown(phys.pos, phys.onRunwaySurface ? 'runway' : 'grass', sink,
-      phys.gearTransit > 0.5 ? 1.65 : 0.68);
+      phys.gearTransit > 0.5 ? (plane.groundContact.mainHalfTrack || 1.65) : 0.68);
     hud.msg(sink < 1.8 ? 'BUTTER.' : 'TOUCHDOWN', 1800);
   }
   if (frozen && phys.crashed) {

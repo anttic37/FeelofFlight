@@ -53,6 +53,14 @@ const _box = new THREE.Box3();
 const _tmp = new THREE.Box3();
 const _size = new THREE.Vector3();
 const _ctr = new THREE.Vector3();
+const _vertex = new THREE.Vector3();
+
+// Object references survive reparenting, so adapters must be checked against the actual
+// aircraft hierarchy rather than merely against whether the reference still exists.
+function isAttached(obj, group) {
+  for (let node = obj; node; node = node.parent) if (node === group) return true;
+  return false;
+}
 
 // The local AABB of one subtree, WITHOUT touching the live transform. Box3.setFromObject works
 // in world space, so measuring a banked aeroplane that way gives the box of the rotated shape,
@@ -63,9 +71,21 @@ function localBox(obj, inv) {
   obj.updateWorldMatrix(true, true);
   obj.traverse((o) => {
     if (!o.isMesh || !o.geometry) return;
+    _m.multiplyMatrices(inv, o.matrixWorld);
+    // BufferGeometry's morph bounding box encloses ALL targets at full strength. That is
+    // not the wing's current shape (and can add both up and down flex to the crash box).
+    // Crashes are infrequent: measure the actual deformed vertices for those meshes.
+    const position = o.geometry.getAttribute('position');
+    if (position && o.getVertexPosition && (o.isSkinnedMesh || o.morphTargetInfluences?.length)) {
+      if (o.isSkinnedMesh) o.skeleton.update();
+      for (let i = 0; i < position.count; i++) {
+        o.getVertexPosition(i, _vertex).applyMatrix4(_m);
+        _box.expandByPoint(_vertex);
+      }
+      return;
+    }
     if (!o.geometry.boundingBox) o.geometry.computeBoundingBox();
     _tmp.copy(o.geometry.boundingBox);
-    _m.multiplyMatrices(inv, o.matrixWorld);
     _tmp.applyMatrix4(_m);
     _box.union(_tmp);
   });
@@ -78,14 +98,17 @@ export function measureParts(plane) {
   g.updateWorldMatrix(true, false);
   _inv.copy(g.matrixWorld).invert();
   const out = [];
-  for (const name of PARTS) {
-    const obj = g.getObjectByName(name);
-    if (!obj) continue;                       // sheared off: it is not part of the wreck
+  const objects = Array.isArray(plane.collisionParts)
+    ? plane.collisionParts : PARTS.map(name => g.getObjectByName(name));
+  const seen = new Set();
+  for (const obj of objects) {
+    if (!obj || seen.has(obj) || !isAttached(obj, g)) continue;
+    seen.add(obj);
     const b = localBox(obj, _inv);
     if (!b) continue;
     b.getSize(_size); b.getCenter(_ctr);
     out.push({
-      name,
+      name: obj.name,
       // a floor on thickness: an elevator is 0.10 m thick and a zero-depth collider is a
       // degenerate one. 0.04 half-extent is thinner than anything that matters and still solid.
       half: [Math.max(_size.x / 2, 0.04), Math.max(_size.y / 2, 0.04), Math.max(_size.z / 2, 0.04)],
